@@ -3,7 +3,8 @@
 What the runtime supports, and how a processor opts into each feature. The
 plugins under `internal/validation/` exercise every item here and pass the
 Steinberg validator in extensive mode (`just validate-vst3 <validator>`) and,
-as CLAP plugins, clap-validator (`just validate-clap <clap-validator>`).
+as CLAP plugins, clap-validator (`just validate-clap <clap-validator>`) and,
+as Audio Units, Apple's auval in strict mode (`just validate-au`).
 
 | Plugin type | Bus template | Validation plugin |
 | --- | --- | --- |
@@ -37,6 +38,10 @@ The same binary is also a CLAP plugin: it exports `clap_entry` next to
 `just clap <package> <Name>`) packages it as a macOS `.clap` bundle or a Linux
 `.clap` shared object; the Windows cross build writes `<name>.clap` DLLs. See
 [CLAP](#clap) for how the runtime maps onto CLAP.
+
+On macOS it is an Audio Unit (AUv2) as well: `scripts/build_au.sh <package>
+<Name> [out]` (or `just au <package> <Name>`) writes a `.component` bundle
+with one component per registered plugin. See [Audio Units](#audio-units).
 
 It also builds as a standalone application: `scripts/build_standalone.sh
 <package> <Name> [out]` (or `just standalone <package> <Name>`). See
@@ -354,6 +359,62 @@ preset discovery. Both run with `HOME` in a scratch folder: clapcheck saves
 a preset into the user preset folder there, which clap-validator's
 `preset-discovery-*` tests then crawl and load.
 
+## Audio Units
+
+On macOS every plugin binary also contains an AUv2 component factory
+(`VST3GoAUFactory`, `pkg/plugin/au_darwin.c`). Each Audio Unit instance
+hosts one instance of the plugin's own CLAP entry, so it runs the same
+runtime and threading as a CLAP host; processors need no AU-specific code.
+
+- Component codes: the type follows the buses and category (`aufx`
+  effects, `aumf` effects with note input, `aumu` instruments, `augn`
+  generators, `aumi` MIDI processors without audio). The manufacturer code
+  is the first four letters of the vendor (first one upper case) and the
+  subtype a hash of `Info.ID`; implement `plugin.AudioUnitPlugin` to set
+  both (four ASCII characters; Apple reserves all-lowercase manufacturer
+  codes). Hosts identify presets and sessions by these codes, so keep them
+  stable once released. `scripts/build_au.sh` writes them into the
+  bundle's `Info.plist` by loading the built binary (`scripts/auinfo.c`).
+- Audio: CLAP audio ports are AU elements (main bus first, side chains
+  and aux outputs after it) with the port's channel count, 32-bit float
+  non-interleaved. Inputs are pulled from render callbacks or connections;
+  an unconnected side chain is silent. Multi-output plugins render every
+  bus in the first `AudioUnitRender` call of a time stamp.
+- Parameters are the CLAP parameters with their plain values (stepped ones
+  as indexed values with value strings); text comes from the formatter in
+  both directions. `AudioUnitScheduleParameters` events reach the
+  processor at their buffer offsets (a ramp as its start and end values),
+  `AudioUnitSetParameter` changes at the start of the next block (at once
+  while the unit is uninitialized); editor edits and gestures reach AU
+  parameter listeners (`AUEventListener`) from the main thread.
+- State: `kAudioUnitProperty_ClassInfo` holds the plugin state under the
+  standard preset keys; factory programs are the factory presets
+  (`kAudioUnitProperty_FactoryPresets`, `PresentPreset`).
+- MIDI: `MusicDeviceMIDIEvent`/`SysEx` with sample offsets in; the
+  plugin's MIDI and note output go to the host's MIDI output callback.
+- Host transport (`HostCallbacks`: tempo, beat, time signature, play,
+  record, cycle) becomes `ProcessContext` transport. Latency and tail are
+  reported in seconds; a latency change while initialized reactivates the
+  plugin and notifies the host. Bypass (effects) passes the main input
+  through; offline rendering sets the CLAP render mode.
+- Editor: `kAudioUnitProperty_CocoaUI` names a view factory class in the
+  bundle; the editor follows host resizes within its limits and
+  `vst3go.resize`. `scripts/build_au.sh` names that Objective-C class after
+  the bundle (`VST3GO_AU_VIEW_CLASS`) so several vst3go Audio Units can share
+  a host process; Audio Units built without the script share the default
+  class name.
+
+`scripts/validate_au.sh [out]` builds every validation plugin as a
+`.component`, installs them as `vst3go-check-*.component` into
+`~/Library/Audio/Plug-Ins/Components` (removed on exit), runs `auval
+-strict -r 2` on each and then `internal/validation/hostcheck/aucheck_darwin.m`:
+parameter text round trips, ClassInfo save/restore and rejection of foreign
+state, effect output following a parameter, instrument notes and factory
+presets, transposed MIDI output of the MIDI processor, side chain ducking
+and latency, and the editor (view factory loaded from the bundle, page
+edits reaching AU listeners and `AudioUnitGetParameter`, host changes
+reaching the page, the synth page resizing its view).
+
 ## Standalone applications
 
 `pkg/standalone` runs the plugin as an application with audio and MIDI
@@ -428,6 +489,9 @@ with `SOUND=1`, playback through ALSA.
   `IProgramListData` updates the processor side only.
 - Chord and scale events are input-only; the Linux editor needs an X11 host
   (no Wayland embedding exists in VST3).
+- Audio Units are AUv2 only (no AUv3 app extension), with the channel
+  configuration of the CLAP ports (no host-negotiated layouts) and no
+  MIDI 2.0 event lists.
 - Standalone applications have no in-app audio settings dialog (devices are
   chosen with flags and remembered), no transport (the plugin gets no
   tempo or position), and Windows builds are compile-checked only; the

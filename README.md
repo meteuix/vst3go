@@ -8,7 +8,7 @@ It contains:
 
 - The official VST3 C API header (`include/vst3`), the CLAP headers (`include/clap`) and the C bridge glue in `pkg/plugin`
 - Go bindings for VST3 types and process structures
-- The plugin wrapper/runtime used to expose Go processors as VST3 and CLAP plugins (one binary serves both formats), and the same package as a standalone application with audio/MIDI devices and its editor in a window (`pkg/standalone`)
+- The plugin wrapper/runtime used to expose Go processors as VST3, CLAP and (on macOS) AUv2 plugins (one binary serves every format), and the same package as a standalone application with audio/MIDI devices and its editor in a window (`pkg/standalone`)
 - A web editor SDK (`window.vst3go`, custom pages, typed TypeScript parameter bindings)
 - Generic plugin authoring primitives such as buses, parameters, process context, state, and MIDI/event transport
 - Host features for effects, instruments and MIDI plugins: sample-accurate automation, 32/64-bit processing, sidechains and surround, MIDI CC/learn/MIDI 2.0 mapping, note expression and MPE, keyswitches, factory programs, `.vstpreset` presets, units, SysEx, parameter smoothing, edit gestures, distributed processor/controller, several plugins per binary, and host-free plugin tests (`pkg/plugintest`)
@@ -88,6 +88,8 @@ just vst3 ./path/to/plugin MyPlugin          # build a macOS/Linux .vst3 bundle
 just validate-vst3 /path/to/vst3sdk/validator # validator + hostcheck on internal/validation
 just clap ./path/to/plugin MyPlugin          # build a macOS/Linux .clap plugin
 just validate-clap /path/to/clap-validator   # clap-validator + clapcheck on internal/validation
+just au ./path/to/plugin MyPlugin            # build a macOS Audio Unit (.component)
+just validate-au                              # auval (strict) + aucheck on internal/validation
 just docker-validate-linux /path/to/vst3sdk   # VST3 and CLAP validation on Linux in Docker
 just docker-check-linux-editor                # Linux WebKitGTK editor under Xvfb
 just check-macos-editor                       # macOS editor in a real window, VST3 and CLAP
@@ -100,7 +102,7 @@ just docker-build-windows                     # mingw-w64 Windows cross build
 
 ## Validation
 
-- This repo validates the shared runtime layer with `just test`, the VST3 contract with `just validate-vst3` (Steinberg validator in extensive mode plus `internal/validation/hostcheck` for sample-accurate processing), the CLAP contract with `just validate-clap` (clap-validator plus `hostcheck/clapcheck.c`), and the Windows build path with `just windows-smoke` when the host shell is available.
+- This repo validates the shared runtime layer with `just test`, the VST3 contract with `just validate-vst3` (Steinberg validator in extensive mode plus `internal/validation/hostcheck` for sample-accurate processing), the CLAP contract with `just validate-clap` (clap-validator plus `hostcheck/clapcheck.c`), the Audio Unit contract with `just validate-au` (Apple's auval in strict mode plus `hostcheck/aucheck_darwin.m`), and the Windows build path with `just windows-smoke` when the host shell is available.
 - Platform-specific integration checks, host app behavior, and downstream DSP/plugin wiring belong in the companion `synthkit` repository or the consumer project.
 - Windows packaging and bundle layout checks in this repo stay focused on the generated DLL, header sidecar, and layout contract.
 - Real Windows signoff should follow `docs/windows-validation.md` so toolchain, bundle, host, and WebView2 behavior are captured consistently.

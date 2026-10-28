@@ -168,7 +168,11 @@ work, without taking on DSP (that stays in `synthkit`).
       WinMM ports (`internal/midiport`), the editor in a window, settings
       and state kept between runs; checked with the null device, a virtual
       MIDI round trip and editor windows on macOS and Linux (Xvfb).
-- [ ] AUv2 wrapper, validated with `auval`.
+- [x] AUv2 wrapper on macOS (`au_darwin.c`): every Audio Unit hosts the
+      plugin's CLAP entry; parameters, ClassInfo state, factory presets
+      from programs, MIDI in and out, SysEx, scheduled parameters, host
+      transport, latency/tail, side chains and the Cocoa editor; passes
+      `auval -strict` and `hostcheck/aucheck_darwin.m`.
 
 ## Ongoing Rules
 

@@ -42,6 +42,14 @@ clap package name out='dist':
 validate-clap validator out='dist/validation-clap':
   bash scripts/validate_clap.sh "{{validator}}" "{{out}}"
 
+# Build a macOS Audio Unit (.component) from a main package, e.g. `just au ./myplugin MyPlugin`.
+au package name out='dist':
+  bash scripts/build_au.sh "{{package}}" "{{name}}" "{{out}}"
+
+# Build the validation plugins as Audio Units, install them temporarily and run auval (strict) and aucheck.
+validate-au out='dist/validation-au':
+  bash scripts/validate_au.sh "{{out}}"
+
 # Go tests, VST3 and CLAP validation for every validation plugin on Linux in Docker.
 # sdk: VST3 SDK checkout; platform: e.g. linux/amd64 (default: native).
 docker-validate-linux sdk platform='':
