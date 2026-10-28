@@ -101,6 +101,28 @@ func TestDispatchAppliesChangesBeyondBlockAfterProcessing(t *testing.T) {
 	}
 }
 
+func TestDispatchSilenceFlagsOfSplitBlock(t *testing.T) {
+	ctx, _, _ := runtimeContext(t, 64)
+	ctx.AddParameterChange(7, 0.5, 20)
+	ctx.AddParameterChange(7, 0.7, 40)
+	// Silent before the first change, sounding in the middle segment.
+	ctx.Dispatch(func(c *Context) {
+		if c.BlockOffset() != 20 {
+			c.SetOutputSilenceFlags(0, 1)
+		}
+	})
+	if flags := ctx.OutputSilenceFlags(0); flags != 0 {
+		t.Fatalf("silence flags = %b, want 0: one segment sounded", flags)
+	}
+
+	ctx.BeginBlock(64)
+	ctx.AddParameterChange(7, 0.5, 20)
+	ctx.Dispatch(func(c *Context) { c.SetOutputSilenceFlags(0, 1) })
+	if flags := ctx.OutputSilenceFlags(0); flags != 1 {
+		t.Fatalf("silence flags = %b, want 1: every segment was silent", flags)
+	}
+}
+
 func TestDispatchFlushBlockOnlyAppliesChanges(t *testing.T) {
 	ctx := NewContext(16, newGainRegistry(t))
 	ctx.ConfigureBuses([]int{2}, []int{2}, -1)

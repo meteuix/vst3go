@@ -69,14 +69,15 @@ type Context struct {
 	blockSamples int // samples in the host block
 	blockOffset  int // start of the current segment inside the host block
 
-	in, out       busSet[float32]
-	in64, out64   busSet[float64]
-	double        bool // the current block is 64-bit
-	inSilence     []uint64
-	outSilence    []uint64
-	sidechainBus  int
-	busesManaged  bool // bus storage is filled by the runtime via BeginBlock
-	manualBuffers bool // Input/Output were assigned by hand (tests, tools)
+	in, out        busSet[float32]
+	in64, out64    busSet[float64]
+	double         bool // the current block is 64-bit
+	inSilence      []uint64
+	outSilence     []uint64
+	segmentSilence []uint64 // silence flags common to the segments of a split block
+	sidechainBus   int
+	busesManaged   bool // bus storage is filled by the runtime via BeginBlock
+	manualBuffers  bool // Input/Output were assigned by hand (tests, tools)
 
 	// Sample-accurate automation
 	paramChanges []ParameterChange
@@ -398,6 +399,7 @@ func (c *Context) ConfigureBuses(inputChannels, outputChannels []int, sidechainB
 	c.out64.configure(outputChannels)
 	c.inSilence = make([]uint64, len(inputChannels))
 	c.outSilence = make([]uint64, len(outputChannels))
+	c.segmentSilence = make([]uint64, len(outputChannels))
 	c.sidechainBus = sidechainBus
 	c.busesManaged = true
 }
@@ -489,6 +491,7 @@ func (c *Context) adoptManualBuffers() {
 	if len(c.inSilence) != 1 {
 		c.inSilence = make([]uint64, 1)
 		c.outSilence = make([]uint64, 1)
+		c.segmentSilence = make([]uint64, 1)
 	}
 	c.manualBuffers = true
 }
@@ -534,7 +537,25 @@ func (c *Context) Dispatch(process func(*Context)) {
 			end = changes[next].SampleOffset
 		}
 
+		if pos == 0 && end == total {
+			c.runSegment(process, pos, end, total)
+			break
+		}
+		// A split block reports a channel as silent only when every
+		// segment left it silent.
+		if pos == 0 {
+			for i := range c.segmentSilence {
+				c.segmentSilence[i] = ^uint64(0)
+			}
+		}
+		clear(c.outSilence)
 		c.runSegment(process, pos, end, total)
+		for i, flags := range c.outSilence {
+			c.segmentSilence[i] &= flags
+		}
+		if end == total {
+			copy(c.outSilence, c.segmentSilence)
+		}
 		pos = end
 	}
 
