@@ -4,12 +4,10 @@
 #import <WebKit/WebKit.h>
 
 #include "editor_view.h"
+#include <dlfcn.h>
+#include <objc/runtime.h>
 #include <stdlib.h>
 #include <string.h>
-
-@interface VST3GoEditorMessageHandler : NSObject <WKScriptMessageHandler>
-@property(nonatomic, assign) struct VST3GoEditorView *owner;
-@end
 
 typedef struct VST3GoEditorView VST3GoEditorView;
 
@@ -26,7 +24,7 @@ struct VST3GoEditorView {
     NSView* parentView;
     NSView* containerView;
     WKWebView* webView;
-    VST3GoEditorMessageHandler* messageHandler;
+    NSObject<WKScriptMessageHandler>* messageHandler;
     struct Steinberg_IPlugFrame* frame;
     Steinberg_ViewRect size;
     float scaleFactor;
@@ -78,10 +76,17 @@ static Steinberg_IPlugViewVtbl editorViewVtbl = {
     editorView_checkSizeConstraint
 };
 
-@implementation VST3GoEditorMessageHandler
-- (void)userContentController:(WKUserContentController *)userContentController didReceiveScriptMessage:(WKScriptMessage *)message {
-    (void)userContentController;
-    if (!self.owner || ![message.body isKindOfClass:[NSDictionary class]]) {
+// The script message handler class is registered at run time under a name
+// unique to this binary: several vst3go plugins in one host process would
+// otherwise share one Objective-C class, whose methods call into the Go
+// runtime of whichever binary registered it first.
+static Ivar messageHandlerOwner;
+
+static void messageHandlerReceive(id self, SEL cmd, WKUserContentController* controller, WKScriptMessage* message) {
+    (void)cmd;
+    (void)controller;
+    VST3GoEditorView* owner = *(VST3GoEditorView**)((char*)self + ivar_getOffset(messageHandlerOwner));
+    if (!owner || ![message.body isKindOfClass:[NSDictionary class]]) {
         return;
     }
 
@@ -89,9 +94,32 @@ static Steinberg_IPlugViewVtbl editorViewVtbl = {
     if (!json) {
         return;
     }
-    GoEditorMessage(self.owner->component, (char *)json.bytes, (int)json.length);
+    GoEditorMessage(owner->component, (char *)json.bytes, (int)json.length);
 }
-@end
+
+static NSObject<WKScriptMessageHandler>* newMessageHandler(VST3GoEditorView* owner) {
+    static Class cls;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Dl_info info;
+        char name[96];
+        uintptr_t image = dladdr((const void*)&newMessageHandler, &info) ? (uintptr_t)info.dli_fbase : (uintptr_t)&newMessageHandler;
+        snprintf(name, sizeof(name), "VST3GoEditorMessageHandler_%lx", (unsigned long)image);
+        cls = objc_allocateClassPair([NSObject class], name, 0);
+        class_addIvar(cls, "owner", sizeof(void*), sizeof(void*) == 8 ? 3 : 2, "^v");
+        class_addMethod(cls, @selector(userContentController:didReceiveScriptMessage:), (IMP)messageHandlerReceive, "v@:@@");
+        class_addProtocol(cls, @protocol(WKScriptMessageHandler));
+        objc_registerClassPair(cls);
+        messageHandlerOwner = class_getInstanceVariable(cls, "owner");
+    });
+    NSObject<WKScriptMessageHandler>* handler = [[cls alloc] init];
+    *(VST3GoEditorView**)((char*)handler + ivar_getOffset(messageHandlerOwner)) = owner;
+    return handler;
+}
+
+static void clearMessageHandler(NSObject<WKScriptMessageHandler>* handler) {
+    *(VST3GoEditorView**)((char*)handler + ivar_getOffset(messageHandlerOwner)) = NULL;
+}
 
 static VST3GoEditorView* editorViewFromInterface(void* thisInterface) {
     return (VST3GoEditorView*)thisInterface;
@@ -238,7 +266,7 @@ static Steinberg_uint32 editorView_release(void* thisInterface) {
             [view->webView release];
         }
         if (view->messageHandler) {
-            view->messageHandler.owner = nil;
+            clearMessageHandler(view->messageHandler);
             [view->messageHandler release];
         }
         if (view->containerView) {
@@ -286,8 +314,7 @@ static Steinberg_tresult editorView_attached(void* thisInterface, void* parent, 
 
         WKWebViewConfiguration* configuration = [[WKWebViewConfiguration alloc] init];
         WKUserContentController* contentController = [[WKUserContentController alloc] init];
-        view->messageHandler = [[VST3GoEditorMessageHandler alloc] init];
-        view->messageHandler.owner = view;
+        view->messageHandler = newMessageHandler(view);
         [contentController addScriptMessageHandler:view->messageHandler name:@"vst3go"];
         configuration.userContentController = contentController;
 
@@ -320,7 +347,7 @@ static Steinberg_tresult editorView_removed(void* thisInterface) {
         }
 
         if (view->messageHandler) {
-            view->messageHandler.owner = nil;
+            clearMessageHandler(view->messageHandler);
             [view->messageHandler release];
             view->messageHandler = nil;
         }
