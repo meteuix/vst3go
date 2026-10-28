@@ -20,6 +20,7 @@ import (
 	"github.com/th-release/vst3go/pkg/framework/process"
 	"github.com/th-release/vst3go/pkg/midi"
 	"github.com/th-release/vst3go/pkg/plugin"
+	"github.com/th-release/vst3go/pkg/standalone"
 )
 
 const (
@@ -396,4 +397,4 @@ func init() {
 	plugin.Register(synthPlugin{})
 }
 
-func main() {}
+func main() { standalone.Main() }

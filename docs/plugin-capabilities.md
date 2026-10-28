@@ -20,7 +20,7 @@ A plugin is a `main` package that registers itself:
 
 ```go
 func init() { plugin.Register(myPlugin{}) }
-func main() {}
+func main() { standalone.Main() } // runs only in standalone application builds
 ```
 
 `scripts/build_vst3.sh <package> <Name> [out]` (or `just vst3 <package> <Name>`)
@@ -37,6 +37,10 @@ The same binary is also a CLAP plugin: it exports `clap_entry` next to
 `just clap <package> <Name>`) packages it as a macOS `.clap` bundle or a Linux
 `.clap` shared object; the Windows cross build writes `<name>.clap` DLLs. See
 [CLAP](#clap) for how the runtime maps onto CLAP.
+
+It also builds as a standalone application: `scripts/build_standalone.sh
+<package> <Name> [out]` (or `just standalone <package> <Name>`). See
+[Standalone applications](#standalone-applications).
 
 `plugin.Info.Category` selects the host category, for example
 `CategoryFxEQ`, `CategoryFxDynamics` or `CategoryInstrumentSynth`; combine
@@ -350,6 +354,69 @@ preset discovery. Both run with `HOME` in a scratch folder: clapcheck saves
 a preset into the user preset folder there, which clap-validator's
 `preset-discovery-*` tests then crawl and load.
 
+## Standalone applications
+
+`pkg/standalone` runs the plugin as an application with audio and MIDI
+devices, its editor in a window, and its state kept between runs. The plugin
+package's `main` calls `standalone.Main()`; plugin builds (c-shared) never
+run it, and executables built without the `standalone` tag only print how
+to build one. `scripts/build_standalone.sh` builds with that tag (plus the
+tags in `GOFLAGS`, e.g. `-tags=webkitgtk` for the Linux editor): a macOS
+`.app` bundle (with a microphone usage description) or a Linux executable;
+the Windows cross build writes `<name>.exe`.
+
+The application hosts the plugin through the plugin's own CLAP entry, so
+it runs the same runtime and threading a CLAP host does.
+
+- Audio: miniaudio (`github.com/gen2brain/malgo`) with Core Audio, WASAPI,
+  DirectSound, ALSA, PulseAudio, JACK or the `null` device (a timer, for
+  tests and servers). One duplex device: the main input bus reads the input
+  device (a mono device feeds every channel; `-input none` opens none), the
+  main output bus plays on the output device (a mono plugin plays on every
+  channel). Other buses get silence. Plugins without audio output (MIDI
+  effects) run on a silent stereo output device as their clock.
+- MIDI: Core MIDI, the ALSA sequencer and WinMM (`internal/midiport`).
+  Channel messages from every input (or the ones named), and on macOS and
+  Linux from a virtual input named after the plugin, reach the plugin's
+  first note port; its MIDI output can go to a port (`-midi-out`). SysEx
+  and real-time messages are dropped.
+- Editor: the plugin's `gui` extension in a window (Cocoa, Win32, X11 in
+  `webkitgtk` builds), resizable within the editor's limits and following
+  `vst3go.resize`. Builds without an editor view, `-headless` and Linux
+  without an X server run without a window.
+- Settings and state: device choices go to `standalone.json` and the plugin
+  state to `standalone.state` in `<user config dir>/<vendor>/<name>`
+  (`-config` sets another directory). Flags given on the command line
+  override and update the saved settings; the state loads at launch
+  (`-reset` skips it) and saves on quit (window closed, Cmd+Q, SIGINT,
+  SIGTERM, `-duration` elapsed).
+- Restarts: a plugin that changes its latency or ports while active is
+  deactivated and reactivated with the device stopped.
+
+```text
+-list                 list audio devices and MIDI ports
+-plugin id|name       the plugin to run when the binary registers several
+-backend name         coreaudio, wasapi, dsound, winmm, alsa, pulseaudio, jack, oss, null
+-output / -input name audio devices (exact name or a unique part; -input none)
+-sample-rate hz       0: the device rate
+-buffer frames        device period (default 256)
+-midi-in list         all (default), none, or comma-separated port names
+-midi-out name        MIDI output port
+-virtual-midi=false   no virtual MIDI input
+-headless             no editor window
+-config dir, -reset, -duration d
+```
+
+`scripts/check_standalone.sh` runs the `pkg/standalone` tests (an
+instrument and an effect through the host glue, the null device, settings
+and state files), every validation plugin as an application on the null
+device, `internal/validation/hostcheck/standalonecheck` (a MIDI round trip
+through the transpose plugin over virtual MIDI ports: in, plugin, out) and
+on macOS the synth's editor window following its page's resize.
+`scripts/docker_check_linux_standalone.sh` covers Linux: headless apps,
+the synth editor under Xvfb (window resized to 720x420 by the page) and,
+with `SOUND=1`, playback through ALSA.
+
 ## Known limits
 
 - Windows builds are compile- and export-checked (`scripts/docker_build_windows.sh`);
@@ -361,6 +428,11 @@ a preset into the user preset folder there, which clap-validator's
   `IProgramListData` updates the processor side only.
 - Chord and scale events are input-only; the Linux editor needs an X11 host
   (no Wayland embedding exists in VST3).
+- Standalone applications have no in-app audio settings dialog (devices are
+  chosen with flags and remembered), no transport (the plugin gets no
+  tempo or position), and Windows builds are compile-checked only; the
+  Linux MIDI and Windows MIDI/audio paths have not run on real hardware
+  here (Core MIDI, Core Audio and ALSA playback have).
 - CLAP editors cannot float in a plugin-owned window, and CLAP hosts have no MIDI learn mode,
   keyswitch or note expression metadata queries; distributed plugins run as
   one CLAP object, so `Host.SendMessage` returns an error there.

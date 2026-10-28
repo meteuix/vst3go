@@ -163,7 +163,11 @@ work, without taking on DSP (that stays in `synthkit`).
       gestures, presets, custom messages with the processor, and typed
       TypeScript parameter bindings (`plugin.EditorBindings`), checked under
       node/tsc and in real web views on macOS and Linux.
-- [ ] Standalone application wrapper (audio/MIDI device I/O).
+- [x] Standalone application wrapper (`pkg/standalone`): the plugin hosted
+      through its own CLAP entry with miniaudio device I/O, Core MIDI/ALSA/
+      WinMM ports (`internal/midiport`), the editor in a window, settings
+      and state kept between runs; checked with the null device, a virtual
+      MIDI round trip and editor windows on macOS and Linux (Xvfb).
 - [ ] AUv2 wrapper, validated with `auval`.
 
 ## Ongoing Rules

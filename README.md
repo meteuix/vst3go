@@ -8,7 +8,8 @@ It contains:
 
 - The official VST3 C API header (`include/vst3`), the CLAP headers (`include/clap`) and the C bridge glue in `pkg/plugin`
 - Go bindings for VST3 types and process structures
-- The plugin wrapper/runtime used to expose Go processors as VST3 and CLAP plugins (one binary serves both formats)
+- The plugin wrapper/runtime used to expose Go processors as VST3 and CLAP plugins (one binary serves both formats), and the same package as a standalone application with audio/MIDI devices and its editor in a window (`pkg/standalone`)
+- A web editor SDK (`window.vst3go`, custom pages, typed TypeScript parameter bindings)
 - Generic plugin authoring primitives such as buses, parameters, process context, state, and MIDI/event transport
 - Host features for effects, instruments and MIDI plugins: sample-accurate automation, 32/64-bit processing, sidechains and surround, MIDI CC/learn/MIDI 2.0 mapping, note expression and MPE, keyswitches, factory programs, `.vstpreset` presets, units, SysEx, parameter smoothing, edit gestures, distributed processor/controller, several plugins per binary, and host-free plugin tests (`pkg/plugintest`)
 
@@ -38,6 +39,7 @@ For publishing notes, see [`docs/release-notes-template.md`](docs/release-notes-
 - `pkg/midi/`
 - `pkg/preset/`
 - `pkg/plugintest/`
+- `pkg/standalone/` (and `internal/midiport`)
 - `pkg/framework/bus`
 - `pkg/framework/param`
 - `pkg/framework/plugin`
@@ -54,7 +56,7 @@ The companion `synthkit` repo owns:
 
 ## Public API Boundary
 
-- Downstream code should treat `pkg/plugin`, `pkg/vst3`, `pkg/midi`, and the retained `pkg/framework/*` packages as the supported API surface.
+- Downstream code should treat `pkg/plugin`, `pkg/vst3`, `pkg/midi`, `pkg/preset`, `pkg/plugintest`, `pkg/standalone`, and the retained `pkg/framework/*` packages as the supported API surface.
 - The C bridge (`pkg/plugin/*.c`) and the editor assets exist to support that API surface, but product-specific DSP and showcase logic stay out of this repo.
 - If a feature needs higher-level audio product behavior, it belongs in `synthkit` or the consumer project instead of this runtime layer.
 
@@ -90,6 +92,9 @@ just docker-validate-linux /path/to/vst3sdk   # VST3 and CLAP validation on Linu
 just docker-check-linux-editor                # Linux WebKitGTK editor under Xvfb
 just check-macos-editor                       # macOS editor in a real window, VST3 and CLAP
 just check-editor-sdk                         # web editor SDK under node and tsc
+just standalone ./path/to/plugin MyPlugin    # standalone application (.app / executable)
+just check-standalone                         # standalone apps: null device, MIDI round trip, editor window
+just docker-check-linux-standalone            # standalone apps on Linux in Docker
 just docker-build-windows                     # mingw-w64 Windows cross build
 ```
 

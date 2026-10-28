@@ -16,6 +16,7 @@ Downstream projects should treat these packages as the supported API surface:
 - `pkg/framework/state`
 - `pkg/preset`
 - `pkg/plugintest`
+- `pkg/standalone`
 
 The C bridge sources in `pkg/plugin`, embedded editor assets, and platform-specific editor shims support that API surface but are not intended to become a higher-level product framework.
 
@@ -32,6 +33,7 @@ The C bridge sources in `pkg/plugin`, embedded editor assets, and platform-speci
 - `plugin.Register` may be called once per plugin; one binary can expose several plugins.
 - A `DistributedPlugin` gets two processor instances per plugin instance: the processor side runs the lifecycle above, the controller side only serves parameters, the editor and controller queries (no `Initialize`, `SetActive` or `ProcessAudio`).
 - A CLAP instance runs one processor through the same lifecycle: CLAP `init` calls `Initialize`, `activate` calls `Initialize` again with the host sample rate and maximum block size and then `SetActive(true)`, `deactivate` calls `SetActive(false)`. CLAP `reset` (audio thread) calls `SetActive(false)` and `SetActive(true)` without reallocating. A `DistributedPlugin` runs as one CLAP object.
+- A standalone application (`pkg/standalone`) is a CLAP host of its own plugin: one instance per process, activated at the device's sample rate and period, deactivated and reactivated when the plugin asks for a restart. Its main thread is the main goroutine (the package locks it to the process main thread in `init`), which runs the window and event loop; the audio device's thread runs `process`.
 
 ## Thread-Safety Expectations
 

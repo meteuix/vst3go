@@ -81,6 +81,8 @@ bash scripts/docker_validate_linux.sh <sdk> [linux/amd64]       # VST3 + CLAP on
 bash scripts/docker_check_linux_editor.sh                       # WebKitGTK editor under Xvfb (VST3 + CLAP)
 bash scripts/check_macos_editor.sh                              # WKWebView editor in an NSWindow (VST3 + CLAP)
 bash scripts/check_editor_sdk.sh                                # editor SDK under node, bindings and tsc
+bash scripts/check_standalone.sh                                # standalone apps, MIDI round trip, editor window
+bash scripts/docker_check_linux_standalone.sh                   # standalone apps on Linux (SOUND=1 adds ALSA)
 ```
 
 clap-validator is built from https://github.com/free-audio/clap-validator

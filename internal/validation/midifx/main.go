@@ -12,6 +12,7 @@ import (
 	"github.com/th-release/vst3go/pkg/framework/process"
 	"github.com/th-release/vst3go/pkg/midi"
 	"github.com/th-release/vst3go/pkg/plugin"
+	"github.com/th-release/vst3go/pkg/standalone"
 )
 
 const paramTranspose uint32 = 0
@@ -85,4 +86,4 @@ func init() {
 	plugin.Register(midiFxPlugin{})
 }
 
-func main() {}
+func main() { standalone.Main() }

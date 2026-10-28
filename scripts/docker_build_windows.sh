@@ -2,9 +2,9 @@
 # Cross-compiles every validation plugin (internal/validation) as a Windows
 # x86_64 VST3 DLL inside a Docker container with mingw-w64 and the WebView2
 # SDK headers, so Windows build breakage shows up on any host. The same DLL
-# is also copied as <name>.clap (CLAP plugins are plain DLLs on Windows). It
-# checks compilation and the exported entry points; it does not run the
-# plugins.
+# is also copied as <name>.clap (CLAP plugins are plain DLLs on Windows), and
+# each plugin builds as a standalone application (<name>.exe). It checks
+# compilation and the exported entry points; it does not run the plugins.
 #
 # usage: scripts/docker_build_windows.sh [output-dir]
 set -euo pipefail
@@ -51,6 +51,7 @@ docker run --rm \
     export CGO_CFLAGS="-I$sdk/build/native/include -I$shim"
     export CGO_LDFLAGS="-L$sdk/build/native/x64"
     go vet ./...
+    go vet -tags standalone ./pkg/standalone/ ./internal/midiport/ ./internal/validation/hostcheck/standalonecheck/
     status=0
     for main in internal/validation/*/main.go; do
       dir="$(dirname "$main")"
@@ -62,11 +63,14 @@ docker run --rm \
         rm -f "${dll%.vst3}.h"
         cp "$dll" "/out/${name}.clap"
         exports="$(x86_64-w64-mingw32-objdump -p "$dll" | grep -E "\\b(GetPluginFactory|InitDll|ExitDll|clap_entry)\\b" | wc -l)"
-        if [[ "$exports" -ge 4 ]]; then
-          echo "PASS $name: built $(basename "$dll") and ${name}.clap, exports GetPluginFactory/InitDll/ExitDll/clap_entry"
-        else
+        if [[ "$exports" -lt 4 ]]; then
           echo "FAIL $name: missing VST3 or CLAP entry points"
           status=1
+        elif ! go build -tags standalone -trimpath -o "/out/${name}.exe" "./$dir"; then
+          echo "FAIL $name: standalone build failed"
+          status=1
+        else
+          echo "PASS $name: built $(basename "$dll"), ${name}.clap and ${name}.exe, exports GetPluginFactory/InitDll/ExitDll/clap_entry"
         fi
       else
         echo "FAIL $name: build failed"

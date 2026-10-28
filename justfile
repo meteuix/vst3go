@@ -59,6 +59,18 @@ docker-check-linux-editor platform='':
 check-editor-sdk:
   bash scripts/check_editor_sdk.sh
 
+# Build the standalone application of a plugin (.app on macOS, executable on Linux).
+standalone package name out='dist':
+  bash scripts/build_standalone.sh {{package}} {{name}} {{out}}
+
+# Check the standalone applications on this machine (null device, MIDI round trip, editor window).
+check-standalone out='dist/standalone':
+  bash scripts/check_standalone.sh {{out}}
+
+# Check the standalone applications on Linux in Docker (headless, Xvfb editor, SOUND=1 for ALSA).
+docker-check-linux-standalone platform='':
+  bash scripts/docker_check_linux_standalone.sh {{platform}}
+
 # Cross-compile every validation plugin for Windows with mingw-w64 in Docker.
 docker-build-windows out='dist/windows-cross':
   bash scripts/docker_build_windows.sh "{{out}}"

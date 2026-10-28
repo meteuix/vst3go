@@ -14,6 +14,7 @@ import (
 	frameworkplugin "github.com/th-release/vst3go/pkg/framework/plugin"
 	"github.com/th-release/vst3go/pkg/framework/process"
 	"github.com/th-release/vst3go/pkg/plugin"
+	"github.com/th-release/vst3go/pkg/standalone"
 )
 
 const (
@@ -119,4 +120,4 @@ func init() {
 	plugin.Register(gainPlugin{})
 }
 
-func main() {}
+func main() { standalone.Main() }
