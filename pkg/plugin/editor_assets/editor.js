@@ -1,10 +1,10 @@
 const snapshot = JSON.parse(atob("__VST3GO_SNAPSHOT__"));
 const model = snapshot.model;
 const sectionsRoot = document.getElementById("sections");
-const statusText = document.getElementById("snapshot-status");
-const saveButton = document.getElementById("save-snapshot");
-const restoreButton = document.getElementById("restore-snapshot");
-const storageKey = "vst3go.editor.snapshot." + (model.plugin.id || "default");
+const presetList = document.getElementById("preset-list");
+const presetName = document.getElementById("preset-name");
+const presetSave = document.getElementById("preset-save");
+const presetStatus = document.getElementById("preset-status");
 document.getElementById("plugin-vendor").textContent = model.plugin.vendor || "VST3Go";
 document.getElementById("plugin-name").textContent = model.plugin.name || "Plugin Editor";
 document.getElementById("plugin-meta").textContent = [model.plugin.category, model.plugin.version].filter(Boolean).join(" · ");
@@ -50,17 +50,6 @@ function bindGesture(element, id) {
 const controlBindings = new Map();
 const controlIndex = new Map();
 
-function setStatus(message) {
-  if (statusText) {
-    statusText.textContent = message;
-  }
-}
-
-function updateSnapshotControl(control, normalized, plain) {
-  control.normalized = normalized;
-  control.plain = plain;
-}
-
 function updateBoundControl(binding, control, normalized, plain) {
   if (binding.select) {
     const selected = binding.steps > 0 ? Math.round(normalized * binding.steps) / binding.steps : normalized;
@@ -73,48 +62,13 @@ function updateBoundControl(binding, control, normalized, plain) {
     binding.value.value = String(plain);
   }
   if (binding.readout) {
-    binding.readout.textContent = plain.toFixed(3);
-  }
-  if (binding.card) {
-    binding.card.dataset.controlState = control.readOnly ? "read-only" : "live";
-  }
-}
-
-function persistSnapshot() {
-  try {
-    window.localStorage.setItem(storageKey, JSON.stringify(snapshot));
-    if (restoreButton) {
-      restoreButton.disabled = false;
-    }
-    setStatus("Snapshot saved locally");
-  } catch (error) {
-    setStatus("Snapshot save failed");
-  }
-}
-
-function loadSavedSnapshot() {
-  try {
-    const saved = window.localStorage.getItem(storageKey);
-    if (!saved) {
-      setStatus("No saved snapshot yet");
-      return null;
-    }
-
-    const parsed = JSON.parse(saved);
-    if (!parsed || !parsed.model || !Array.isArray(parsed.model.sections)) {
-      setStatus("Saved snapshot is invalid");
-      return null;
-    }
-
-    return parsed;
-  } catch (error) {
-    setStatus("Snapshot restore failed");
-    return null;
+    binding.readout.textContent = control.readOnly ? "locked" : plain.toFixed(3);
   }
 }
 
 function updateControl(control, normalized, plain, notifyGo) {
-  updateSnapshotControl(control, normalized, plain);
+  control.normalized = normalized;
+  control.plain = plain;
 
   const binding = controlBindings.get(control.id);
   if (binding) {
@@ -126,47 +80,59 @@ function updateControl(control, normalized, plain, notifyGo) {
   }
 }
 
-function findControl(controlId) {
-  return controlIndex.get(controlId) || null;
-}
-
-function applySnapshot(nextSnapshot, notifyGo) {
-  if (!nextSnapshot || !nextSnapshot.model || !Array.isArray(nextSnapshot.model.sections)) {
-    return false;
-  }
-
-  nextSnapshot.model.sections.forEach((section) => {
-    section.controls.forEach((control) => {
-      const existing = findControl(control.id);
-      if (!existing) {
-        return;
-      }
-
-      updateControl(existing, control.normalized, control.plain, notifyGo);
-    });
+// Presets: the plugin's user preset folder, as .vstpreset files that hosts
+// list too.
+function showPresets(message) {
+  presetList.textContent = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = message.presets && message.presets.length ? "Presets…" : "No presets yet";
+  presetList.appendChild(placeholder);
+  (message.presets || []).forEach((name) => {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    presetList.appendChild(option);
   });
-
-  setStatus(notifyGo ? "Snapshot restored" : "Snapshot loaded");
-  return true;
+  presetList.value = message.current || "";
+  if (message.current) {
+    presetName.value = message.current;
+  }
+  presetStatus.textContent = message.error ? message.error : (message.current || "");
+  presetStatus.classList.toggle("pill--error", !!message.error);
 }
 
-window.__vst3goUpdateParameter = function(id, normalized, plain) {
-  const control = findControl(id);
-  if (!control) {
+presetList.addEventListener("change", () => {
+  if (presetList.value) {
+    post({ type: "preset-load", name: presetList.value });
+  }
+});
+presetSave.addEventListener("click", () => {
+  const name = presetName.value.trim();
+  if (name) {
+    post({ type: "preset-save", name });
+  }
+});
+
+// __vst3goReceive handles messages from the plugin.
+window.__vst3goReceive = function(message) {
+  if (!message) {
     return;
   }
-
-  updateControl(control, normalized, plain, false);
-  persistSnapshot();
+  if (message.type === "param-change") {
+    const control = controlIndex.get(message.id);
+    if (control) {
+      updateControl(control, Number(message.normalized), Number(message.plain), false);
+    }
+  } else if (message.type === "presets") {
+    showPresets(message);
+  }
 };
 
-function restoreFromLocalStorage() {
-  const saved = loadSavedSnapshot();
-  if (!saved) {
-    return;
-  }
-
-  applySnapshot(saved, true);
+if (window.chrome && window.chrome.webview) {
+  window.chrome.webview.addEventListener("message", (event) => {
+    window.__vst3goReceive(typeof event.data === "string" ? JSON.parse(event.data) : event.data);
+  });
 }
 
 function renderControl(control) {
@@ -178,16 +144,20 @@ function renderControl(control) {
   card.className = "card";
   if (control.readOnly) {
     card.classList.add("card--readonly");
-    card.dataset.controlState = "read-only";
-  } else {
-    card.dataset.controlState = "live";
   }
-  card.innerHTML = "<p class=\"card__label\">" + (control.shortName || control.name) + "</p>" +
-    "<h3>" + control.name + "</h3>" +
-    "<p>" + (control.unit || control.kind) + "</p>";
+  card.dataset.controlState = control.readOnly ? "read-only" : "live";
+  const label = document.createElement("p");
+  label.className = "card__label";
+  label.textContent = control.shortName || control.name;
+  const title = document.createElement("h3");
+  title.textContent = control.name;
+  const unit = document.createElement("p");
+  unit.textContent = control.unit || control.kind;
+  card.append(label, title, unit);
 
   const field = document.createElement("div");
   field.className = "control";
+  let binding;
 
   if (control.kind === "choice") {
     const select = document.createElement("select");
@@ -198,20 +168,14 @@ function renderControl(control) {
       option.textContent = control.stepCount > 0 ? String(index) : (index / steps).toFixed(2);
       select.appendChild(option);
     }
-    const selected = steps > 0 ? Math.round(control.normalized * steps) / steps : control.normalized;
-    select.value = String(selected);
+    select.value = String(Math.round(control.normalized * steps) / steps);
     select.disabled = control.readOnly;
     select.addEventListener("change", () => {
-      if (control.readOnly) {
-        return;
-      }
       const normalized = Number(select.value);
-      const plain = control.min + normalized * (control.max - control.min);
-      updateControl(control, normalized, plain, true);
-      persistSnapshot();
+      updateControl(control, normalized, control.min + normalized * (control.max - control.min), true);
     });
     field.appendChild(select);
-    controlBindings.set(control.id, { select, readout: null, steps });
+    binding = { select, steps };
   } else {
     const range = document.createElement("input");
     range.type = "range";
@@ -228,48 +192,39 @@ function renderControl(control) {
     value.value = String(control.plain);
     value.disabled = control.readOnly;
 
-    function updateFromNormalized(normalized) {
-      if (control.readOnly) {
-        return;
-      }
+    const updateFromNormalized = (normalized) => {
       const clamped = Math.max(0, Math.min(1, normalized));
-      const plain = control.min + clamped * (control.max - control.min);
-      updateControl(control, clamped, plain, true);
-      persistSnapshot();
-    }
-
+      updateControl(control, clamped, control.min + clamped * (control.max - control.min), true);
+    };
     range.addEventListener("input", () => updateFromNormalized(Number(range.value)));
     bindGesture(range, control.id);
     value.addEventListener("change", () => {
-      const plain = Number(value.value);
-      const normalized = control.max > control.min ? (plain - control.min) / (control.max - control.min) : 0;
-      updateFromNormalized(normalized);
+      const span = control.max - control.min;
+      updateFromNormalized(span > 0 ? (Number(value.value) - control.min) / span : 0);
     });
 
-    field.appendChild(range);
-    field.appendChild(value);
-    controlBindings.set(control.id, { range, value, readout: null });
+    field.append(range, value);
+    binding = { range, value };
   }
 
-  const readout = document.createElement("div");
-  readout.className = "control__meta";
-  readout.innerHTML = "<span>" + control.kind + "</span>";
-  const valueReadout = document.createElement("span");
-  valueReadout.className = "control__value";
-  valueReadout.textContent = control.readOnly ? "locked" : Number(control.plain).toFixed(3);
-  readout.appendChild(valueReadout);
+  const meta = document.createElement("div");
+  meta.className = "control__meta";
+  const kind = document.createElement("span");
+  kind.textContent = control.kind;
+  const readout = document.createElement("span");
+  readout.className = "control__value";
+  readout.textContent = control.readOnly ? "locked" : Number(control.plain).toFixed(3);
+  meta.append(kind, readout);
   if (control.readOnly) {
-    const readOnlyBadge = document.createElement("span");
-    readOnlyBadge.className = "control__badge";
-    readOnlyBadge.textContent = "Read-only";
-    readout.appendChild(readOnlyBadge);
+    const badge = document.createElement("span");
+    badge.className = "control__badge";
+    badge.textContent = "Read-only";
+    meta.appendChild(badge);
   }
-  card.appendChild(field);
-  card.appendChild(readout);
+  card.append(field, meta);
 
-  controlBindings.get(control.id).card = card;
-  controlBindings.get(control.id).readout = valueReadout;
-  controlIndex.set(control.id, control);
+  binding.readout = readout;
+  controlBindings.set(control.id, binding);
   return card;
 }
 
@@ -292,34 +247,4 @@ model.sections.forEach((section) => {
   sectionsRoot.appendChild(wrapper);
 });
 
-if (saveButton) {
-  saveButton.addEventListener("click", () => persistSnapshot());
-}
-
-if (restoreButton) {
-  restoreButton.addEventListener("click", () => restoreFromLocalStorage());
-  let hasSavedSnapshot = false;
-  try {
-    hasSavedSnapshot = !!window.localStorage.getItem(storageKey);
-  } catch (error) {
-    hasSavedSnapshot = false;
-  }
-  restoreButton.disabled = !hasSavedSnapshot;
-}
-
-if (window.chrome && window.chrome.webview) {
-  window.chrome.webview.addEventListener("message", (event) => {
-    const payload = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
-    if (!payload || payload.type !== "param-change") {
-      return;
-    }
-
-    const control = findControl(payload.id);
-    if (!control) {
-      return;
-    }
-
-    updateControl(control, Number(payload.normalized), Number(payload.plain), false);
-    persistSnapshot();
-  });
-}
+post({ type: "preset-list" });

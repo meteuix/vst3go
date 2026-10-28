@@ -16,9 +16,10 @@ __VST3GO_CSS__
         <p class="lede" id="plugin-meta">Loading editor model…</p>
       </div>
       <div class="editor-actions">
-        <div class="pill" id="snapshot-status">Live snapshot</div>
-        <button id="save-snapshot" type="button">Save snapshot</button>
-        <button id="restore-snapshot" type="button">Restore snapshot</button>
+        <select id="preset-list" title="Load preset"></select>
+        <input id="preset-name" type="text" placeholder="Preset name" title="Preset name" />
+        <button id="preset-save" type="button">Save preset</button>
+        <div class="pill" id="preset-status"></div>
       </div>
     </header>
     <section class="section">

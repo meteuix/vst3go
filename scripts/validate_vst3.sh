@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Builds every plugin under internal/validation, runs the Steinberg VST3
 # validator (extensive mode) on it, then checks its processing behavior with
-# internal/validation/hostcheck.
+# internal/validation/hostcheck. Finally it checks that .vstpreset files from
+# pkg/preset load with the SDK's PresetFile and vice versa
+# (hostcheck/presetcheck.cpp), using the SDK checkout the validator was built
+# in (or VST3_SDK, with its CMake build in VST3_SDK_BUILD).
 #
 # usage: scripts/validate_vst3.sh <path-to-validator> [output-dir]
 set -euo pipefail
@@ -44,4 +47,31 @@ for main in "${repo_root}"/internal/validation/*/main.go; do
   fi
   echo "PASS ${name}: $(grep 'Result:' "$log" | tail -1 | sed 's/^.*Result: //'), hostcheck ok"
 done
+
+# Preset files: pkg/preset <-> Steinberg PresetFile, on the gain plugin.
+sdk="${VST3_SDK:-$(cd "$(dirname "$validator")/../../.." && pwd)}"
+if [[ ! -f "${sdk}/public.sdk/source/vst/vstpresetfile.cpp" ]]; then
+  echo "SKIP presets: no VST3 SDK sources at ${sdk} (set VST3_SDK)"
+  exit "$failed"
+fi
+libs=(-L"${VST3_SDK_BUILD:-${sdk}/build}/lib/Release" -lbase -lpluginterfaces)
+case "$(go env GOOS)" in
+  darwin) libs+=(-framework CoreFoundation -framework Foundation) ;;
+  *) libs+=(-ldl -lpthread) ;;
+esac
+presetcheck="${output_root}/presetcheck"
+log="${output_root}/presets.log"
+c++ -std=c++17 -O1 -w -I"$sdk" "${repo_root}/internal/validation/hostcheck/presetcheck.cpp" \
+  "${sdk}/public.sdk/source/vst/vstpresetfile.cpp" "${sdk}/public.sdk/source/vst/vstinitiids.cpp" \
+  "${libs[@]}" -o "$presetcheck"
+gain="$(binary_path gain)"
+if cid="$("$presetcheck" "$gain" state "${output_root}/preset-state.bin" 2>"$log")" &&
+  go run "${repo_root}/internal/validation/hostcheck/presettool" write "${output_root}/go.vstpreset" "$cid" "${output_root}/preset-state.bin" >>"$log" 2>&1 &&
+  "$presetcheck" "$gain" load "${output_root}/go.vstpreset" "${output_root}/sdk.vstpreset" >>"$log" 2>&1 &&
+  go run "${repo_root}/internal/validation/hostcheck/presettool" read "${output_root}/sdk.vstpreset" "$cid" >>"$log" 2>&1; then
+  echo "PASS presets: pkg/preset files load with the SDK PresetFile and vice versa"
+else
+  echo "FAIL presets, see ${log}"
+  failed=1
+fi
 exit "$failed"

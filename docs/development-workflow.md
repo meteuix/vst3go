@@ -75,7 +75,7 @@ Add this when the VST3 runtime (`pkg/plugin`, the C bridge) changed. The
 validator comes from a VST3 SDK checkout built with CMake:
 
 ```bash
-bash scripts/validate_vst3.sh <sdk>/build/bin/Release/validator  # validator -e + hostcheck
+bash scripts/validate_vst3.sh <sdk>/build/bin/Release/validator  # validator -e + hostcheck + preset files
 bash scripts/docker_validate_linux.sh <sdk> [linux/amd64]       # same on Linux, plus go test
 bash scripts/docker_check_linux_editor.sh                       # WebKitGTK editor under Xvfb
 ```

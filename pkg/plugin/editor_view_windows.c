@@ -332,18 +332,23 @@ void* VST3GoCreateEditorView(uintptr_t component) {
     return view;
 }
 
-void VST3GoEditorViewUpdateParameter(void* thisInterface, Steinberg_Vst_ParamID id, Steinberg_Vst_ParamValue normalized, Steinberg_Vst_ParamValue plain) {
+void VST3GoEditorViewPost(void* thisInterface, const char* json) {
     VST3GoEditorView* view = editorViewFromInterface(thisInterface);
-    if (!view || !view->webView) {
+    if (!view || !view->webView || !json) {
         return;
     }
 
-    WCHAR payload[256];
-    if (swprintf(payload, sizeof(payload) / sizeof(payload[0]), L"{\"type\":\"param-change\",\"id\":%u,\"normalized\":%.17g,\"plain\":%.17g}", (unsigned int)id, normalized, plain) < 0) {
+    int size = MultiByteToWideChar(CP_UTF8, 0, json, -1, NULL, 0);
+    if (size <= 0) {
         return;
     }
-
+    WCHAR* payload = (WCHAR*)malloc((size_t)size * sizeof(WCHAR));
+    if (!payload) {
+        return;
+    }
+    MultiByteToWideChar(CP_UTF8, 0, json, -1, payload, size);
     view->webView->lpVtbl->PostWebMessageAsJson(view->webView, payload);
+    free(payload);
 }
 
 static Steinberg_tresult editorView_queryInterface(void* thisInterface, const Steinberg_TUID iid, void** obj) {

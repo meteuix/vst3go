@@ -125,14 +125,14 @@ static void runScript(VST3GoEditorView* view, const char* script) {
 
 void* VST3GoCreateEditorView(uintptr_t component);
 
-void VST3GoEditorViewUpdateParameter(void* thisInterface, Steinberg_Vst_ParamID id, Steinberg_Vst_ParamValue normalized, Steinberg_Vst_ParamValue plain) {
+void VST3GoEditorViewPost(void* thisInterface, const char* json) {
     VST3GoEditorView* view = (VST3GoEditorView*)thisInterface;
-    if (!view || !view->webView) {
+    if (!view || !view->webView || !json) {
         return;
     }
-    char script[256];
-    snprintf(script, sizeof(script), "if (window.__vst3goUpdateParameter) { window.__vst3goUpdateParameter(%u, %.17g, %.17g); }", (unsigned int)id, normalized, plain);
+    char* script = g_strdup_printf("if (window.__vst3goReceive) { window.__vst3goReceive(%s); }", json);
     runScript(view, script);
+    g_free(script);
 }
 
 // IPlugView

@@ -10,7 +10,7 @@ It contains:
 - Go bindings for VST3 types and process structures
 - The plugin wrapper/runtime used to expose Go processors as VST3 plugins
 - Generic plugin authoring primitives such as buses, parameters, process context, state, and MIDI/event transport
-- Host features for effects, instruments and MIDI plugins: sample-accurate automation, 32/64-bit processing, sidechains and surround, MIDI CC/learn/MIDI 2.0 mapping, note expression and MPE, keyswitches, factory programs, units, SysEx, distributed processor/controller, and several plugins per binary
+- Host features for effects, instruments and MIDI plugins: sample-accurate automation, 32/64-bit processing, sidechains and surround, MIDI CC/learn/MIDI 2.0 mapping, note expression and MPE, keyswitches, factory programs, `.vstpreset` presets, units, SysEx, parameter smoothing, edit gestures, distributed processor/controller, and several plugins per binary
 
 The higher-level audio and synth layer now lives in the companion `synthkit` repository.
 
@@ -35,6 +35,7 @@ For publishing notes, see [`docs/release-notes-template.md`](docs/release-notes-
 - `pkg/vst3/`
 - `pkg/plugin/`
 - `pkg/midi/`
+- `pkg/preset/`
 - `pkg/framework/bus`
 - `pkg/framework/param`
 - `pkg/framework/plugin`

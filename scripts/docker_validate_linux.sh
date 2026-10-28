@@ -49,11 +49,16 @@ docker run --rm ${platform_args[@]+"${platform_args[@]}"} \
       cmake --build /cache/sdk-build --config Release --target validator -j"$(nproc)" >/dev/null
       cp /cache/sdk-build/bin/Release/validator /cache/validator
     fi
+    if ! command -v g++ >/dev/null; then
+      # presetcheck links the SDK PresetFile (C++).
+      apt-get update -qq
+      apt-get install -y -qq --no-install-recommends g++ >/dev/null
+    fi
     mkdir -p /work
     cp -a /src/. /work/
     cd /work
     go vet ./...
     go test -count=1 ./...
     rm -rf /cache/out
-    scripts/validate_vst3.sh /cache/validator /cache/out
+    VST3_SDK=/sdk VST3_SDK_BUILD=/cache/sdk-build scripts/validate_vst3.sh /cache/validator /cache/out
   '

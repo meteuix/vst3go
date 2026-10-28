@@ -388,6 +388,14 @@ type Host interface {
 	// so the host records it as one automation pass and one undo step.
 	BeginEdit(id uint32) error
 	EndEdit(id uint32) error
+	// SavePreset writes the plugin state to a .vstpreset file, which hosts
+	// list in their preset browsers when it is in the user preset folder
+	// (preset.UserDir).
+	SavePreset(path string) error
+	// LoadPreset restores a .vstpreset file saved for this plugin and
+	// updates the host, the editor and the other side of a distributed
+	// plugin.
+	LoadPreset(path string) error
 	// SendMessage delivers data to the MessageReceiver of the other side of
 	// a DistributedPlugin. Single-component plugins have no other side and
 	// get an error.

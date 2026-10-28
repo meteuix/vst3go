@@ -132,6 +132,24 @@ Chord and scale events are input-only.
 - `KeyswitchProcessor` publishes articulation keyswitches
   (`IKeyswitchController`) for host expression maps.
 
+## Presets
+
+`pkg/preset` reads and writes VST3 preset files (`.vstpreset`), the format
+hosts use in their preset browsers:
+
+- `Host.SavePreset(path)` writes the current state (parameters and
+  `StatefulProcessor` data) with plugin name and category meta info;
+  `Host.LoadPreset(path)` restores a preset of this plugin, updates the host
+  and the editor, and in distributed plugins the other side.
+- `preset.UserDir(vendor, name)` is the per-user folder where hosts look for
+  a plugin's presets; `preset.List`, `preset.Save` and `preset.PathFor` manage
+  it. The built-in editor has a preset bar on top of these.
+- `preset.Decode`/`File.Encode` and `preset.MetaInfo` handle the file format
+  directly (factory content tools, converters).
+
+Presets written by `pkg/preset` load with the VST3 SDK's `PresetFile` and vice
+versa (`just validate-vst3`).
+
 ## Programs and units
 
 - `ProgramListProcessor.ProgramList()` publishes factory presets in the host

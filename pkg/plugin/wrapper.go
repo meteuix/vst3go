@@ -9,6 +9,7 @@ import "C"
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"math"
 	"strings"
 	"sync"
@@ -31,9 +32,10 @@ type componentWrapper struct {
 	kind      int32 // kindSingle, kindProcessor or kindController
 	scratch   processScratch
 
-	handlerMu        sync.RWMutex   // protects componentHandler and editorView
+	handlerMu        sync.RWMutex   // protects componentHandler, editorView and presetName
 	componentHandler unsafe.Pointer // IComponentHandler (one reference held)
 	editorView       unsafe.Pointer
+	presetName       string // preset last saved or loaded from the editor
 }
 
 // components maps C handles to wrappers. Writes happen only on instance
@@ -218,13 +220,33 @@ func (w *componentWrapper) clearEditorView(view unsafe.Pointer) {
 	w.handlerMu.Unlock()
 }
 
+// editorParamMessage tells the page that a parameter changed.
+type editorParamMessage struct {
+	Type       string  `json:"type"` // "param-change"
+	ID         uint32  `json:"id"`
+	Normalized float64 `json:"normalized"`
+	Plain      float64 `json:"plain"`
+}
+
 func (w *componentWrapper) notifyEditorParameterChanged(id uint32, normalized, plain float64) {
+	w.postToEditor(editorParamMessage{Type: "param-change", ID: id, Normalized: normalized, Plain: plain})
+}
+
+// postToEditor sends a JSON message to the open editor page, if any.
+func (w *componentWrapper) postToEditor(message any) {
 	w.handlerMu.RLock()
 	view := w.editorView
 	w.handlerMu.RUnlock()
-	if view != nil {
-		C.VST3GoEditorViewUpdateParameter(view, C.Steinberg_Vst_ParamID(id), C.Steinberg_Vst_ParamValue(normalized), C.Steinberg_Vst_ParamValue(plain))
+	if view == nil {
+		return
 	}
+	data, err := json.Marshal(message)
+	if err != nil {
+		return
+	}
+	cjson := C.CString(string(data))
+	defer C.free(unsafe.Pointer(cjson))
+	C.VST3GoEditorViewPost(view, cjson)
 }
 
 // Internal messages between the two sides of a distributed plugin.
@@ -313,6 +335,9 @@ func (w *componentWrapper) receiveMessage(id string, data []byte) {
 		if w.kind == kindController && len(data) >= 4 {
 			_ = hostHandle{w}.RestartComponent(RestartFlags(int32(binary.LittleEndian.Uint32(data))))
 		}
+		return
+	case messageState:
+		_ = w.applyState(data, false)
 		return
 	case messageEdit:
 		if w.kind == kindController && len(data) >= 13 {

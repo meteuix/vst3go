@@ -10,7 +10,9 @@ extern "C" {
 typedef struct Steinberg_ViewRect Steinberg_ViewRect;
 
 void* VST3GoCreateEditorView(uintptr_t component);
-void VST3GoEditorViewUpdateParameter(void* view, Steinberg_Vst_ParamID id, Steinberg_Vst_ParamValue normalized, Steinberg_Vst_ParamValue plain);
+// VST3GoEditorViewPost delivers a UTF-8 JSON message to the page's
+// window.__vst3goReceive.
+void VST3GoEditorViewPost(void* view, const char* json);
 extern char* GoEditControllerGetEditorHTML(uintptr_t component);
 extern void GoEditControllerClearEditorView(uintptr_t component, void* view);
 // GoEditorMessage handles a JSON message posted by the editor page

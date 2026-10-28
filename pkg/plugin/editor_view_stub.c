@@ -8,9 +8,7 @@ void* VST3GoCreateEditorView(uintptr_t component) {
     return NULL;
 }
 
-void VST3GoEditorViewUpdateParameter(void* view, Steinberg_Vst_ParamID id, Steinberg_Vst_ParamValue normalized, Steinberg_Vst_ParamValue plain) {
+void VST3GoEditorViewPost(void* view, const char* json) {
     (void)view;
-    (void)id;
-    (void)normalized;
-    (void)plain;
+    (void)json;
 }

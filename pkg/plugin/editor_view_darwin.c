@@ -151,14 +151,14 @@ void* VST3GoCreateEditorView(uintptr_t component) {
     }
 }
 
-void VST3GoEditorViewUpdateParameter(void* thisInterface, Steinberg_Vst_ParamID id, Steinberg_Vst_ParamValue normalized, Steinberg_Vst_ParamValue plain) {
+void VST3GoEditorViewPost(void* thisInterface, const char* json) {
     @autoreleasepool {
         VST3GoEditorView* view = editorViewFromInterface(thisInterface);
-        if (!view || !view->webView) {
+        if (!view || !view->webView || !json) {
             return;
         }
 
-        NSString* script = [NSString stringWithFormat:@"if (window.__vst3goUpdateParameter) { window.__vst3goUpdateParameter(%u, %.17g, %.17g); }", (unsigned int)id, normalized, plain];
+        NSString* script = [NSString stringWithFormat:@"if (window.__vst3goReceive) { window.__vst3goReceive(%s); }", json];
         [view->webView evaluateJavaScript:script completionHandler:nil];
     }
 }

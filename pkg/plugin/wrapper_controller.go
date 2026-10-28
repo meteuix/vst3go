@@ -167,10 +167,13 @@ type editorMessage struct {
 	Type  string  `json:"type"`
 	ID    uint32  `json:"id"`
 	Value float64 `json:"value"`
+	Name  string  `json:"name"`
 }
 
 // GoEditorMessage is called by the platform editor views with each JSON
-// message the page posts: "begin-edit", "param-change" and "end-edit".
+// message the page posts: parameter gestures ("begin-edit", "param-change",
+// "end-edit") and preset browsing ("preset-list", "preset-save",
+// "preset-load").
 //
 //export GoEditorMessage
 func GoEditorMessage(componentID C.uintptr_t, data *C.char, size C.int) {
@@ -194,6 +197,8 @@ func (w *componentWrapper) handleEditorMessage(data []byte) {
 		_ = w.component.EditParameter(msg.ID, msg.Value)
 	case "end-edit":
 		_ = w.component.EndEdit(msg.ID)
+	case "preset-list", "preset-save", "preset-load":
+		w.handlePresetMessage(msg.Type, msg.Name)
 	}
 }
 

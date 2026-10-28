@@ -17,7 +17,7 @@ For the real-host validation checklist and required evidence, see `docs/windows-
 - `pkg/plugin/vst3_bridge.c` exports `GetPluginFactory`, `InitDll` and `ExitDll` with a Windows-friendly symbol annotation.
 - `pkg/plugin/editor_view_windows.c` hosts the editor through WebView2.
 - `pkg/plugin/windows_bundle.go` defines the canonical bundle path layout, including the generated header sidecar.
-- `pkg/plugin/editor_assets/` provides the HTML/CSS/JS snapshot shell.
+- `pkg/plugin/editor_assets/` provides the default HTML/CSS/JS editor page.
 - `cmd/vst3go-dll/main_windows.go` is the `c-shared` entrypoint scaffold for building a Windows DLL on `amd64`.
 
 ## Expected Bundle Shape
