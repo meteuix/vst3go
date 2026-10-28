@@ -27,6 +27,8 @@ go.work.sum
 
 # VST3Go specific build artifacts
 build/
+dist/
+*.clap
 *.vst3/
 *.vst3
 
