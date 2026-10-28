@@ -158,7 +158,11 @@ work, without taking on DSP (that stays in `synthkit`).
         real windows on macOS and Linux (`editorcheck_darwin.m`, `editorcheck.c`).
   - [x] CLAP preset discovery for the user `.vstpreset` folder, with
         `preset-load` (clap-validator `preset-discovery-*`, clapcheck).
-- [ ] JavaScript SDK for web editors (typed parameter bindings, gestures).
+- [x] JavaScript SDK for web editors (`window.vst3go`): custom editor pages
+      (`EditorProcessor`) with size limits and `vst3go.resize`, edit
+      gestures, presets, custom messages with the processor, and typed
+      TypeScript parameter bindings (`plugin.EditorBindings`), checked under
+      node/tsc and in real web views on macOS and Linux.
 - [ ] Standalone application wrapper (audio/MIDI device I/O).
 - [ ] AUv2 wrapper, validated with `auval`.
 

@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>VST3Go Synth</title>
+  <style>
+    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #12141c; color: #e6e8ef; }
+    main { padding: 20px 24px; display: grid; gap: 18px; }
+    header { display: flex; justify-content: space-between; align-items: baseline; }
+    h1 { margin: 0; font-size: 20px; }
+    .status { color: #8b93a7; font-size: 12px; }
+    .row { display: flex; gap: 28px; align-items: center; flex-wrap: wrap; }
+    .control { display: grid; gap: 6px; justify-items: center; min-width: 120px; }
+    .control label { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #8b93a7; }
+    .value { font-variant-numeric: tabular-nums; font-size: 13px; }
+    .knob { width: 72px; height: 72px; border-radius: 50%; background: #232838; border: 2px solid #3a4157; position: relative; touch-action: none; cursor: ns-resize; }
+    .knob:focus { outline: 2px solid #6c8cff; }
+    .knob::after { content: ""; position: absolute; left: 50%; top: 6px; width: 3px; height: 22px; margin-left: -1.5px; background: #6c8cff; border-radius: 2px; transform-origin: 50% 30px; transform: rotate(var(--angle, 0deg)); }
+    .shape button { background: #232838; color: inherit; border: 1px solid #3a4157; padding: 6px 14px; border-radius: 6px; }
+    .shape button[aria-pressed="true"] { background: #6c8cff; border-color: #6c8cff; color: #0b0d14; }
+    select { background: #232838; color: inherit; border: 1px solid #3a4157; border-radius: 6px; padding: 4px 8px; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1 id="title"></h1>
+      <span class="status" id="status"></span>
+    </header>
+    <div class="row">
+      <div class="control">
+        <label for="release">Release</label>
+        <input id="release" type="range" min="0" max="1" step="0.001" />
+        <span class="value" id="release-value"></span>
+      </div>
+      <div class="control">
+        <label>Volume</label>
+        <div class="knob" id="volume" tabindex="0" role="slider" aria-label="Volume"></div>
+        <span class="value" id="volume-value"></span>
+      </div>
+      <div class="control shape">
+        <label>Shape</label>
+        <div><button id="saw" type="button">Saw</button> <button id="square" type="button">Square</button></div>
+      </div>
+      <div class="control">
+        <label for="program">Program</label>
+        <select id="program"></select>
+      </div>
+    </div>
+  </main>
+  <script>
+    // Parameter IDs: see ui/params.ts (plugin.EditorBindings).
+    const volume = vst3go.param(0);
+    const release = vst3go.param(1);
+    const shape = vst3go.param(2);
+    const program = vst3go.param("Program");
+    document.getElementById("title").textContent = vst3go.plugin.name;
+
+    // Release: a plain range input.
+    const releaseInput = document.getElementById("release");
+    const releaseValue = document.getElementById("release-value");
+    releaseInput.addEventListener("input", () => release.setNormalized(Number(releaseInput.value)));
+    release.bindGesture(releaseInput);
+    const showRelease = () => {
+      releaseInput.value = String(release.normalized);
+      releaseValue.textContent = release.text;
+    };
+
+    // Volume: a knob dragged vertically, one gesture per drag; arrows,
+    // Home and End step it from the keyboard.
+    const knob = document.getElementById("volume");
+    const volumeValue = document.getElementById("volume-value");
+    volume.bindGesture(knob);
+    let drag = null;
+    knob.addEventListener("pointerdown", (event) => { drag = { y: event.clientY, value: volume.normalized }; });
+    knob.addEventListener("pointermove", (event) => {
+      if (drag) volume.setNormalized(drag.value + (drag.y - event.clientY) / 200);
+    });
+    knob.addEventListener("pointerup", () => { drag = null; });
+    knob.addEventListener("keydown", (event) => {
+      const steps = { ArrowUp: 0.05, ArrowRight: 0.05, ArrowDown: -0.05, ArrowLeft: -0.05 };
+      if (event.key === "Home") volume.setNormalized(0);
+      else if (event.key === "End") volume.setNormalized(1);
+      else if (event.key in steps) volume.setNormalized(volume.normalized + steps[event.key]);
+      else return;
+      event.preventDefault();
+    });
+    knob.addEventListener("dblclick", () => volume.reset());
+    const showVolume = () => {
+      knob.style.setProperty("--angle", `${-135 + 270 * volume.normalized}deg`);
+      knob.setAttribute("aria-valuenow", String(volume.plain));
+      volumeValue.textContent = volume.text + (volume.text.endsWith(volume.unit) ? "" : ` ${volume.unit}`);
+    };
+
+    // Shape: two buttons on a choice parameter.
+    const saw = document.getElementById("saw");
+    const square = document.getElementById("square");
+    saw.addEventListener("click", () => shape.setPlain(0));
+    square.addEventListener("click", () => shape.setPlain(1));
+    const showShape = () => {
+      saw.setAttribute("aria-pressed", String(shape.plain === 0));
+      square.setAttribute("aria-pressed", String(shape.plain === 1));
+    };
+
+    // Program: the factory presets.
+    const programSelect = document.getElementById("program");
+    for (let i = 0; i <= program.stepCount; i++) {
+      const option = document.createElement("option");
+      option.value = String(i);
+      option.textContent = `Program ${i + 1}`;
+      programSelect.appendChild(option);
+    }
+    programSelect.addEventListener("change", () => program.setPlain(Number(programSelect.value)));
+    const showProgram = () => {
+      programSelect.value = String(program.plain);
+      programSelect.options[program.plain].textContent = program.text;
+    };
+
+    const views = new Map([[volume, showVolume], [release, showRelease], [shape, showShape], [program, showProgram]]);
+    views.forEach((show) => show());
+    vst3go.onParamChange((param) => { const show = views.get(param); if (show) show(); });
+
+    // Status from the processor (EditorMessage / Host.PostEditorMessage).
+    const status = document.getElementById("status");
+    vst3go.on("status", (s) => {
+      status.textContent = `${s.voices} voice${s.voices === 1 ? "" : "s"}` + (s.learnedCC >= 0 ? ` · CC ${s.learnedCC} → Volume` : "");
+    });
+    vst3go.send("status");
+    setInterval(() => vst3go.send("status"), 250);
+
+    // Fit the window to the layout.
+    vst3go.resize(720, 420);
+  </script>
+</body>
+</html>

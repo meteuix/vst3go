@@ -36,6 +36,7 @@ type componentImpl struct {
 	mapper     MIDIMappingProcessor
 	programs   *programs // nil without ProgramListProcessor
 	double     bool      // processor supports 64-bit samples
+	editor     Editor    // editorSpec of the processor
 
 	mu           sync.Mutex
 	processCtx   *process.Context
@@ -58,7 +59,7 @@ type frontend interface {
 	notifyParamBeginEdit(id uint32)
 	notifyParamPerformEdit(id uint32, normalized float64)
 	notifyParamEndEdit(id uint32)
-	notifyEditorParameterChanged(id uint32, normalized, plain float64)
+	notifyEditorParameterChanged(p *param.Parameter)
 	refreshEditorParameters()
 	restart(flags RestartFlags)
 }
@@ -80,6 +81,7 @@ func newComponent(processor Processor, info plugin.Info) (*componentImpl, error)
 		buses:        buses,
 		sampleRate:   defaultSampleRate,
 		maxBlockSize: defaultMaxBlockSize,
+		editor:       editorSpec(processor),
 	}
 	if mapper, ok := processor.(MIDIMappingProcessor); ok {
 		c.mapper = mapper
@@ -551,7 +553,7 @@ func (c *componentImpl) performEdit(id uint32, value float64) error {
 	p.SetNormalized(value)
 	if c.wrapper != nil {
 		c.wrapper.notifyParamPerformEdit(id, value)
-		c.wrapper.notifyEditorParameterChanged(id, p.GetNormalized(), p.GetPlain())
+		c.wrapper.notifyEditorParameterChanged(p)
 	}
 	if id == ProgramParamID {
 		c.selectProgram(c.programs.index(value))

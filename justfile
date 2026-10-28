@@ -47,13 +47,17 @@ validate-clap validator out='dist/validation-clap':
 docker-validate-linux sdk platform='':
   bash scripts/docker_validate_linux.sh "{{sdk}}" {{platform}}
 
-# Open the gain editor as a VST3 and a CLAP in an NSWindow (macOS, needs a window server).
+# Open the gain and synth editors as VST3 and CLAP in an NSWindow (macOS, needs a window server).
 check-macos-editor out='dist/editorcheck':
   bash scripts/check_macos_editor.sh {{out}}
 
-# Build the gain plugin with the WebKitGTK editor and open it under Xvfb in Docker.
+# Build the gain and synth plugins with the WebKitGTK editor and open them under Xvfb in Docker.
 docker-check-linux-editor platform='':
   bash scripts/docker_check_linux_editor.sh {{platform}}
+
+# Check the web editor SDK under node and tsc (typed bindings of the synth).
+check-editor-sdk:
+  bash scripts/check_editor_sdk.sh
 
 # Cross-compile every validation plugin for Windows with mingw-w64 in Docker.
 docker-build-windows out='dist/windows-cross':

@@ -146,8 +146,7 @@ void* VST3GoCreateEditorView(uintptr_t component) {
         view->component = component;
         view->size.left = 0;
         view->size.top = 0;
-        view->size.right = 900;
-        view->size.bottom = 640;
+        GoEditorSize(component, &view->size.right, &view->size.bottom);
         view->scaleFactor = 1.0f;
         return view;
     }
@@ -160,7 +159,12 @@ void VST3GoEditorViewPost(void* thisInterface, const char* json) {
             return;
         }
 
-        NSString* script = [NSString stringWithFormat:@"if (window.__vst3goReceive) { window.__vst3goReceive(%s); }", json];
+        // %s would read the JSON in the system encoding, not UTF-8.
+        NSString* message = [NSString stringWithUTF8String:json];
+        if (!message) {
+            return;
+        }
+        NSString* script = [NSString stringWithFormat:@"if (window.__vst3goReceive) { window.__vst3goReceive(%@); }", message];
         [view->webView evaluateJavaScript:script completionHandler:nil];
     }
 }
@@ -399,13 +403,28 @@ static Steinberg_tresult editorView_setFrame(void* thisInterface, struct Steinbe
 }
 
 static Steinberg_tresult editorView_canResize(void* thisInterface) {
-    (void)thisInterface;
-    return Steinberg_kResultOk;
+    VST3GoEditorView* view = (VST3GoEditorView*)thisInterface;
+    return view && GoEditorCanResize(view->component) ? Steinberg_kResultOk : Steinberg_kResultFalse;
 }
 
 static Steinberg_tresult editorView_checkSizeConstraint(void* thisInterface, Steinberg_ViewRect* rect) {
-    (void)thisInterface;
-    (void)rect;
+    VST3GoEditorView* view = (VST3GoEditorView*)thisInterface;
+    if (!view || !rect) {
+        return Steinberg_kInvalidArgument;
+    }
+    Steinberg_int32 width = rect->right - rect->left, height = rect->bottom - rect->top;
+    GoEditorConstrainSize(view->component, &width, &height);
+    rect->right = rect->left + width;
+    rect->bottom = rect->top + height;
     return Steinberg_kResultOk;
+}
+
+void VST3GoEditorViewRequestResize(void* thisInterface, int32_t width, int32_t height) {
+    VST3GoEditorView* view = (VST3GoEditorView*)thisInterface;
+    if (!view || !view->frame) {
+        return;
+    }
+    Steinberg_ViewRect rect = { 0, 0, width, height };
+    view->frame->lpVtbl->resizeView(view->frame, (struct Steinberg_IPlugView*)&view->view, &rect);
 }
 

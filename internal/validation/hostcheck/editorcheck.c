@@ -5,15 +5,18 @@
 // changes a parameter through the JS -> Go bridge (XTest), that it survives
 // host parameter updates and resizing, and that it detaches cleanly. With
 // --clap it does the same through the CLAP gui and timer-support extensions
-// of the plugin's .clap binary. Run it under an X server (e.g. xvfb-run).
+// of the plugin's .clap binary. With --custom it expects the synth's custom
+// editor page, which asks for 720x420 through vst3go.resize at startup.
+// Run it under an X server (e.g. xvfb-run).
 //
-// usage: editorcheck [--clap] <plugin-binary>
+// usage: editorcheck [--clap] [--custom] <plugin-binary>
 #include "vst3/vst3_c_api.h"
 #include "clap/clap.h"
 #include <X11/Xlib.h>
 #include <X11/extensions/XTest.h>
 #include <X11/keysym.h>
 #include <dlfcn.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -48,7 +51,24 @@ static Steinberg_tresult SMTG_STDMETHODCALLTYPE f_qi(void* t, const Steinberg_TU
     if (uid_eq(iid, Steinberg_Linux_IRunLoop_iid)) { *o = &runLoop; return Steinberg_kResultOk; }
     *o = NULL; return Steinberg_kNoInterface;
 }
-static Steinberg_tresult SMTG_STDMETHODCALLTYPE f_resize(void* t, struct Steinberg_IPlugView* v, struct Steinberg_ViewRect* r) { (void)t; (void)v; (void)r; return Steinberg_kResultOk; }
+// resizeView accepts the size and resizes the view, like a host.
+static int resizeRequests, resizeWidth, resizeHeight;
+static bool customEditor;
+static Steinberg_tresult SMTG_STDMETHODCALLTYPE f_resize(void* t, struct Steinberg_IPlugView* v, struct Steinberg_ViewRect* r) {
+    (void)t;
+    resizeRequests++;
+    resizeWidth = r->right - r->left;
+    resizeHeight = r->bottom - r->top;
+    return v->lpVtbl->onSize(v, r);
+}
+
+static void check_startup_resize(void) {
+    if (customEditor) {
+        CHECK(resizeRequests >= 1 && resizeWidth == 720 && resizeHeight == 420, "startup vst3go.resize request %dx%d (%d requests)", resizeWidth, resizeHeight, resizeRequests);
+    } else {
+        CHECK(resizeRequests == 0, "the built-in editor does not resize itself");
+    }
+}
 static struct Steinberg_IPlugFrameVtbl frameVtbl = { f_qi, ref, ref, f_resize };
 
 static void run_timers(Display* display, int ms) {
@@ -108,14 +128,15 @@ static int check_vst3(Display* display, Window parent, const char* path) {
     CHECK(runLoop.registrations == 1 && runLoop.timer, "editor registers an IRunLoop timer");
     run_timers(display, 1500);
     CHECK(child_count(display, parent) >= 1, "editor window embedded into the host window");
+    check_startup_resize();
 
     // Keyboard input in the page: tabbing to the controls and pressing End
     // moves a slider, whose change must arrive at the controller through the
     // vst3go script message handler.
     Steinberg_int32 count = ctrl->lpVtbl->getParameterCount(ctrl);
-    CHECK(count > 0 && count <= 64, "parameter count %d", (int)count);
-    double before[64];
-    Steinberg_Vst_ParamID ids[64];
+    CHECK(count > 0 && count <= 1024, "parameter count %d", (int)count);
+    double before[1024];
+    Steinberg_Vst_ParamID ids[1024];
     for (Steinberg_int32 i = 0; i < count; i++) {
         struct Steinberg_Vst_ParameterInfo info;
         ctrl->lpVtbl->getParameterInfo(ctrl, i, &info);
@@ -187,7 +208,14 @@ static int active_timers(void) {
 }
 static const clap_host_timer_support_t hostTimer = { h_register_timer, h_unregister_timer };
 static void h_resize_hints_changed(const clap_host_t* h) { (void)h; }
-static bool h_request_resize(const clap_host_t* h, uint32_t w, uint32_t hh) { (void)h; (void)w; (void)hh; clapHost.resizeRequests++; return true; }
+static bool h_request_resize(const clap_host_t* h, uint32_t w, uint32_t hh) {
+    (void)h;
+    clapHost.resizeRequests++;
+    resizeRequests++;
+    resizeWidth = (int)w;
+    resizeHeight = (int)hh;
+    return true;
+}
 static bool h_request_show(const clap_host_t* h) { (void)h; return true; }
 static bool h_request_hide(const clap_host_t* h) { (void)h; return true; }
 static void h_closed(const clap_host_t* h, bool destroyed) { (void)h; (void)destroyed; }
@@ -274,13 +302,14 @@ static int check_clap(Display* display, Window parent, const char* path) {
     CHECK(active_timers() == 1, "editor registers a host timer (%d)", active_timers());
     clap_run(display, plugin, timer, 1500);
     CHECK(child_count(display, parent) >= 1, "editor window embedded into the host window");
+    check_startup_resize();
 
     // Keyboard input in the page reaches the parameters, and the edit goes
     // out to the host with its gestures on the next flush.
     uint32_t count = params->count(plugin);
-    CHECK(count > 0 && count <= 64, "parameter count %u", count);
-    double before[64];
-    clap_id ids[64];
+    CHECK(count > 0 && count <= 1024, "parameter count %u", count);
+    double before[1024];
+    clap_id ids[1024];
     for (uint32_t i = 0; i < count; i++) {
         clap_param_info_t info;
         CHECK(params->get_info(plugin, i, &info), "param info %u", i);
@@ -334,12 +363,18 @@ static int check_clap(Display* display, Window parent, const char* path) {
 }
 
 int main(int argc, char** argv) {
-    bool clap = argc == 3 && !strcmp(argv[1], "--clap");
-    CHECK(argc == 2 || clap, "usage: editorcheck [--clap] <plugin-binary>");
+    bool clap = false;
+    int arg = 1;
+    for (; arg < argc - 1; arg++) {
+        if (!strcmp(argv[arg], "--clap")) clap = true;
+        else if (!strcmp(argv[arg], "--custom")) customEditor = true;
+        else break;
+    }
+    CHECK(arg == argc - 1, "usage: editorcheck [--clap] [--custom] <plugin-binary>");
     Display* display = XOpenDisplay(NULL);
     CHECK(display, "no X display (run under xvfb-run)");
     Window parent = XCreateSimpleWindow(display, DefaultRootWindow(display), 0, 0, 900, 640, 0, 0, 0);
     XMapWindow(display, parent);
     XSync(display, False);
-    return clap ? check_clap(display, parent, argv[2]) : check_vst3(display, parent, argv[1]);
+    return clap ? check_clap(display, parent, argv[arg]) : check_vst3(display, parent, argv[arg]);
 }

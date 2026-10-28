@@ -276,8 +276,17 @@ have no editor view.
 
 The same views serve VST3 (`IPlugView`) and CLAP (the `gui` extension, see
 [CLAP](#clap)). `scripts/check_macos_editor.sh` and
-`scripts/docker_check_linux_editor.sh` open the gain editor in a real
-window in both formats and check the page <-> Go bridge both ways.
+`scripts/docker_check_linux_editor.sh` open the gain and synth editors in a
+real window in both formats and check the page <-> Go bridge both ways.
+
+Processors replace the built-in page with their own (`EditorProcessor`,
+`plugin.Editor{HTML, Width, Height, Min/Max sizes, FixedSize}`). Every page
+gets the `window.vst3go` SDK: live parameters with edit gestures, presets,
+`resize`, and custom messages with the processor (`vst3go.send` ->
+`EditorMessageProcessor`, `Host.PostEditorMessage` -> `vst3go.on`).
+`plugin.EditorBindings` / `WriteEditorBindings` generate typed TypeScript
+parameter bindings, and `plugintest.EditorBindings` keeps them current. See
+[`web-editor-bridge.md`](web-editor-bridge.md).
 
 ## Parameters and state
 

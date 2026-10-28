@@ -48,9 +48,10 @@ type EditorControl struct {
 	Kind         string  `json:"kind"`
 	Normalized   float64 `json:"normalized"`
 	Plain        float64 `json:"plain"`
+	Text         string  `json:"text"` // the value as the parameter formats it
 	Min          float64 `json:"min"`
 	Max          float64 `json:"max"`
-	DefaultValue float64 `json:"defaultValue"`
+	DefaultValue float64 `json:"defaultValue"` // normalized
 	StepCount    int32   `json:"stepCount"`
 	Flags        uint32  `json:"flags"`
 	ReadOnly     bool    `json:"readOnly"`
@@ -94,6 +95,7 @@ func BuildEditorModel(info frameworkplugin.Info, registry *param.Registry) (*Edi
 			Kind:         inferControlKind(p),
 			Normalized:   normalized,
 			Plain:        p.Denormalize(normalized),
+			Text:         p.FormatValue(normalized),
 			Min:          p.Min,
 			Max:          p.Max,
 			DefaultValue: p.DefaultValue,

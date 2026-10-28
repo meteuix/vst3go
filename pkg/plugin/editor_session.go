@@ -41,16 +41,8 @@ func (s *editorSession) clearEditorView(view unsafe.Pointer) {
 	s.mu.Unlock()
 }
 
-// editorParamMessage tells the page that a parameter changed.
-type editorParamMessage struct {
-	Type       string  `json:"type"` // "param-change"
-	ID         uint32  `json:"id"`
-	Normalized float64 `json:"normalized"`
-	Plain      float64 `json:"plain"`
-}
-
-func (s *editorSession) notifyEditorParameterChanged(id uint32, normalized, plain float64) {
-	s.postToEditor(editorParamMessage{Type: "param-change", ID: id, Normalized: normalized, Plain: plain})
+func (s *editorSession) notifyEditorParameterChanged(p *param.Parameter) {
+	s.postToEditor(paramMessage(p))
 }
 
 // refreshEditor pushes every parameter value to an open editor, e.g. after
@@ -60,38 +52,35 @@ func (s *editorSession) refreshEditor(params *param.Registry) {
 		return
 	}
 	for _, p := range params.All() {
-		s.notifyEditorParameterChanged(p.ID, p.GetNormalized(), p.GetPlain())
+		s.notifyEditorParameterChanged(p)
 	}
 }
 
 // postToEditor sends a JSON message to the open editor page, if any.
 func (s *editorSession) postToEditor(message any) {
-	s.mu.RLock()
-	view := s.view
-	s.mu.RUnlock()
-	if view == nil {
+	if !s.open.Load() {
 		return
 	}
-	data, err := json.Marshal(message)
-	if err != nil {
-		return
+	if data, err := json.Marshal(message); err == nil {
+		s.postRaw(data)
 	}
-	cjson := C.CString(string(data))
-	defer C.free(unsafe.Pointer(cjson))
-	C.VST3GoEditorViewPost(view, cjson)
 }
 
 // editorMessage is a message posted by the editor page.
 type editorMessage struct {
-	Type  string  `json:"type"`
-	ID    uint32  `json:"id"`
-	Value float64 `json:"value"`
-	Name  string  `json:"name"`
+	Type   string          `json:"type"`
+	ID     uint32          `json:"id"`
+	Value  float64         `json:"value"`
+	Name   string          `json:"name"`
+	Width  int             `json:"width"`
+	Height int             `json:"height"`
+	Data   json.RawMessage `json:"data"`
 }
 
 // handleEditorMessage serves a JSON message the page posted: parameter
-// gestures ("begin-edit", "param-change", "end-edit") and preset browsing
-// ("preset-list", "preset-save", "preset-load").
+// gestures ("begin-edit", "param-change", "end-edit"), preset browsing
+// ("preset-list", "preset-save", "preset-load"), "resize" and the custom
+// messages of vst3go.send ("message").
 func (s *editorSession) handleEditorMessage(c *componentImpl, host Host, data []byte) {
 	var msg editorMessage
 	if json.Unmarshal(data, &msg) != nil {
@@ -106,6 +95,71 @@ func (s *editorSession) handleEditorMessage(c *componentImpl, host Host, data []
 		_ = c.EndEdit(msg.ID)
 	case "preset-list", "preset-save", "preset-load":
 		s.handlePresetMessage(c, host, msg.Type, msg.Name)
+	case "resize":
+		s.requestResize(c, msg.Width, msg.Height)
+	case "message":
+		if receiver, ok := c.processor.(EditorMessageProcessor); ok && msg.Name != "" {
+			receiver.EditorMessage(msg.Name, msg.Data)
+		}
+	}
+}
+
+// requestResize asks the host to resize the editor (vst3go.resize); the
+// host answers with a size change of the view.
+func (s *editorSession) requestResize(c *componentImpl, width, height int) {
+	if c.editor.FixedSize || width <= 0 || height <= 0 {
+		return
+	}
+	width, height = c.editor.constrain(width, height)
+	s.mu.RLock()
+	view := s.view
+	s.mu.RUnlock()
+	if view != nil {
+		C.VST3GoEditorViewRequestResize(view, C.int32_t(width), C.int32_t(height))
+	}
+}
+
+// postRaw sends an encoded message to the open editor page, if any.
+func (s *editorSession) postRaw(data []byte) {
+	s.mu.RLock()
+	view := s.view
+	s.mu.RUnlock()
+	if view == nil {
+		return
+	}
+	cjson := C.CString(string(data))
+	defer C.free(unsafe.Pointer(cjson))
+	C.VST3GoEditorViewPost(view, cjson)
+}
+
+// GoEditorSize reports the initial editor size to the platform views.
+//
+//export GoEditorSize
+func GoEditorSize(id C.uintptr_t, width, height *C.int32_t) {
+	e := editorSpec(nil)
+	if c, _, _ := editorTarget(id); c != nil {
+		e = c.editor
+	}
+	*width, *height = C.int32_t(e.Width), C.int32_t(e.Height)
+}
+
+// GoEditorCanResize reports whether the host may resize the editor.
+//
+//export GoEditorCanResize
+func GoEditorCanResize(id C.uintptr_t) C.int {
+	if c, _, _ := editorTarget(id); c != nil && c.editor.FixedSize {
+		return 0
+	}
+	return 1
+}
+
+// GoEditorConstrainSize clamps a host-proposed size to the editor's bounds.
+//
+//export GoEditorConstrainSize
+func GoEditorConstrainSize(id C.uintptr_t, width, height *C.int32_t) {
+	if c, _, _ := editorTarget(id); c != nil {
+		w, h := c.editor.constrain(int(*width), int(*height))
+		*width, *height = C.int32_t(w), C.int32_t(h)
 	}
 }
 

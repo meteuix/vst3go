@@ -400,4 +400,11 @@ type Host interface {
 	// a DistributedPlugin. Single-component plugins have no other side and
 	// get an error.
 	SendMessage(id string, data []byte) error
+	// PostEditorMessage sends data, encoded as JSON, to the open editor
+	// page, where vst3go.on(name, ...) receives it; without an open editor
+	// it is dropped. Call it from the main thread (for example from
+	// EditorMessageProcessor.EditorMessage), not from ProcessAudio. On the
+	// processor side of a DistributedPlugin it goes through the connection
+	// to the controller side's editor.
+	PostEditorMessage(name string, data any) error
 }

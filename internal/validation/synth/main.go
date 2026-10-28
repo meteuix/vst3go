@@ -1,12 +1,15 @@
 // Command synth is an example instrument: an 8-voice polyphonic synth with
 // sample-accurate notes, velocity, pitch bend, mod-wheel vibrato, a release
 // envelope, factory presets, per-note volume/tuning expressions, saw/square
-// keyswitches and MIDI learn for the volume.
+// keyswitches, MIDI learn for the volume and a custom editor page
+// (editor.html) on the vst3go SDK, with typed bindings in ui/.
 //
 // Build: scripts/build_vst3.sh internal/validation/synth Synth
 package main
 
 import (
+	_ "embed"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sync/atomic"
@@ -80,6 +83,31 @@ type synthProcessor struct {
 
 	host      atomic.Pointer[hostRef]
 	learnedCC atomic.Int32 // CC mapped to Volume by MIDI learn, -1 for none
+	playing   atomic.Int32 // sounding voices, for the editor
+}
+
+//go:embed editor.html
+var editorHTML string
+
+// Editor is the custom editor page.
+func (p *synthProcessor) Editor() plugin.Editor {
+	return plugin.Editor{HTML: editorHTML, Width: 640, Height: 400, MinWidth: 480, MinHeight: 320, MaxWidth: 1200, MaxHeight: 900}
+}
+
+// synthStatus is the reply to the editor's "status" message.
+type synthStatus struct {
+	Voices    int32 `json:"voices"`
+	LearnedCC int32 `json:"learnedCC"`
+}
+
+// EditorMessage answers the editor page's status polls.
+func (p *synthProcessor) EditorMessage(name string, data json.RawMessage) {
+	if name != "status" {
+		return
+	}
+	if host := p.host.Load(); host != nil {
+		_ = host.PostEditorMessage("status", synthStatus{Voices: p.playing.Load(), LearnedCC: p.learnedCC.Load()})
+	}
 }
 
 type hostRef struct{ plugin.Host }
@@ -184,6 +212,7 @@ func formatSemitones(st float64) string {
 func (p *synthProcessor) SetActive(active bool) error {
 	if !active {
 		p.voices = [numVoices]voice{}
+		p.playing.Store(0)
 	}
 	return p.BaseProcessor.SetActive(active)
 }
@@ -257,9 +286,20 @@ func (p *synthProcessor) ProcessAudio(ctx *process.Context) {
 	for ch := 1; ch < len(ctx.Output); ch++ {
 		copy(ctx.Output[ch], left)
 	}
+	p.playing.Store(p.countVoices())
 	if !p.anyVoice() {
 		ctx.SetOutputSilenceFlags(0, (1<<len(ctx.Output))-1)
 	}
+}
+
+func (p *synthProcessor) countVoices() int32 {
+	var n int32
+	for v := range p.voices {
+		if p.voices[v].active {
+			n++
+		}
+	}
+	return n
 }
 
 func (p *synthProcessor) anyVoice() bool {

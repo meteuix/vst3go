@@ -1,221 +1,127 @@
-const snapshot = JSON.parse(atob("__VST3GO_SNAPSHOT__"));
-const model = snapshot.model;
+// The built-in editor: one control per visible parameter and a preset bar,
+// written against the vst3go SDK like a custom editor would be.
 const sectionsRoot = document.getElementById("sections");
 const presetList = document.getElementById("preset-list");
 const presetName = document.getElementById("preset-name");
 const presetSave = document.getElementById("preset-save");
 const presetStatus = document.getElementById("preset-status");
-document.getElementById("plugin-vendor").textContent = model.plugin.vendor || "VST3Go";
-document.getElementById("plugin-name").textContent = model.plugin.name || "Plugin Editor";
-document.getElementById("plugin-meta").textContent = [model.plugin.category, model.plugin.version].filter(Boolean).join(" · ");
+document.getElementById("plugin-vendor").textContent = vst3go.plugin.vendor || "VST3Go";
+document.getElementById("plugin-name").textContent = vst3go.plugin.name || "Plugin Editor";
+document.getElementById("plugin-meta").textContent = [vst3go.plugin.category, vst3go.plugin.version].filter(Boolean).join(" · ");
 
-// post sends a message to the plugin: WKWebView/WebKitGTK script message
-// handler or WebView2.
-function post(message) {
-  if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.vst3go) {
-    window.webkit.messageHandlers.vst3go.postMessage(message);
-    return;
+function displayText(param) {
+  if (param.readOnly && !param.text) {
+    return "locked";
   }
-
-  if (window.chrome && window.chrome.webview) {
-    window.chrome.webview.postMessage(message);
-  }
-}
-
-function sendChange(id, value) {
-  post({ type: "param-change", id, value });
-}
-
-// bindGesture reports a pointer drag on element as one edit gesture, so the
-// host records it as one automation pass and undo step.
-function bindGesture(element, id) {
-  let active = false;
-  const end = () => {
-    if (active) {
-      active = false;
-      post({ type: "end-edit", id });
-    }
-  };
-  element.addEventListener("pointerdown", () => {
-    if (!active) {
-      active = true;
-      post({ type: "begin-edit", id });
-    }
-  });
-  element.addEventListener("pointerup", end);
-  element.addEventListener("pointercancel", end);
-  element.addEventListener("lostpointercapture", end);
-}
-
-const controlBindings = new Map();
-const controlIndex = new Map();
-
-function updateBoundControl(binding, control, normalized, plain) {
-  if (binding.select) {
-    const selected = binding.steps > 0 ? Math.round(normalized * binding.steps) / binding.steps : normalized;
-    binding.select.value = String(selected);
-  }
-  if (binding.range) {
-    binding.range.value = String(normalized);
-  }
-  if (binding.value) {
-    binding.value.value = String(plain);
-  }
-  if (binding.readout) {
-    binding.readout.textContent = control.readOnly ? "locked" : plain.toFixed(3);
-  }
-}
-
-function updateControl(control, normalized, plain, notifyGo) {
-  control.normalized = normalized;
-  control.plain = plain;
-
-  const binding = controlBindings.get(control.id);
-  if (binding) {
-    updateBoundControl(binding, control, normalized, plain);
-  }
-
-  if (notifyGo) {
-    sendChange(control.id, normalized);
-  }
+  const text = param.text || param.plain.toFixed(3);
+  return param.unit && !text.endsWith(param.unit) ? `${text} ${param.unit}` : text;
 }
 
 // Presets: the plugin's user preset folder, as .vstpreset files that hosts
 // list too.
-function showPresets(message) {
+vst3go.presets.onChange((presets) => {
   presetList.textContent = "";
   const placeholder = document.createElement("option");
   placeholder.value = "";
-  placeholder.textContent = message.presets && message.presets.length ? "Presets…" : "No presets yet";
+  placeholder.textContent = presets.list.length ? "Presets…" : "No presets yet";
   presetList.appendChild(placeholder);
-  (message.presets || []).forEach((name) => {
+  presets.list.forEach((name) => {
     const option = document.createElement("option");
     option.value = name;
     option.textContent = name;
     presetList.appendChild(option);
   });
-  presetList.value = message.current || "";
-  if (message.current) {
-    presetName.value = message.current;
+  presetList.value = presets.current;
+  if (presets.current) {
+    presetName.value = presets.current;
   }
-  presetStatus.textContent = message.error ? message.error : (message.current || "");
-  presetStatus.classList.toggle("pill--error", !!message.error);
-}
+  presetStatus.textContent = presets.error || presets.current;
+  presetStatus.classList.toggle("pill--error", !!presets.error);
+});
 
 presetList.addEventListener("change", () => {
   if (presetList.value) {
-    post({ type: "preset-load", name: presetList.value });
+    vst3go.presets.load(presetList.value);
   }
 });
 presetSave.addEventListener("click", () => {
   const name = presetName.value.trim();
   if (name) {
-    post({ type: "preset-save", name });
+    vst3go.presets.save(name);
   }
 });
 
-// __vst3goReceive handles messages from the plugin.
-window.__vst3goReceive = function(message) {
-  if (!message) {
-    return;
-  }
-  if (message.type === "param-change") {
-    const control = controlIndex.get(message.id);
-    if (control) {
-      updateControl(control, Number(message.normalized), Number(message.plain), false);
-    }
-  } else if (message.type === "presets") {
-    showPresets(message);
-  }
-};
-
-if (window.chrome && window.chrome.webview) {
-  window.chrome.webview.addEventListener("message", (event) => {
-    window.__vst3goReceive(typeof event.data === "string" ? JSON.parse(event.data) : event.data);
-  });
-}
-
-function renderControl(control) {
-  if (control.hidden) {
+function renderControl(param) {
+  if (param.hidden) {
     return null;
   }
 
   const card = document.createElement("article");
   card.className = "card";
-  if (control.readOnly) {
+  if (param.readOnly) {
     card.classList.add("card--readonly");
   }
-  card.dataset.controlState = control.readOnly ? "read-only" : "live";
+  card.dataset.controlState = param.readOnly ? "read-only" : "live";
   const label = document.createElement("p");
   label.className = "card__label";
-  label.textContent = control.shortName || control.name;
+  label.textContent = param.shortName;
   const title = document.createElement("h3");
-  title.textContent = control.name;
+  title.textContent = param.name;
   const unit = document.createElement("p");
-  unit.textContent = control.unit || control.kind;
+  unit.textContent = param.unit || param.kind;
   card.append(label, title, unit);
 
   const field = document.createElement("div");
   field.className = "control";
-  let binding;
+  let show;
 
-  if (control.kind === "choice") {
+  if (param.kind === "choice") {
     const select = document.createElement("select");
-    const steps = Math.max(control.stepCount || 1, 1);
+    const steps = Math.max(param.stepCount, 1);
     for (let index = 0; index <= steps; index += 1) {
       const option = document.createElement("option");
       option.value = String(index / steps);
-      option.textContent = control.stepCount > 0 ? String(index) : (index / steps).toFixed(2);
+      option.textContent = param.stepCount > 0 ? String(index) : (index / steps).toFixed(2);
       select.appendChild(option);
     }
-    select.value = String(Math.round(control.normalized * steps) / steps);
-    select.disabled = control.readOnly;
-    select.addEventListener("change", () => {
-      const normalized = Number(select.value);
-      updateControl(control, normalized, control.min + normalized * (control.max - control.min), true);
-    });
+    select.disabled = param.readOnly;
+    select.addEventListener("change", () => param.setNormalized(Number(select.value)));
     field.appendChild(select);
-    binding = { select, steps };
+    show = () => {
+      select.value = String(Math.round(param.normalized * steps) / steps);
+    };
   } else {
     const range = document.createElement("input");
     range.type = "range";
     range.min = "0";
     range.max = "1";
-    range.step = control.kind === "toggle" ? "1" : "0.001";
-    range.value = String(control.normalized);
-    range.disabled = control.readOnly;
+    range.step = param.kind === "toggle" ? "1" : "0.001";
+    range.disabled = param.readOnly;
     const value = document.createElement("input");
     value.type = "number";
-    value.min = String(control.min);
-    value.max = String(control.max);
-    value.step = control.kind === "toggle" ? "1" : "0.001";
-    value.value = String(control.plain);
-    value.disabled = control.readOnly;
+    value.min = String(param.min);
+    value.max = String(param.max);
+    value.step = param.kind === "toggle" ? "1" : "0.001";
+    value.disabled = param.readOnly;
 
-    const updateFromNormalized = (normalized) => {
-      const clamped = Math.max(0, Math.min(1, normalized));
-      updateControl(control, clamped, control.min + clamped * (control.max - control.min), true);
-    };
-    range.addEventListener("input", () => updateFromNormalized(Number(range.value)));
-    bindGesture(range, control.id);
-    value.addEventListener("change", () => {
-      const span = control.max - control.min;
-      updateFromNormalized(span > 0 ? (Number(value.value) - control.min) / span : 0);
-    });
-
+    range.addEventListener("input", () => param.setNormalized(Number(range.value)));
+    param.bindGesture(range);
+    value.addEventListener("change", () => param.setPlain(Number(value.value)));
     field.append(range, value);
-    binding = { range, value };
+    show = () => {
+      range.value = String(param.normalized);
+      value.value = String(param.plain);
+    };
   }
 
   const meta = document.createElement("div");
   meta.className = "control__meta";
   const kind = document.createElement("span");
-  kind.textContent = control.kind;
+  kind.textContent = param.kind;
   const readout = document.createElement("span");
   readout.className = "control__value";
-  readout.textContent = control.readOnly ? "locked" : Number(control.plain).toFixed(3);
   meta.append(kind, readout);
-  if (control.readOnly) {
+  if (param.readOnly) {
     const badge = document.createElement("span");
     badge.className = "control__badge";
     badge.textContent = "Read-only";
@@ -223,12 +129,16 @@ function renderControl(control) {
   }
   card.append(field, meta);
 
-  binding.readout = readout;
-  controlBindings.set(control.id, binding);
+  const update = () => {
+    show();
+    readout.textContent = displayText(param);
+  };
+  update();
+  param.onChange(update);
   return card;
 }
 
-model.sections.forEach((section) => {
+vst3go.sections.forEach((section) => {
   const wrapper = document.createElement("section");
   wrapper.className = "card";
   const heading = document.createElement("h2");
@@ -236,9 +146,8 @@ model.sections.forEach((section) => {
   wrapper.appendChild(heading);
   const grid = document.createElement("div");
   grid.className = "grid";
-  section.controls.forEach((control) => {
-    controlIndex.set(control.id, control);
-    const card = renderControl(control);
+  section.params.forEach((param) => {
+    const card = renderControl(param);
     if (card) {
       grid.appendChild(card);
     }
@@ -246,5 +155,3 @@ model.sections.forEach((section) => {
   wrapper.appendChild(grid);
   sectionsRoot.appendChild(wrapper);
 });
-
-post({ type: "preset-list" });

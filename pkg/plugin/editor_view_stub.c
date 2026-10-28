@@ -14,3 +14,9 @@ void VST3GoEditorViewPost(void* view, const char* json) {
     (void)view;
     (void)json;
 }
+
+void VST3GoEditorViewRequestResize(void* view, int32_t width, int32_t height) {
+    (void)view;
+    (void)width;
+    (void)height;
+}

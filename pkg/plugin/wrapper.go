@@ -215,6 +215,7 @@ const (
 	messagePrefix  = "vst3go."
 	messageRestart = messagePrefix + "restart" // int32 flags
 	messageEdit    = messagePrefix + "edit"    // uint8 op, uint32 id, float64 normalized
+	messageEditor  = messagePrefix + "editor"  // JSON message for the editor page
 )
 
 // hostHandle implements Host for a processor.
@@ -267,6 +268,18 @@ func (h hostHandle) edit(op uint8, id uint32, normalized float64) error {
 	return h.w.component.edit(op, id, normalized)
 }
 
+func (h hostHandle) PostEditorMessage(name string, data any) error {
+	msg, err := customEditorMessage(name, data)
+	if err != nil {
+		return err
+	}
+	if h.w.kind == kindProcessor {
+		return h.w.sendMessage(messageEditor, msg)
+	}
+	h.w.postRaw(msg)
+	return nil
+}
+
 func (h hostHandle) SendMessage(id string, data []byte) error {
 	if h.w.kind == kindSingle {
 		return errNotSupported
@@ -301,6 +314,11 @@ func (w *componentWrapper) receiveMessage(id string, data []byte) {
 		return
 	case messageState:
 		_ = w.applyState(data, false)
+		return
+	case messageEditor:
+		if w.kind == kindController {
+			w.postRaw(data)
+		}
 		return
 	case messageEdit:
 		if w.kind == kindController && len(data) >= 13 {

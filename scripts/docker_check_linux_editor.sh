@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Builds the gain validation plugin with the Linux WebKitGTK editor (build
-# tag webkitgtk) in a Docker container and opens its editor under Xvfb with
+# Builds the gain (built-in editor) and synth (custom editor page)
+# validation plugins with the Linux WebKitGTK editor (build tag webkitgtk) in
+# a Docker container and opens their editors under Xvfb with
 # internal/validation/hostcheck/editorcheck.c, which also drives the page
 # with XTest keyboard input to check the JS -> Go parameter bridge, once as
 # a VST3 and once through the CLAP gui extension.
@@ -31,6 +32,8 @@ docker run --rm ${platform_args[@]+"${platform_args[@]}"} \
     go vet ./pkg/plugin/
     scripts/build_vst3.sh internal/validation/gain Gain /tmp/out
     scripts/build_clap.sh internal/validation/gain Gain /tmp/out
+    scripts/build_vst3.sh internal/validation/synth Synth /tmp/out
+    scripts/build_clap.sh internal/validation/synth Synth /tmp/out
     cc -O1 -Wall -Iinclude internal/validation/hostcheck/editorcheck.c -o /tmp/editorcheck -ldl -lX11 -lXtst
     binary="$(ls /tmp/out/Gain.vst3/Contents/*-linux/Gain.so)"
     # WebKit needs a writable runtime dir; it runs without a sandbox in containers.
@@ -38,4 +41,7 @@ docker run --rm ${platform_args[@]+"${platform_args[@]}"} \
     mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
     xvfb-run -a /tmp/editorcheck "$binary"
     xvfb-run -a /tmp/editorcheck --clap /tmp/out/Gain.clap
+    synth="$(ls /tmp/out/Synth.vst3/Contents/*-linux/Synth.so)"
+    xvfb-run -a /tmp/editorcheck --custom "$synth"
+    xvfb-run -a /tmp/editorcheck --clap --custom /tmp/out/Synth.clap
   '

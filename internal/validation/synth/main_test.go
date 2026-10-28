@@ -53,3 +53,21 @@ func TestSynthProgramsAndState(t *testing.T) {
 		t.Fatalf("restored volume = %v, want -6", got)
 	}
 }
+
+func TestSynthEditorBindings(t *testing.T) {
+	plugintest.EditorBindings(t, synthPlugin{}, "ui")
+}
+
+func TestSynthEditorStatus(t *testing.T) {
+	p := plugintest.New(t, synthPlugin{})
+	p.Note(0, 60, 1, 0, 0)
+	p.Note(0, 64, 1, 0, 0)
+	p.RenderSilence(512, 0, 2)
+	if err := p.EditorMessage("status", nil); err != nil {
+		t.Fatal(err)
+	}
+	out := p.TakeEditorMessages()
+	if len(out) != 1 || out[0].Name != "status" || string(out[0].Data) != `{"voices":2,"learnedCC":-1}` {
+		t.Fatalf("status %+v", out)
+	}
+}

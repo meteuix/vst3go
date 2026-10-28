@@ -5,24 +5,28 @@ import (
 	"strings"
 )
 
-//go:embed editor_assets/index.html editor_assets/editor.css editor_assets/editor.js
+//go:embed editor_assets/index.html editor_assets/editor.css editor_assets/editor.js editor_assets/vst3go.js editor_assets/vst3go.d.ts
 var editorAssets embed.FS
 
 func loadEditorAsset(path string) string {
 	data, err := editorAssets.ReadFile(path)
 	if err != nil {
-		return ""
+		panic("vst3go: missing editor asset " + path)
 	}
 	return string(data)
 }
 
-func buildEditorHTML(encodedSnapshot string) string {
-	html := loadEditorAsset("editor_assets/index.html")
-	css := loadEditorAsset("editor_assets/editor.css")
-	script := loadEditorAsset("editor_assets/editor.js")
+// editorSDK is the editor SDK script (window.vst3go).
+func editorSDK() string { return loadEditorAsset("editor_assets/vst3go.js") }
 
-	html = strings.ReplaceAll(html, "__VST3GO_CSS__", css)
-	html = strings.ReplaceAll(html, "__VST3GO_JS__", script)
-	html = strings.ReplaceAll(html, "__VST3GO_SNAPSHOT__", encodedSnapshot)
-	return html
+// EditorSDKTypes returns the TypeScript declarations of the editor SDK
+// (window.vst3go) for custom editor pages.
+func EditorSDKTypes() string { return loadEditorAsset("editor_assets/vst3go.d.ts") }
+
+// builtinEditorHTML is the built-in editor: one control per parameter and
+// a preset bar, written against the SDK.
+func builtinEditorHTML() string {
+	html := loadEditorAsset("editor_assets/index.html")
+	html = strings.ReplaceAll(html, "__VST3GO_CSS__", loadEditorAsset("editor_assets/editor.css"))
+	return strings.ReplaceAll(html, "__VST3GO_JS__", loadEditorAsset("editor_assets/editor.js"))
 }

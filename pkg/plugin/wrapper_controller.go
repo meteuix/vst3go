@@ -7,8 +7,6 @@ package plugin
 import "C"
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"unsafe"
 
 	"github.com/th-release/vst3go/pkg/vst3"
@@ -157,7 +155,7 @@ func GoEditControllerSetParamNormalized(componentID C.uintptr_t, id C.uint32_t, 
 		return resultFromError(err)
 	}
 	if p, ok := wrapper.component.params.GetOK(uint32(id)); ok {
-		wrapper.notifyEditorParameterChanged(uint32(id), p.GetNormalized(), p.GetPlain())
+		wrapper.notifyEditorParameterChanged(p)
 	}
 	return resultOK
 }
@@ -216,16 +214,12 @@ func GoEditControllerGetEditorHTML(componentID C.uintptr_t) *C.char {
 	if c == nil {
 		return nil
 	}
-	snapshot, err := c.EditorSnapshot()
-	if err != nil {
-		return nil
-	}
-	snapshotJSON, err := json.Marshal(snapshot)
+	page, err := c.editorPage()
 	if err != nil {
 		return nil
 	}
 	// The caller (editor view) owns and frees the returned string.
-	return C.CString(buildEditorHTML(base64.StdEncoding.EncodeToString(snapshotJSON)))
+	return C.CString(page)
 }
 
 // IMidiMapping

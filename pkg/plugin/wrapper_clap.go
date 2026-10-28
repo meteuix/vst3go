@@ -746,6 +746,15 @@ func (h clapHost) LoadPreset(path string) error {
 
 func (h clapHost) SendMessage(string, []byte) error { return errNotSupported }
 
+func (h clapHost) PostEditorMessage(name string, data any) error {
+	msg, err := customEditorMessage(name, data)
+	if err != nil {
+		return err
+	}
+	h.inst.postRaw(msg)
+	return nil
+}
+
 // Extensions
 
 // param returns a host-visible parameter.

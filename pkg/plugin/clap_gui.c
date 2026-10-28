@@ -58,13 +58,18 @@ static Steinberg_tresult SMTG_STDMETHODCALLTYPE frame_queryInterface(void* self,
 }
 
 static Steinberg_tresult SMTG_STDMETHODCALLTYPE frame_resizeView(void* self, struct Steinberg_IPlugView* view, struct Steinberg_ViewRect* rect) {
-    (void)view;
     VST3GoClapPlugin* p = ((VST3GoClapFrame*)self)->gui->plugin;
-    if (!rect || !p->hostGui) {
+    if (!rect || !view || !p->hostGui) {
         return Steinberg_kResultFalse;
     }
     uint32_t width = (uint32_t)(rect->right - rect->left), height = (uint32_t)(rect->bottom - rect->top);
-    return p->hostGui->request_resize(p->host, width, height) ? Steinberg_kResultOk : Steinberg_kResultFalse;
+    if (!p->hostGui->request_resize(p->host, width, height)) {
+        return Steinberg_kResultFalse;
+    }
+    // CLAP hosts need not call set_size after accepting the size; a VST3
+    // frame would call onSize.
+    view->lpVtbl->onSize(view, rect);
+    return Steinberg_kResultOk;
 }
 
 static struct Steinberg_IPlugFrameVtbl frameVtbl = {

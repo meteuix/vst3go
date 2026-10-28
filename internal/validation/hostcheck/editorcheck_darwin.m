@@ -3,15 +3,20 @@
 // --clap through the CLAP gui extension. It checks that the WKWebView embeds
 // into the host view, that a slider edit in the page reaches the parameters
 // through the JS -> Go bridge (and, under CLAP, the host's output events),
-// that host parameter changes reach the page, resizing, and that closing
-// the editor removes its view. Needs a window server session.
+// that host parameter changes reach the page, the vst3go SDK in the page
+// (edits with gestures, values and text from the host), resizing, and that
+// closing the editor removes its view. With --custom it checks the synth's
+// custom editor instead of the built-in one: its startup vst3go.resize
+// request and a vst3go.send/on round trip with the processor. Needs a window
+// server session.
 //
-// usage: editorcheck_darwin [--clap] <plugin-binary>
+// usage: editorcheck_darwin [--clap] [--custom] <plugin-binary>
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
 #include "vst3/vst3_c_api.h"
 #include "clap/clap.h"
 #include <dlfcn.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -19,6 +24,9 @@
 
 static const clap_plugin_t* clapPlugin;
 static int clapCallbacks;
+static bool customEditor;
+static int resizeRequests;
+static int32_t resizeWidth, resizeHeight;
 
 // run spins the main run loop like a host event loop, serving CLAP
 // main-thread callbacks.
@@ -65,6 +73,50 @@ static WKWebView* waitForControls(NSView* parent) {
     return nil;
 }
 
+// waitFor runs the page until a script returns "true".
+static bool waitFor(WKWebView* web, NSString* script) {
+    for (int i = 0; i < 100; i++) {
+        if ([eval(web, script) isEqualToString:@"true"]) return true;
+        run(0.02);
+    }
+    return false;
+}
+
+typedef double (^GetNormalized)(uint32_t id);
+typedef void (^HostSet)(uint32_t id, double normalized);
+
+// checkSDK drives the page's vst3go SDK: an edit gesture on the first
+// continuous parameter, then a host change that must reach the SDK's value,
+// text and change listeners.
+static void checkSDK(WKWebView* web, GetNormalized get, HostSet set) {
+    CHECK([eval(web, @"String(typeof vst3go === 'object' && vst3go.version === 1 && vst3go.params.length > 0)") isEqualToString:@"true"], "vst3go SDK in the page");
+    NSString* result = eval(web, @"(() => {"
+        "const p = vst3go.params.find((p) => !p.readOnly && !p.hidden && p.stepCount === 0);"
+        "window.__changes = 0;"
+        "vst3go.onParamChange((q) => { if (q === p) window.__changes++; });"
+        "p.beginEdit(); p.setNormalized(0.5); p.setNormalized(0.75); p.endEdit();"
+        "return String(p.id); })()");
+    uint32_t id = (uint32_t)[result longLongValue];
+    run(0.2);
+    CHECK(fabs(get(id) - 0.75) < 1e-9, "SDK edit of param %u reached the plugin: %g (%s)", (unsigned)id, get(id), result.UTF8String);
+    set(id, 0.25);
+    NSString* check = [NSString stringWithFormat:@"String(vst3go.param(%u).normalized === 0.25 && vst3go.param(%u).text !== '' && window.__changes >= 3)", (unsigned)id, (unsigned)id];
+    CHECK(waitFor(web, check), "host change reached the SDK: %s", eval(web, [NSString stringWithFormat:@"JSON.stringify([vst3go.param(%u).normalized, vst3go.param(%u).text, window.__changes])", (unsigned)id, (unsigned)id]).UTF8String);
+}
+
+// checkCustom checks the synth editor: it asks for 720x420 at startup and
+// shows the processor's replies to its "status" messages.
+static void checkCustom(WKWebView* web) {
+    run(0.3);
+    CHECK(resizeRequests >= 1 && resizeWidth == 720 && resizeHeight == 420, "startup resize request %dx%d (%d requests)", resizeWidth, resizeHeight, resizeRequests);
+    eval(web, @"vst3go.resize(5000, 100); 'ok'");
+    run(0.1);
+    CHECK(resizeWidth == 1200 && resizeHeight == 320, "resize request clamped to the editor limits: %dx%d", resizeWidth, resizeHeight);
+    eval(web, @"window.__status = null; vst3go.on('status', (s) => { window.__status = s; }); vst3go.send('status'); 'ok'");
+    CHECK(waitFor(web, @"String(window.__status !== null && window.__status.voices === 0 && window.__status.learnedCC === -1)"), "processor answered vst3go.send through Host.PostEditorMessage: %s", eval(web, @"JSON.stringify(window.__status)").UTF8String);
+    CHECK(waitFor(web, @"String(document.getElementById('status').textContent === '0 voices')"), "page shows the status");
+}
+
 // editFirstSlider moves the first slider to 1 with the page's gesture
 // events, as a mouse drag would.
 static void editFirstSlider(WKWebView* web) {
@@ -92,8 +144,27 @@ static Steinberg_tresult SMTG_STDMETHODCALLTYPE f_qi(void* t, const Steinberg_TU
     if (uid_eq(iid, Steinberg_FUnknown_iid) || uid_eq(iid, Steinberg_IPlugFrame_iid)) { *o = t; return Steinberg_kResultOk; }
     *o = NULL; return Steinberg_kNoInterface;
 }
-static Steinberg_tresult SMTG_STDMETHODCALLTYPE f_resize(void* t, struct Steinberg_IPlugView* v, struct Steinberg_ViewRect* r) { (void)t; (void)v; (void)r; return Steinberg_kResultOk; }
+// resizeView accepts the size and resizes the view, like a host.
+static Steinberg_tresult SMTG_STDMETHODCALLTYPE f_resize(void* t, struct Steinberg_IPlugView* v, struct Steinberg_ViewRect* r) {
+    (void)t;
+    resizeRequests++;
+    resizeWidth = r->right - r->left;
+    resizeHeight = r->bottom - r->top;
+    return v->lpVtbl->onSize(v, r);
+}
 static struct Steinberg_IPlugFrameVtbl frameVtbl = { f_qi, ref, ref, f_resize };
+
+// IComponentHandler: accepts the plugin's edits, so the processor gets its Host.
+typedef struct { struct Steinberg_Vst_IComponentHandlerVtbl* lpVtbl; } Handler;
+static Steinberg_tresult SMTG_STDMETHODCALLTYPE ch_qi(void* t, const Steinberg_TUID iid, void** o) {
+    if (uid_eq(iid, Steinberg_FUnknown_iid) || uid_eq(iid, Steinberg_Vst_IComponentHandler_iid)) { *o = t; return Steinberg_kResultOk; }
+    *o = NULL; return Steinberg_kNoInterface;
+}
+static Steinberg_tresult SMTG_STDMETHODCALLTYPE ch_edit(void* t, Steinberg_Vst_ParamID id) { (void)t; (void)id; return Steinberg_kResultOk; }
+static Steinberg_tresult SMTG_STDMETHODCALLTYPE ch_perform(void* t, Steinberg_Vst_ParamID id, Steinberg_Vst_ParamValue v) { (void)t; (void)id; (void)v; return Steinberg_kResultOk; }
+static Steinberg_tresult SMTG_STDMETHODCALLTYPE ch_restart(void* t, Steinberg_int32 flags) { (void)t; (void)flags; return Steinberg_kResultOk; }
+static struct Steinberg_Vst_IComponentHandlerVtbl handlerVtbl = { ch_qi, ref, ref, ch_edit, ch_perform, ch_edit, ch_restart };
+static Handler handler = { &handlerVtbl };
 
 static void checkVST3(NSView* parent, const char* path) {
     void* lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
@@ -107,6 +178,7 @@ static void checkVST3(NSView* parent, const char* path) {
     CHECK(f->lpVtbl->createInstance(f, ci.cid, Steinberg_Vst_IComponent_iid, (void**)&comp) == Steinberg_kResultOk, "createInstance");
     CHECK(comp->lpVtbl->initialize(comp, NULL) == Steinberg_kResultOk, "initialize");
     CHECK(comp->lpVtbl->queryInterface(comp, Steinberg_Vst_IEditController_iid, (void**)&ctrl) == Steinberg_kResultOk, "QI controller");
+    CHECK(ctrl->lpVtbl->setComponentHandler(ctrl, (struct Steinberg_Vst_IComponentHandler*)&handler) == Steinberg_kResultOk, "setComponentHandler");
 
     struct Steinberg_IPlugView* view = ctrl->lpVtbl->createView(ctrl, "editor");
     CHECK(view, "createView");
@@ -116,15 +188,20 @@ static void checkVST3(NSView* parent, const char* path) {
     CHECK(view->lpVtbl->attached(view, (__bridge void*)parent, Steinberg_kPlatformTypeNSView) == Steinberg_kResultOk, "attached");
     WKWebView* web = waitForControls(parent);
 
-    struct Steinberg_Vst_ParameterInfo info;
-    CHECK(ctrl->lpVtbl->getParameterInfo(ctrl, 0, &info) == Steinberg_kResultOk, "parameter info");
-    editFirstSlider(web);
-    run(0.2);
-    CHECK(ctrl->lpVtbl->getParamNormalized(ctrl, info.id) == 1, "slider edit reached param %u (JS -> Go bridge)", (unsigned)info.id);
-
-    ctrl->lpVtbl->setParamNormalized(ctrl, info.id, 0.25);
-    run(0.2);
-    CHECK(firstSliderValue(web) == 0.25, "host change reached the page (Go -> JS)");
+    if (customEditor) {
+        checkCustom(web);
+    } else {
+        struct Steinberg_Vst_ParameterInfo info;
+        CHECK(ctrl->lpVtbl->getParameterInfo(ctrl, 0, &info) == Steinberg_kResultOk, "parameter info");
+        editFirstSlider(web);
+        run(0.2);
+        CHECK(ctrl->lpVtbl->getParamNormalized(ctrl, info.id) == 1, "slider edit reached param %u (JS -> Go bridge)", (unsigned)info.id);
+        ctrl->lpVtbl->setParamNormalized(ctrl, info.id, 0.25);
+        run(0.2);
+        CHECK(firstSliderValue(web) == 0.25, "host change reached the page (Go -> JS)");
+    }
+    checkSDK(web, ^double(uint32_t id) { return ctrl->lpVtbl->getParamNormalized(ctrl, id); },
+        ^(uint32_t id, double v) { ctrl->lpVtbl->setParamNormalized(ctrl, id, v); });
 
     struct Steinberg_ViewRect size = { 0, 0, 640, 480 };
     CHECK(view->lpVtbl->onSize(view, &size) == Steinberg_kResultOk, "onSize");
@@ -137,7 +214,13 @@ static void checkVST3(NSView* parent, const char* path) {
 
 // ---- CLAP ----
 
-static bool h_request_resize(const clap_host_t* h, uint32_t w, uint32_t hh) { (void)h; (void)w; (void)hh; return true; }
+static bool h_request_resize(const clap_host_t* h, uint32_t w, uint32_t hh) {
+    (void)h;
+    resizeRequests++;
+    resizeWidth = (int32_t)w;
+    resizeHeight = (int32_t)hh;
+    return true;
+}
 static bool h_true(const clap_host_t* h) { (void)h; return true; }
 static void h_hints(const clap_host_t* h) { (void)h; }
 static void h_closed(const clap_host_t* h, bool destroyed) { (void)h; (void)destroyed; }
@@ -199,28 +282,56 @@ static void checkCLAP(NSView* parent, const char* path) {
     CHECK(gui->show(clapPlugin), "show");
     WKWebView* web = waitForControls(parent);
 
-    clap_param_info_t info;
-    CHECK(params->get_info(clapPlugin, 0, &info), "param info");
-    editFirstSlider(web);
-    run(0.2);
-    double value;
-    CHECK(params->get_value(clapPlugin, info.id, &value) && value == info.max_value, "slider edit reached param %u: %g (JS -> Go bridge)", (unsigned)info.id, value);
-    InEvents in = { .count = 0 };
+    __block InEvents in = { .count = 0 };
     OutEvents out;
-    flush(params, &in, &out);
-    CHECK(out.values >= 1 && out.gestures == 2, "editor edit sent to the host (%u values, %u gestures)", out.values, out.gestures);
+    // hostSet automates a parameter (plain domain) and lets the plugin
+    // refresh the page from the main thread.
+    void (^hostSet)(clap_id, double) = ^(clap_id id, double plain) {
+        memset(&in.event, 0, sizeof(in.event));
+        in.event.header = (clap_event_header_t){ sizeof(clap_event_param_value_t), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, 0 };
+        in.event.param_id = id;
+        in.event.note_id = -1; in.event.port_index = -1; in.event.channel = -1; in.event.key = -1;
+        in.event.value = plain;
+        in.count = 1;
+        OutEvents ignored;
+        flush(params, &in, &ignored);
+        in.count = 0;
+        CHECK(clapCallbacks == 1, "host automation requests a main-thread editor refresh");
+    };
+    clap_param_info_t (^infoOf)(clap_id) = ^clap_param_info_t(clap_id id) {
+        clap_param_info_t info;
+        for (uint32_t i = 0; i < params->count(clapPlugin); i++) {
+            if (params->get_info(clapPlugin, i, &info) && info.id == id) return info;
+        }
+        CHECK(0, "no param %u", (unsigned)id);
+        return info;
+    };
 
-    // Host automation reaches the page through a main-thread callback.
-    memset(&in.event, 0, sizeof(in.event));
-    in.event.header = (clap_event_header_t){ sizeof(clap_event_param_value_t), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, 0 };
-    in.event.param_id = info.id;
-    in.event.note_id = -1; in.event.port_index = -1; in.event.channel = -1; in.event.key = -1;
-    in.event.value = info.min_value;
-    in.count = 1;
+    if (customEditor) {
+        checkCustom(web);
+    } else {
+        clap_param_info_t info;
+        CHECK(params->get_info(clapPlugin, 0, &info), "param info");
+        editFirstSlider(web);
+        run(0.2);
+        double value;
+        CHECK(params->get_value(clapPlugin, info.id, &value) && value == info.max_value, "slider edit reached param %u: %g (JS -> Go bridge)", (unsigned)info.id, value);
+        flush(params, &in, &out);
+        CHECK(out.values >= 1 && out.gestures == 2, "editor edit sent to the host (%u values, %u gestures)", out.values, out.gestures);
+        hostSet(info.id, info.min_value);
+        run(0.2);
+        CHECK(firstSliderValue(web) == 0, "host automation reached the page (Go -> JS): %s", eval(web, @"JSON.stringify(vst3go.params.map((p) => [p.id, p.normalized, p.text]))").UTF8String);
+    }
+    checkSDK(web, ^double(uint32_t id) {
+        clap_param_info_t info = infoOf(id);
+        double plain;
+        CHECK(params->get_value(clapPlugin, id, &plain), "get_value");
+        return (plain - info.min_value) / (info.max_value - info.min_value);
+    }, ^(uint32_t id, double normalized) {
+        clap_param_info_t info = infoOf(id);
+        hostSet(id, info.min_value + normalized * (info.max_value - info.min_value));
+    });
     flush(params, &in, &out);
-    CHECK(clapCallbacks == 1, "host automation requests a main-thread editor refresh");
-    run(0.2);
-    CHECK(firstSliderValue(web) == 0, "host automation reached the page (Go -> JS)");
 
     CHECK(gui->set_size(clapPlugin, 640, 480), "set_size");
     run(0.1);
@@ -235,8 +346,14 @@ static void checkCLAP(NSView* parent, const char* path) {
 
 int main(int argc, char** argv) {
     @autoreleasepool {
-        bool clap = argc == 3 && !strcmp(argv[1], "--clap");
-        CHECK(argc == 2 || clap, "usage: editorcheck_darwin [--clap] <plugin-binary>");
+        bool clap = false;
+        int arg = 1;
+        for (; arg < argc - 1; arg++) {
+            if (!strcmp(argv[arg], "--clap")) clap = true;
+            else if (!strcmp(argv[arg], "--custom")) customEditor = true;
+            else break;
+        }
+        CHECK(arg == argc - 1, "usage: editorcheck_darwin [--clap] [--custom] <plugin-binary>");
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
         NSWindow* window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 900, 640)
@@ -247,9 +364,9 @@ int main(int argc, char** argv) {
         [window.contentView addSubview:parent];
         [window orderFrontRegardless];
         if (clap) {
-            checkCLAP(parent, argv[2]);
+            checkCLAP(parent, argv[arg]);
         } else {
-            checkVST3(parent, argv[1]);
+            checkVST3(parent, argv[arg]);
         }
     }
     return 0;

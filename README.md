@@ -89,6 +89,7 @@ just validate-clap /path/to/clap-validator   # clap-validator + clapcheck on int
 just docker-validate-linux /path/to/vst3sdk   # VST3 and CLAP validation on Linux in Docker
 just docker-check-linux-editor                # Linux WebKitGTK editor under Xvfb
 just check-macos-editor                       # macOS editor in a real window, VST3 and CLAP
+just check-editor-sdk                         # web editor SDK under node and tsc
 just docker-build-windows                     # mingw-w64 Windows cross build
 ```
 

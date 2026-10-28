@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -41,6 +42,7 @@ type Offline struct {
 	outParams []process.ParameterChange
 	restarts  RestartFlags
 	messages  []OfflineMessage
+	editorOut []OfflineEditorMessage
 
 	// Transport is reported to the processor in every block. While
 	// IsPlaying is set, Process advances ProjectTimeSamples and, with a
@@ -58,6 +60,13 @@ type offlineChange struct {
 type OfflineMessage struct {
 	ID   string
 	Data []byte
+}
+
+// OfflineEditorMessage is a message the processor sent to the editor with
+// Host.PostEditorMessage.
+type OfflineEditorMessage struct {
+	Name string
+	Data json.RawMessage
 }
 
 var errOfflineBlock = errors.New("offline: channel buffers have different lengths")
@@ -375,6 +384,29 @@ func (o *Offline) TakeRestarts() RestartFlags {
 	return flags
 }
 
+// EditorMessage delivers a message like vst3go.send(name, data) from the
+// editor page to an EditorMessageProcessor.
+func (o *Offline) EditorMessage(name string, data any) error {
+	receiver, ok := o.c.processor.(EditorMessageProcessor)
+	if !ok || name == "" {
+		return errNotSupported
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	receiver.EditorMessage(name, raw)
+	return nil
+}
+
+// TakeEditorMessages returns and clears the messages sent to the editor
+// through Host.PostEditorMessage.
+func (o *Offline) TakeEditorMessages() []OfflineEditorMessage {
+	out := o.editorOut
+	o.editorOut = nil
+	return out
+}
+
 // TakeMessages returns and clears the messages sent through
 // Host.SendMessage.
 func (o *Offline) TakeMessages() []OfflineMessage {
@@ -401,6 +433,19 @@ func (h offlineHost) EndEdit(id uint32) error { return h.o.c.EndEdit(id) }
 
 func (h offlineHost) SendMessage(id string, data []byte) error {
 	h.o.messages = append(h.o.messages, OfflineMessage{ID: id, Data: bytes.Clone(data)})
+	return nil
+}
+
+func (h offlineHost) PostEditorMessage(name string, data any) error {
+	msg, err := customEditorMessage(name, data)
+	if err != nil {
+		return err
+	}
+	var decoded editorCustomMessage
+	if err := json.Unmarshal(msg, &decoded); err != nil {
+		return err
+	}
+	h.o.editorOut = append(h.o.editorOut, OfflineEditorMessage{Name: decoded.Name, Data: decoded.Data})
 	return nil
 }
 
