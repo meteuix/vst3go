@@ -28,6 +28,23 @@ For commercial login/licensing integration guidance, see [`docs/commercial-authe
 For pre-tag signoff, see [`docs/release-checklist.md`](docs/release-checklist.md).
 For publishing notes, see [`docs/release-notes-template.md`](docs/release-notes-template.md).
 
+## Quick start
+
+The `vst3go` command creates a plugin module and builds it in every format
+(Go 1.24 or newer, a C compiler; on macOS the Xcode command line tools):
+
+```bash
+go run github.com/th-release/vst3go/cmd/vst3go@latest new -type effect ./mygain "My Gain"
+cd mygain
+go test ./...                                # offline tests with pkg/plugintest
+go tool vst3go build -install . "My Gain"     # VST3, CLAP (and AU on macOS), into the user plugin folders
+go tool vst3go build -format app . "My Gain"  # standalone application
+```
+
+`-type instrument` starts from a polyphonic synth and `-type midi` from a
+MIDI transposer. The new module lists `vst3go` as a `tool` dependency, so
+`go tool vst3go` always matches the runtime version it builds against.
+
 ## Scope
 
 `vst3go` keeps the VST3-facing pieces:
@@ -45,6 +62,7 @@ For publishing notes, see [`docs/release-notes-template.md`](docs/release-notes-
 - `pkg/framework/plugin`
 - `pkg/framework/process`
 - `pkg/framework/state`
+- `cmd/vst3go` (the `new`/`build` command)
 
 The companion `synthkit` repo owns:
 
@@ -89,6 +107,7 @@ just validate-vst3 /path/to/vst3sdk/validator # validator + hostcheck on interna
 just clap ./path/to/plugin MyPlugin          # build a macOS/Linux .clap plugin
 just validate-clap /path/to/clap-validator   # clap-validator + clapcheck on internal/validation
 just au ./path/to/plugin MyPlugin            # build a macOS Audio Unit (.component)
+just check-cli                                # vst3go new/build: scaffolded modules, tests, every format
 just validate-au                              # auval (strict) + aucheck on internal/validation
 just docker-validate-linux /path/to/vst3sdk   # VST3 and CLAP validation on Linux in Docker
 just docker-check-linux-editor                # Linux WebKitGTK editor under Xvfb

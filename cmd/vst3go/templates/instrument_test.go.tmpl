@@ -1,0 +1,30 @@
+package main
+
+import (
+	"math"
+	"testing"
+
+	"github.com/th-release/vst3go/pkg/plugintest"
+)
+
+func TestNotePlaysItsPitch(t *testing.T) {
+	inst := plugintest.New(t, instrument{})
+	inst.Note(0, 69, 1, 0, 12000) // A4 for a quarter second at 48 kHz
+	out := inst.RenderSilence(24000, 0, 2)
+	if peak := plugintest.Peak(out[0]); peak < 0.1 {
+		t.Fatalf("peak %g", peak)
+	}
+	if freq := plugintest.ZeroCrossingFrequency(out[0][2400:12000], 48000); math.Abs(freq-440) > 2 {
+		t.Fatalf("frequency %g, want 440", freq)
+	}
+}
+
+func TestReleaseEndsInSilence(t *testing.T) {
+	inst := plugintest.New(t, instrument{})
+	inst.Set(paramRelease, 10)
+	inst.Note(0, 60, 1, 0, 480)
+	inst.RenderSilence(4800, 0, 2)
+	if peak := plugintest.Peak(inst.RenderSilence(512, 0, 2)[0]); peak != 0 {
+		t.Fatalf("still sounding after the release: %g", peak)
+	}
+}

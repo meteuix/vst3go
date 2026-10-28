@@ -1,0 +1,75 @@
+// Command {{.Module}} is the {{.Name}} audio effect. One package builds it as
+// a VST3, CLAP and Audio Unit plugin and as a standalone application:
+//
+//	go test ./...
+//	go tool vst3go build -install . {{printf "%q" .Name}}
+//	go tool vst3go build -format app . {{printf "%q" .Name}}
+package main
+
+import (
+	"math"
+
+	"github.com/th-release/vst3go/pkg/framework/bus"
+	"github.com/th-release/vst3go/pkg/framework/param"
+	frameworkplugin "github.com/th-release/vst3go/pkg/framework/plugin"
+	"github.com/th-release/vst3go/pkg/framework/process"
+	"github.com/th-release/vst3go/pkg/plugin"
+	"github.com/th-release/vst3go/pkg/standalone"
+)
+
+// Parameter IDs are saved in host sessions and presets: keep them stable.
+const (
+	paramGain uint32 = iota
+	paramBypass
+)
+
+type effect struct{}
+
+func (effect) GetInfo() frameworkplugin.Info {
+	return frameworkplugin.Info{
+		ID:       {{printf "%q" .ID}},
+		Name:     {{printf "%q" .Name}},
+		Version:  "1.0.0",
+		Vendor:   {{printf "%q" .Vendor}},
+		Category: frameworkplugin.CategoryFx,
+	}
+}
+
+func (effect) CreateProcessor() plugin.Processor {
+	p := &processor{BaseProcessor: frameworkplugin.NewBaseProcessor(bus.NewEffectStereo())}
+	p.Parameters().Add(
+		param.New(paramGain, "Gain").Range(-60, 12).Default(0).Unit("dB").Smooth(0.02).Build(),
+		param.BypassParameter(paramBypass, "Bypass").Build(),
+	)
+	return p
+}
+
+type processor struct {
+	*frameworkplugin.BaseProcessor
+}
+
+// ProcessAudio runs on the audio thread: no allocation, locks or I/O here.
+func (p *processor) ProcessAudio(ctx *process.Context) {
+	if ctx.Param(paramBypass) >= 0.5 {
+		ctx.PassThrough()
+		return
+	}
+	gain := ctx.Smoothed(paramGain) // dB, ramped over 20 ms
+	for i := 0; i < ctx.NumSamples(); i++ {
+		g := float32(math.Pow(10, gain.Next()/20))
+		for ch := range ctx.Output {
+			if ch < len(ctx.Input) {
+				ctx.Output[ch][i] = ctx.Input[ch][i] * g
+			} else {
+				ctx.Output[ch][i] = 0
+			}
+		}
+	}
+}
+
+func init() {
+	plugin.SetFactoryInfo(plugin.FactoryInfo{Vendor: {{printf "%q" .Vendor}}})
+	plugin.Register(effect{})
+}
+
+func main() { standalone.Main() }

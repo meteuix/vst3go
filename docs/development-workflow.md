@@ -86,6 +86,12 @@ bash scripts/check_standalone.sh                                # standalone app
 bash scripts/docker_check_linux_standalone.sh                   # standalone apps on Linux (SOUND=1 adds ALSA)
 ```
 
+Add this when `cmd/vst3go` (the `new` templates or `build`) changed:
+
+```bash
+VST3_VALIDATOR=<validator> CLAP_VALIDATOR=<clap-validator> bash scripts/check_cli.sh  # scaffolded modules: tests, every format, validators, auval
+```
+
 clap-validator is built from https://github.com/free-audio/clap-validator
 with `cargo build --release` (the Docker script builds a pinned revision).
 

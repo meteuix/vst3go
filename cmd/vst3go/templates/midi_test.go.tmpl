@@ -1,0 +1,26 @@
+package main
+
+import (
+	"testing"
+
+	"github.com/th-release/vst3go/pkg/midi"
+	"github.com/th-release/vst3go/pkg/plugintest"
+)
+
+func TestTranspose(t *testing.T) {
+	inst := plugintest.New(t, midiEffect{})
+	inst.Set(paramTranspose, 12)
+	inst.Note(0, 60, 1, 0, 100)
+	if err := inst.ProcessEvents(256); err != nil {
+		t.Fatal(err)
+	}
+	var notes []uint8
+	for _, e := range inst.OutputEvents() {
+		if e.Type == midi.EventTypeNoteOn || e.Type == midi.EventTypeNoteOff {
+			notes = append(notes, e.Note)
+		}
+	}
+	if len(notes) != 2 || notes[0] != 72 || notes[1] != 72 {
+		t.Fatalf("notes out %v, want note on and off of 72", notes)
+	}
+}

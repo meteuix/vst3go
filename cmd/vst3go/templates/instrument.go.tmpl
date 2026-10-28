@@ -1,0 +1,151 @@
+// Command {{.Module}} is the {{.Name}} instrument: a polyphonic sine synth
+// with attack and release. One package builds it as a VST3, CLAP and Audio
+// Unit plugin and as a standalone application:
+//
+//	go test ./...
+//	go tool vst3go build -install . {{printf "%q" .Name}}
+//	go tool vst3go build -format app . {{printf "%q" .Name}}
+package main
+
+import (
+	"math"
+
+	"github.com/th-release/vst3go/pkg/framework/bus"
+	"github.com/th-release/vst3go/pkg/framework/param"
+	frameworkplugin "github.com/th-release/vst3go/pkg/framework/plugin"
+	"github.com/th-release/vst3go/pkg/framework/process"
+	"github.com/th-release/vst3go/pkg/midi"
+	"github.com/th-release/vst3go/pkg/plugin"
+	"github.com/th-release/vst3go/pkg/standalone"
+)
+
+// Parameter IDs are saved in host sessions and presets: keep them stable.
+const (
+	paramVolume uint32 = iota
+	paramAttack
+	paramRelease
+)
+
+const maxVoices = 16
+
+type instrument struct{}
+
+func (instrument) GetInfo() frameworkplugin.Info {
+	return frameworkplugin.Info{
+		ID:       {{printf "%q" .ID}},
+		Name:     {{printf "%q" .Name}},
+		Version:  "1.0.0",
+		Vendor:   {{printf "%q" .Vendor}},
+		Category: frameworkplugin.CategoryInstrumentSynth,
+	}
+}
+
+func (instrument) CreateProcessor() plugin.Processor {
+	p := &processor{BaseProcessor: frameworkplugin.NewBaseProcessor(bus.NewGenerator())}
+	p.Parameters().Add(
+		param.New(paramVolume, "Volume").Range(-60, 0).Default(-12).Unit("dB").Build(),
+		param.New(paramAttack, "Attack").Range(1, 2000).Default(5).Unit("ms").Build(),
+		param.New(paramRelease, "Release").Range(1, 5000).Default(300).Unit("ms").Build(),
+	)
+	return p
+}
+
+type voice struct {
+	active, held bool
+	channel      uint8
+	note         uint8
+	velocity     float64
+	phase, step  float64 // radians
+	level        float64 // envelope 0..1
+}
+
+type processor struct {
+	*frameworkplugin.BaseProcessor
+	voices [maxVoices]voice
+}
+
+// GetTailSamples lets hosts keep processing while notes release.
+func (p *processor) GetTailSamples() int32 { return int32(p.SampleRate() * 5) }
+
+// ProcessAudio runs on the audio thread: no allocation, locks or I/O here.
+func (p *processor) ProcessAudio(ctx *process.Context) {
+	n := ctx.NumSamples()
+	if len(ctx.Output) == 0 || n == 0 {
+		return
+	}
+	ctx.Clear()
+	rate := p.SampleRate()
+	volume := math.Pow(10, ctx.ParamPlain(paramVolume)/20)
+	attack := 1 / (ctx.ParamPlain(paramAttack) / 1000 * rate)
+	release := 1 / (ctx.ParamPlain(paramRelease) / 1000 * rate)
+
+	// Event offsets are relative to the host block; this call may cover
+	// part of it (the runtime splits blocks at parameter changes).
+	events := ctx.GetAllInputEvents()
+	next, offset := 0, ctx.BlockOffset()
+	left := ctx.Output[0]
+	for i := 0; i < n; i++ {
+		for next < len(events) && int(events[next].Offset)-offset <= i {
+			p.handle(events[next], rate)
+			next++
+		}
+		var sum float64
+		for v := range p.voices {
+			voice := &p.voices[v]
+			if !voice.active {
+				continue
+			}
+			if voice.held {
+				voice.level = math.Min(1, voice.level+attack)
+			} else if voice.level -= release; voice.level <= 0 {
+				voice.active = false
+				continue
+			}
+			sum += math.Sin(voice.phase) * voice.level * voice.velocity
+			voice.phase = math.Mod(voice.phase+voice.step, 2*math.Pi)
+		}
+		left[i] = float32(sum * volume)
+	}
+	for ch := 1; ch < len(ctx.Output); ch++ {
+		copy(ctx.Output[ch], left)
+	}
+}
+
+func (p *processor) handle(e midi.Event, rate float64) {
+	switch e.Type {
+	case midi.EventTypeNoteOn:
+		v := p.freeVoice()
+		freq := 440 * math.Pow(2, (float64(e.Note)-69)/12)
+		p.voices[v] = voice{
+			active: true, held: true, channel: e.Channel, note: e.Note,
+			velocity: float64(e.Velocity), step: 2 * math.Pi * freq / rate,
+		}
+	case midi.EventTypeNoteOff:
+		for v := range p.voices {
+			if p.voices[v].held && p.voices[v].note == e.Note && p.voices[v].channel == e.Channel {
+				p.voices[v].held = false
+			}
+		}
+	}
+}
+
+// freeVoice returns an idle voice, or steals the quietest one.
+func (p *processor) freeVoice() int {
+	quietest := 0
+	for v := range p.voices {
+		if !p.voices[v].active {
+			return v
+		}
+		if p.voices[v].level < p.voices[quietest].level {
+			quietest = v
+		}
+	}
+	return quietest
+}
+
+func init() {
+	plugin.SetFactoryInfo(plugin.FactoryInfo{Vendor: {{printf "%q" .Vendor}}})
+	plugin.Register(instrument{})
+}
+
+func main() { standalone.Main() }

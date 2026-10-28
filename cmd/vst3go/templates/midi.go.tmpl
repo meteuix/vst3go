@@ -1,0 +1,84 @@
+// Command {{.Module}} is the {{.Name}} MIDI effect: it transposes notes and
+// passes other events through. One package builds it as a VST3, CLAP and
+// Audio Unit (MIDI processor) plugin and as a standalone application:
+//
+//	go test ./...
+//	go tool vst3go build -install . {{printf "%q" .Name}}
+//	go tool vst3go build -format app . {{printf "%q" .Name}}
+package main
+
+import (
+	"github.com/th-release/vst3go/pkg/framework/bus"
+	"github.com/th-release/vst3go/pkg/framework/param"
+	frameworkplugin "github.com/th-release/vst3go/pkg/framework/plugin"
+	"github.com/th-release/vst3go/pkg/framework/process"
+	"github.com/th-release/vst3go/pkg/midi"
+	"github.com/th-release/vst3go/pkg/plugin"
+	"github.com/th-release/vst3go/pkg/standalone"
+)
+
+// Parameter IDs are saved in host sessions and presets: keep them stable.
+const paramTranspose uint32 = 0
+
+type midiEffect struct{}
+
+func (midiEffect) GetInfo() frameworkplugin.Info {
+	return frameworkplugin.Info{
+		ID:       {{printf "%q" .ID}},
+		Name:     {{printf "%q" .Name}},
+		Version:  "1.0.0",
+		Vendor:   {{printf "%q" .Vendor}},
+		Category: frameworkplugin.CategoryFxInstrument,
+	}
+}
+
+func (midiEffect) CreateProcessor() plugin.Processor {
+	p := &processor{BaseProcessor: frameworkplugin.NewBaseProcessor(bus.NewMIDIEffect())}
+	p.Parameters().Add(
+		param.New(paramTranspose, "Transpose").Range(-24, 24).Default(0).Steps(48).Unit("st").Build(),
+	)
+	return p
+}
+
+type processor struct {
+	*frameworkplugin.BaseProcessor
+	// sounding maps an input note to the note it started (+1, 0: none), so
+	// note-offs match after the transpose amount changes.
+	sounding [16][128]uint8
+}
+
+// MIDIControllerChannels forwards controllers, pitch bend and aftertouch.
+func (p *processor) MIDIControllerChannels() int { return 16 }
+
+// ProcessAudio runs on the audio thread: no allocation, locks or I/O here.
+func (p *processor) ProcessAudio(ctx *process.Context) {
+	shift := int(ctx.ParamPlain(paramTranspose))
+	for _, event := range ctx.GetAllInputEvents() {
+		switch event.Type {
+		case midi.EventTypeNoteOn:
+			note := int(event.Note) + shift
+			if note < 0 || note > 127 {
+				continue
+			}
+			p.sounding[event.Channel&15][event.Note] = uint8(note + 1)
+			event.Note = uint8(note)
+		case midi.EventTypeNoteOff:
+			started := p.sounding[event.Channel&15][event.Note]
+			if started == 0 {
+				continue
+			}
+			p.sounding[event.Channel&15][event.Note] = 0
+			event.Note = started - 1
+		case midi.EventTypeChord, midi.EventTypeScale:
+			continue // host-to-plugin only
+		}
+		ctx.AddOutputEvent(event)
+	}
+}
+
+func init() {
+	plugin.SetFactoryInfo(plugin.FactoryInfo{Vendor: {{printf "%q" .Vendor}}})
+	plugin.Register(midiEffect{})
+}
+
+func main() { standalone.Main() }

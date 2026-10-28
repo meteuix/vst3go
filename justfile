@@ -20,7 +20,7 @@ lint-fix:
   env GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache GOLANGCI_LINT_CACHE=/tmp/golangci-lint-cache golangci-lint run --fix ./pkg/...
 
 test-go:
-  env GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache go test ./pkg/...
+  env GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache go test ./pkg/... ./cmd/vst3go
 
 test: fmt-check test-go
 
@@ -74,6 +74,11 @@ standalone package name out='dist':
 # Check the standalone applications on this machine (null device, MIDI round trip, editor window).
 check-standalone out='dist/standalone':
   bash scripts/check_standalone.sh {{out}}
+
+# Scaffold an effect, an instrument and a MIDI effect with `vst3go new`, run their tests and build every format.
+# Set VST3_VALIDATOR and CLAP_VALIDATOR to validate the bundles; macOS also runs auval.
+check-cli out='dist/cli':
+  bash scripts/check_cli.sh {{out}}
 
 # Check the standalone applications on Linux in Docker (headless, Xvfb editor, SOUND=1 for ALSA).
 docker-check-linux-standalone platform='':

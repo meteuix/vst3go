@@ -1104,7 +1104,11 @@ Do not use custom state to duplicate regular parameter values unless you have a 
 
 ## 11. A Recommended File Layout For A Downstream Plugin Repo
 
-If you are building a real plugin in another repo, a good layout is:
+Start the repo with `vst3go new` (see the README quick start): it writes a
+working effect, instrument (`-type instrument`) or MIDI effect (`-type midi`)
+module with offline tests, and `go tool vst3go build -install . <Name>`
+builds and installs every format from it. As the plugin grows, a good layout
+is:
 
 ```text
 my-plugin/
@@ -1160,10 +1164,11 @@ For a new plugin, do the work in this order and do not skip ahead:
 6. add state save/restore if needed
 7. expose the editor model
 8. connect the editor shell
-9. test with `just test`
-10. run Windows validation if Windows is in scope
+9. test with `go test ./...` (`pkg/plugintest` renders the plugin offline)
+10. build and install with `go tool vst3go build -install . <Name>` and open it in a host
+11. run Windows validation if Windows is in scope
 
-If you complete steps 1 through 10, you have a single downstream plugin that can be built, opened, edited, saved, restored, and validated.
+If you complete steps 1 through 11, you have a single downstream plugin that can be built, opened, edited, saved, restored, and validated.
 
 ## 14. A Practical Example Workflow
 

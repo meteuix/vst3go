@@ -173,6 +173,11 @@ work, without taking on DSP (that stays in `synthkit`).
       from programs, MIDI in and out, SysEx, scheduled parameters, host
       transport, latency/tail, side chains and the Cocoa editor; passes
       `auval -strict` and `hostcheck/aucheck_darwin.m`.
+- [x] `vst3go` command (`go tool vst3go`): `new` scaffolds a plugin module
+      (effect, instrument, MIDI effect) with tests, `build` writes every
+      format (VST3, CLAP, Audio Unit, standalone app) for a package in any
+      module and installs them into the user plugin folders.
+- [ ] LV2 plugin format on Linux, validated with lv2lint.
 
 ## Ongoing Rules
 
