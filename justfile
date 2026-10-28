@@ -33,7 +33,16 @@ vst3 package name out='dist':
 validate-vst3 validator out='dist/validation':
   bash scripts/validate_vst3.sh "{{validator}}" "{{out}}"
 
-# Go tests + validator + hostcheck for every validation plugin on Linux in Docker.
+# Build a macOS/Linux CLAP plugin from a main package, e.g. `just clap ./myplugin MyPlugin`.
+clap package name out='dist':
+  bash scripts/build_clap.sh "{{package}}" "{{name}}" "{{out}}"
+
+# Build the validation plugins as CLAP plugins and run clap-validator and clapcheck on each.
+# validator: path to the clap-validator binary.
+validate-clap validator out='dist/validation-clap':
+  bash scripts/validate_clap.sh "{{validator}}" "{{out}}"
+
+# Go tests, VST3 and CLAP validation for every validation plugin on Linux in Docker.
 # sdk: VST3 SDK checkout; platform: e.g. linux/amd64 (default: native).
 docker-validate-linux sdk platform='':
   bash scripts/docker_validate_linux.sh "{{sdk}}" {{platform}}

@@ -2,7 +2,8 @@
 
 What the runtime supports, and how a processor opts into each feature. The
 plugins under `internal/validation/` exercise every item here and pass the
-Steinberg validator in extensive mode (`just validate-vst3 <validator>`).
+Steinberg validator in extensive mode (`just validate-vst3 <validator>`) and,
+as CLAP plugins, clap-validator (`just validate-clap <clap-validator>`).
 
 | Plugin type | Bus template | Validation plugin |
 | --- | --- | --- |
@@ -30,6 +31,12 @@ Windows uses `scripts/build_windows_vst3.sh`.
 
 One binary can hold several plugins: call `plugin.Register` once per plugin
 (each with its own `Info.ID`); the factory lists every class.
+
+The same binary is also a CLAP plugin: it exports `clap_entry` next to
+`GetPluginFactory`. `scripts/build_clap.sh <package> <Name> [out]` (or
+`just clap <package> <Name>`) packages it as a macOS `.clap` bundle or a Linux
+`.clap` shared object; the Windows cross build writes `<name>.clap` DLLs. See
+[CLAP](#clap) for how the runtime maps onto CLAP.
 
 `plugin.Info.Category` selects the host category, for example
 `CategoryFxEQ`, `CategoryFxDynamics` or `CategoryInstrumentSynth`; combine
@@ -278,6 +285,41 @@ have no editor view.
 - Parameter values are persisted automatically. Implement `StatefulProcessor`
   for extra state (sample paths, wavetables, sequencer patterns).
 
+## CLAP
+
+A CLAP instance runs the same runtime as a single-component VST3 instance;
+processors need no CLAP-specific code.
+
+- The CLAP plugin ID is `Info.ID`; features come from `Info.Category`
+  (`Fx|EQ` becomes `audio-effect`, `equalizer`; `Instrument|Synth` becomes
+  `instrument`, `synthesizer`; `Fx|Instrument` becomes `note-effect`).
+  Implement `plugin.CLAPFeaturesPlugin` to set them explicitly.
+- Parameters use plain values: continuous parameters range over `Min..Max`,
+  stepped ones over the step index `0..StepCount`. Value text is the
+  formatter output plus the unit. Read-only (output) parameters such as
+  meters are not exposed: CLAP hosts treat values that change on their own
+  as errors. They still reach the editor and VST3 hosts.
+- Audio buses are audio ports (64-bit when the processor supports double
+  precision); event buses are note ports with the CLAP and MIDI dialects.
+- CLAP notes become `midi.Event` notes. Notes without a host note ID get a
+  generated one, and wildcard note-offs and expressions (key, channel or
+  note ID -1) resolve against the sounding notes. CLAP note expressions map to
+  VST3 types (volume, pan, tuning, vibrato, expression, brightness); pressure
+  becomes poly pressure. Raw MIDI 1.0 controllers go through the same MIDI
+  mapping as on VST3 hosts (`MIDIMappingProcessor`,
+  `MIDIControllerProcessor`); program changes select a program.
+- `Host.EditParameter`/`BeginEdit`/`EndEdit` become CLAP gesture and value
+  events in the next process or flush call; `RestartComponent` maps to
+  parameter rescans, latency changes and restart requests. Track name and
+  color reach `ChannelInfoProcessor`; program pitch names are CLAP note names.
+- Output constant flags come from `ctx.SetOutputSilenceFlags`.
+
+`scripts/validate_clap.sh <clap-validator> [out]` builds every validation
+plugin as `.clap`, runs clap-validator and then
+`internal/validation/hostcheck/clapcheck.c`, which checks sample-accurate
+automation, 64-bit audio, notes without IDs, wildcards, note expressions,
+raw MIDI, MIDI effect output, programs, note names, latency and state.
+
 ## Known limits
 
 - Windows builds are compile- and export-checked (`scripts/docker_build_windows.sh`);
@@ -289,3 +331,6 @@ have no editor view.
   `IProgramListData` updates the processor side only.
 - Chord and scale events are input-only; the Linux editor needs an X11 host
   (no Wayland embedding exists in VST3).
+- CLAP instances have no editor yet, and CLAP hosts have no MIDI learn mode,
+  keyswitch or note expression metadata queries; distributed plugins run as
+  one CLAP object, so `Host.SendMessage` returns an error there.

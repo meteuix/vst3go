@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Runs the Go tests and scripts/validate_vst3.sh on Linux inside a Docker
-# container: builds the Steinberg validator from a VST3 SDK checkout, builds
-# every validation plugin as a Linux bundle, and runs the validator and
-# hostcheck on each.
+# Runs the Go tests, scripts/validate_vst3.sh and scripts/validate_clap.sh on
+# Linux inside a Docker container: builds the Steinberg validator from a VST3
+# SDK checkout and clap-validator from source, builds every validation plugin
+# as a VST3 bundle and a .clap file, and runs the validators and host checks.
 #
 # usage: scripts/docker_validate_linux.sh <vst3sdk-dir> [docker-platform]
 #   scripts/docker_validate_linux.sh ~/vst3sdk               # native arch
 #   scripts/docker_validate_linux.sh ~/vst3sdk linux/amd64   # emulated x86_64
 #
-# The validator build is cached in a Docker volume per platform.
+# The validator builds are cached in a Docker volume per platform.
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
@@ -25,6 +25,9 @@ image="golang:${go_version%.*}-bookworm"
 cache="vst3go-linux-${platform//\//-}"
 cache="${cache%-}"
 
+# clap-validator has no release binaries for every Linux architecture.
+clap_validator_rev=b2f1d9b79b1d264a5747f46707d72b1aa40a02ef
+
 platform_args=()
 if [[ -n "$platform" ]]; then
   platform_args=(--platform "$platform")
@@ -35,6 +38,7 @@ docker run --rm ${platform_args[@]+"${platform_args[@]}"} \
   -v "${sdk}:/sdk:ro" \
   -v "${cache}:/cache" \
   -e GOFLAGS=-buildvcs=false \
+  -e CLAP_VALIDATOR_REV="$clap_validator_rev" \
   "$image" bash -euo pipefail -c '
     if [[ ! -x /cache/validator ]]; then
       # The SDK builds the validator next to editorhost, which needs X11 and
@@ -49,6 +53,14 @@ docker run --rm ${platform_args[@]+"${platform_args[@]}"} \
       cmake --build /cache/sdk-build --config Release --target validator -j"$(nproc)" >/dev/null
       cp /cache/sdk-build/bin/Release/validator /cache/validator
     fi
+    if [[ ! -x /cache/clap-validator-${CLAP_VALIDATOR_REV}/bin/clap-validator ]]; then
+      export RUSTUP_HOME=/cache/rustup CARGO_HOME=/cache/cargo
+      if [[ ! -x /cache/cargo/bin/cargo ]]; then
+        curl -fsSL https://sh.rustup.rs | sh -s -- -y -q --profile minimal --no-modify-path >/dev/null
+      fi
+      /cache/cargo/bin/cargo install -q --locked --git https://github.com/free-audio/clap-validator \
+        --rev "$CLAP_VALIDATOR_REV" --root "/cache/clap-validator-${CLAP_VALIDATOR_REV}" clap-validator
+    fi
     if ! command -v g++ >/dev/null; then
       # presetcheck links the SDK PresetFile (C++).
       apt-get update -qq
@@ -59,6 +71,7 @@ docker run --rm ${platform_args[@]+"${platform_args[@]}"} \
     cd /work
     go vet ./...
     go test -count=1 ./...
-    rm -rf /cache/out
+    rm -rf /cache/out /cache/out-clap
     VST3_SDK=/sdk VST3_SDK_BUILD=/cache/sdk-build scripts/validate_vst3.sh /cache/validator /cache/out
+    scripts/validate_clap.sh "/cache/clap-validator-${CLAP_VALIDATOR_REV}/bin/clap-validator" /cache/out-clap
   '

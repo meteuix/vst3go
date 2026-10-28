@@ -144,6 +144,22 @@
   - [x] Runtime-only, with higher-level features delegated to companion repos.
 - [x] Capture a repeatable pre-tag release checklist.
 
+## Phase 8: Framework Parity
+
+Grow the runtime into a plugin framework that can replace JUCE for plugin
+work, without taking on DSP (that stays in `synthkit`).
+
+- [x] Parameter smoothing (`param.Ramp`, `ctx.Smoothed`) and host edit gestures.
+- [x] `.vstpreset` files and a preset browser in the web editor (`pkg/preset`).
+- [x] Offline runner and `pkg/plugintest` for testing plugins without a host.
+- [x] CLAP plugin format from the same binary (`clap_entry`), validated with
+      clap-validator and `hostcheck/clapcheck.c` on macOS and Linux.
+  - [ ] CLAP editor (`gui` extension) on the existing web views.
+  - [ ] CLAP preset discovery for the user `.vstpreset` folder.
+- [ ] JavaScript SDK for web editors (typed parameter bindings, gestures).
+- [ ] Standalone application wrapper (audio/MIDI device I/O).
+- [ ] AUv2 wrapper, validated with `auval`.
+
 ## Ongoing Rules
 
 - [ ] If work belongs in `synthkit`, remove it from this file instead of duplicating it here.

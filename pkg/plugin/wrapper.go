@@ -261,6 +261,8 @@ type hostHandle struct {
 	w *componentWrapper
 }
 
+func (w *componentWrapper) restart(flags RestartFlags) { _ = hostHandle{w}.RestartComponent(flags) }
+
 func (h hostHandle) RestartComponent(flags RestartFlags) error {
 	if h.w.kind == kindProcessor {
 		data := binary.LittleEndian.AppendUint32(nil, uint32(flags))

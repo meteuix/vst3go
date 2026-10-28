@@ -46,10 +46,21 @@ type componentImpl struct {
 	processing   atomic.Bool
 	use64        atomic.Bool // host set up 64-bit processing
 
-	wrapper *componentWrapper // host notifications; nil in pure-Go tests
+	wrapper frontend // the plugin format talking to the host; nil in pure-Go tests
 
 	editMu   sync.Mutex
 	gestures map[uint32]bool // parameters inside a begin/end edit gesture
+}
+
+// frontend is the plugin format (VST3, CLAP) an instance runs in: it reports
+// plugin-side parameter edits and refreshes to the host and the editor.
+type frontend interface {
+	notifyParamBeginEdit(id uint32)
+	notifyParamPerformEdit(id uint32, normalized float64)
+	notifyParamEndEdit(id uint32)
+	notifyEditorParameterChanged(id uint32, normalized, plain float64)
+	refreshEditorParameters()
+	restart(flags RestartFlags)
 }
 
 func newComponent(processor Processor, info plugin.Info) (*componentImpl, error) {
@@ -415,7 +426,7 @@ func (c *componentImpl) selectProgram(index int32) {
 	}
 	if c.wrapper != nil {
 		c.wrapper.refreshEditorParameters()
-		_ = hostHandle{c.wrapper}.RestartComponent(RestartParamValuesChanged)
+		c.wrapper.restart(RestartParamValuesChanged)
 	}
 }
 

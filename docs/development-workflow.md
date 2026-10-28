@@ -76,9 +76,13 @@ validator comes from a VST3 SDK checkout built with CMake:
 
 ```bash
 bash scripts/validate_vst3.sh <sdk>/build/bin/Release/validator  # validator -e + hostcheck + preset files
-bash scripts/docker_validate_linux.sh <sdk> [linux/amd64]       # same on Linux, plus go test
+bash scripts/validate_clap.sh <clap-validator>/target/release/clap-validator  # clap-validator + clapcheck
+bash scripts/docker_validate_linux.sh <sdk> [linux/amd64]       # VST3 + CLAP on Linux, plus go test
 bash scripts/docker_check_linux_editor.sh                       # WebKitGTK editor under Xvfb
 ```
+
+clap-validator is built from https://github.com/free-audio/clap-validator
+with `cargo build --release` (the Docker script builds a pinned revision).
 
 ## Documentation Expectations
 
