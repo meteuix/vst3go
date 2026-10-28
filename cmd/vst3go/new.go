@@ -33,7 +33,7 @@ func runNew(args []string) error {
 		fmt.Fprintf(fs.Output(), `usage: vst3go new [flags] <dir> <Name>
 
 Creates a plugin module in dir: main.go (the plugin, built as VST3, CLAP,
-Audio Unit and standalone application), main_test.go (offline tests with
+Audio Unit, LV2 and standalone application), main_test.go (offline tests with
 pkg/plugintest) and go.mod with vst3go as a dependency and tool:
 
   cd <dir> && go test ./... && go tool vst3go build -install . <Name>

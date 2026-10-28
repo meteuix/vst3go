@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Runs the Go tests, scripts/validate_vst3.sh and scripts/validate_clap.sh on
-# Linux inside a Docker container: builds the Steinberg validator from a VST3
-# SDK checkout and clap-validator from source, builds every validation plugin
-# as a VST3 bundle and a .clap file, and runs the validators and host checks.
+# Runs the Go tests, scripts/validate_vst3.sh, scripts/validate_clap.sh,
+# scripts/validate_lv2.sh and scripts/check_cli.sh on Linux inside a Docker
+# container: builds the Steinberg validator from a VST3 SDK checkout and
+# clap-validator and lv2lint from source, builds every validation plugin as
+# a VST3 bundle, a .clap file and an LV2 bundle, runs the validators and host
+# checks, and scaffolds and builds plugin modules with the vst3go command.
 #
 # usage: scripts/docker_validate_linux.sh <vst3sdk-dir> [docker-platform]
 #   scripts/docker_validate_linux.sh ~/vst3sdk               # native arch
@@ -25,8 +27,10 @@ image="golang:${go_version%.*}-bookworm"
 cache="vst3go-linux-${platform//\//-}"
 cache="${cache%-}"
 
-# clap-validator has no release binaries for every Linux architecture.
+# clap-validator has no release binaries for every Linux architecture, and
+# lv2lint is not packaged for Debian.
 clap_validator_rev=b2f1d9b79b1d264a5747f46707d72b1aa40a02ef
+lv2lint_rev=0.16.2
 
 platform_args=()
 if [[ -n "$platform" ]]; then
@@ -39,6 +43,7 @@ docker run --rm ${platform_args[@]+"${platform_args[@]}"} \
   -v "${cache}:/cache" \
   -e GOFLAGS=-buildvcs=false \
   -e CLAP_VALIDATOR_REV="$clap_validator_rev" \
+  -e LV2LINT_REV="$lv2lint_rev" \
   "$image" bash -euo pipefail -c '
     if [[ ! -x /cache/validator ]]; then
       # The SDK builds the validator next to editorhost, which needs X11 and
@@ -66,6 +71,19 @@ docker run --rm ${platform_args[@]+"${platform_args[@]}"} \
       apt-get update -qq
       apt-get install -y -qq --no-install-recommends g++ >/dev/null
     fi
+    # lilv and the LV2 schemas for validate_lv2.sh, ALSA for the standalone
+    # apps of check_cli.sh.
+    apt-get update -qq
+    apt-get install -y -qq --no-install-recommends lv2-dev liblilv-dev lilv-utils sordi libasound2-dev pkg-config >/dev/null
+    if [[ ! -x /cache/lv2lint-${LV2LINT_REV}/lv2lint ]]; then
+      apt-get install -y -qq --no-install-recommends meson ninja-build libelf-dev libcurl4-openssl-dev git ca-certificates >/dev/null
+      rm -rf /tmp/lv2lint
+      git clone -q --depth 1 --branch "$LV2LINT_REV" https://git.ventosus.ch/lv2lint/ /tmp/lv2lint
+      (cd /tmp/lv2lint && meson setup build -Donline-tests=disabled >/dev/null && ninja -C build >/dev/null)
+      mkdir -p "/cache/lv2lint-${LV2LINT_REV}"
+      cp /tmp/lv2lint/build/lv2lint "/cache/lv2lint-${LV2LINT_REV}/"
+    fi
+    export PATH="/cache/lv2lint-${LV2LINT_REV}:${PATH}"
     mkdir -p /work
     cp -a /src/. /work/
     cd /work
@@ -74,4 +92,8 @@ docker run --rm ${platform_args[@]+"${platform_args[@]}"} \
     rm -rf /cache/out /cache/out-clap
     VST3_SDK=/sdk VST3_SDK_BUILD=/cache/sdk-build scripts/validate_vst3.sh /cache/validator /cache/out
     scripts/validate_clap.sh "/cache/clap-validator-${CLAP_VALIDATOR_REV}/bin/clap-validator" /cache/out-clap
+    rm -rf /cache/out-lv2 /cache/out-cli
+    scripts/validate_lv2.sh /cache/out-lv2
+    VST3_VALIDATOR=/cache/validator CLAP_VALIDATOR="/cache/clap-validator-${CLAP_VALIDATOR_REV}/bin/clap-validator" \
+      scripts/check_cli.sh /cache/out-cli
   '

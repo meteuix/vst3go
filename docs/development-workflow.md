@@ -78,8 +78,9 @@ validator comes from a VST3 SDK checkout built with CMake:
 bash scripts/validate_vst3.sh <sdk>/build/bin/Release/validator  # validator -e + hostcheck + preset files
 bash scripts/validate_clap.sh <clap-validator>/target/release/clap-validator  # clap-validator + clapcheck
 bash scripts/validate_au.sh                                     # macOS: auval -strict + aucheck (Audio Units)
-bash scripts/docker_validate_linux.sh <sdk> [linux/amd64]       # VST3 + CLAP on Linux, plus go test
-bash scripts/docker_check_linux_editor.sh                       # WebKitGTK editor under Xvfb (VST3 + CLAP)
+bash scripts/validate_lv2.sh                                    # Linux: lv2_validate, lv2lint, lv2check (LV2)
+bash scripts/docker_validate_linux.sh <sdk> [linux/amd64]       # VST3, CLAP, LV2 and the vst3go command on Linux, plus go test
+bash scripts/docker_check_linux_editor.sh                       # WebKitGTK editor under Xvfb (VST3, CLAP, LV2 UI)
 bash scripts/check_macos_editor.sh                              # WKWebView editor in an NSWindow (VST3 + CLAP)
 bash scripts/check_editor_sdk.sh                                # editor SDK under node, bindings and tsc
 bash scripts/check_standalone.sh                                # standalone apps, MIDI round trip, editor window

@@ -1,6 +1,7 @@
 // Command {{.Module}} is the {{.Name}} MIDI effect: it transposes notes and
-// passes other events through. One package builds it as a VST3, CLAP and
-// Audio Unit (MIDI processor) plugin and as a standalone application:
+// passes other events through. One package builds it as a VST3, CLAP,
+// Audio Unit (MIDI processor, macOS) and LV2 (Linux) plugin and as a
+// standalone application:
 //
 //	go test ./...
 //	go tool vst3go build -install . {{printf "%q" .Name}}

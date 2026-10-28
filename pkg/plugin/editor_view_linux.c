@@ -11,6 +11,7 @@
 #include <X11/Xlib.h>
 
 #include "editor_view.h"
+#include "lv2_linux.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -178,6 +179,7 @@ static Steinberg_tresult SMTG_STDMETHODCALLTYPE editorView_attached(void* thisIn
     Display* xdisplay = gdk_x11_display_get_xdisplay(display);
     Window child = gdk_x11_window_get_xid(gtk_widget_get_window(view->window));
     XReparentWindow(xdisplay, child, (Window)(uintptr_t)parent, 0, 0);
+    vst3goLinuxEditorWindow = child;
     gtk_widget_show_all(view->window);
     XMapWindow(xdisplay, child);
     XFlush(xdisplay);

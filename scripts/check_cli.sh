@@ -2,10 +2,12 @@
 # Checks the vst3go command the way a plugin author uses it: vst3go new
 # creates an effect, an instrument and a MIDI effect module against this
 # checkout, their generated tests pass, and go tool vst3go build writes every
-# format of the host (VST3, CLAP, Audio Unit on macOS, standalone app). Set
-# VST3_VALIDATOR and CLAP_VALIDATOR to also run the Steinberg validator and
-# clap-validator on the bundles; on macOS the Audio Units go through auval
-# (installed into ~/Library/Audio/Plug-Ins/Components for the run).
+# format of the host (VST3, CLAP, Audio Unit on macOS, LV2 on Linux,
+# standalone app). Set VST3_VALIDATOR and CLAP_VALIDATOR to also run the
+# Steinberg validator and clap-validator on the bundles; on macOS the Audio
+# Units go through auval (installed into ~/Library/Audio/Plug-Ins/Components
+# for the run), on Linux the LV2 bundles through lv2_validate and lv2lint
+# when they are installed.
 #
 # usage: scripts/check_cli.sh [output-dir]
 set -euo pipefail
@@ -32,7 +34,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-formats=vst3,clap,app
+formats=vst3,clap,lv2,app
 if [[ "$host_os" == "darwin" ]]; then
   formats=vst3,clap,au,app
 fi
@@ -78,6 +80,27 @@ for kind in effect instrument midi; do
       exit 1
     }
     checks="${checks}, clap-validator: $(grep 'tests run' "${out}/${kind}.clap.txt" | tail -1 | sed $'s/\033\\[[0-9;]*m//g')"
+  fi
+  if [[ "$host_os" == "linux" ]] && command -v lv2_validate >/dev/null; then
+    # lv2_validate splits paths with spaces.
+    ttl="${out}/${kind}-ttl"
+    mkdir -p "$ttl"
+    cp "${dist}/${name}.lv2"/*.ttl "$ttl/"
+    lv2_validate "$ttl"/*.ttl > "${out}/${kind}.lv2.txt" 2>&1 && ! grep -q "^error\|^Skipping file ${out}" "${out}/${kind}.lv2.txt" || {
+      tail -20 "${out}/${kind}.lv2.txt"
+      echo "FAIL ${kind}: lv2_validate" >&2
+      exit 1
+    }
+    checks="${checks}, lv2_validate ok"
+    if command -v lv2lint >/dev/null; then
+      uri="$(sed -n 's/^<\(urn:vst3go:[^>]*\)>$/\1/p' "${dist}/${name}.lv2/manifest.ttl" | grep -v ':ui$' | grep -v ':preset:' | head -1)"
+      lv2lint -I "${dist}/${name}.lv2/" "$uri" >> "${out}/${kind}.lv2.txt" 2>&1 || {
+        tail -20 "${out}/${kind}.lv2.txt"
+        echo "FAIL ${kind}: lv2lint" >&2
+        exit 1
+      }
+      checks="${checks}, lv2lint ok"
+    fi
   fi
   if [[ "$host_os" == "darwin" ]]; then
     target="${components}/vst3go-cli-check-${kind}.component"

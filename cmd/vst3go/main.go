@@ -1,7 +1,7 @@
 // Command vst3go creates and builds vst3go plugins.
 //
 //	vst3go new [flags] <dir> <Name>        scaffold a plugin module
-//	vst3go build [flags] <package> <Name>  build VST3, CLAP, Audio Unit and app bundles
+//	vst3go build [flags] <package> <Name>  build VST3, CLAP, Audio Unit, LV2 and app bundles
 //
 // Add it to a plugin module as a tool (go get -tool
 // github.com/th-release/vst3go/cmd/vst3go) and run it with go tool vst3go;

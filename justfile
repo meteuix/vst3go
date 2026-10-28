@@ -50,7 +50,15 @@ au package name out='dist':
 validate-au out='dist/validation-au':
   bash scripts/validate_au.sh "{{out}}"
 
-# Go tests, VST3 and CLAP validation for every validation plugin on Linux in Docker.
+# Build a Linux LV2 bundle from a main package, e.g. `just lv2 ./myplugin MyPlugin`.
+lv2 package name out='dist':
+  go run ./cmd/vst3go build -format lv2 -o "{{out}}" "{{package}}" "{{name}}"
+
+# Build the validation plugins as LV2 bundles and run lv2_validate, lv2lint (when installed) and lv2check (Linux).
+validate-lv2 out='dist/validation-lv2':
+  bash scripts/validate_lv2.sh "{{out}}"
+
+# Go tests, VST3, CLAP and LV2 validation for every validation plugin and the vst3go command check on Linux in Docker.
 # sdk: VST3 SDK checkout; platform: e.g. linux/amd64 (default: native).
 docker-validate-linux sdk platform='':
   bash scripts/docker_validate_linux.sh "{{sdk}}" {{platform}}

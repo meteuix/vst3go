@@ -33,13 +33,13 @@ type buildConfig struct {
 	tmp          string
 }
 
-var allFormats = []string{"vst3", "clap", "au", "app"}
+var allFormats = []string{"vst3", "clap", "au", "lv2", "app"}
 
 func defaultFormats(goos string) string {
 	if goos == "darwin" {
 		return "vst3,clap,au"
 	}
-	return "vst3,clap"
+	return "vst3,clap,lv2"
 }
 
 func runBuild(args []string) error {
@@ -55,6 +55,7 @@ Builds the plugin package as the requested formats into the output folder:
   vst3   <Name>.vst3 bundle with moduleinfo.json
   clap   <Name>.clap (bundle on macOS, shared object on Linux)
   au     <Name>.component Audio Unit bundle (macOS)
+  lv2    <Name>.lv2 bundle with its Turtle files (Linux)
   app    standalone application (<Name>.app on macOS, executable on Linux;
          main must call standalone.Main)
 Tags in GOFLAGS are kept. Windows builds: scripts/docker_build_windows.sh.
@@ -65,7 +66,7 @@ Tags in GOFLAGS are kept. Windows builds: scripts/docker_build_windows.sh.
 	formats := fs.String("format", defaultFormats(goos), "comma-separated formats: "+strings.Join(allFormats, ", "))
 	out := fs.String("o", "dist", "output folder")
 	tags := fs.String("tags", "", "extra comma-separated build tags (e.g. webkitgtk for the Linux editor)")
-	install := fs.Bool("install", false, "copy the plugins into the user plugin folders (~/Library/Audio/Plug-Ins, ~/.vst3, ~/.clap)")
+	install := fs.Bool("install", false, "copy the plugins into the user plugin folders (~/Library/Audio/Plug-Ins, ~/.vst3, ~/.clap, ~/.lv2)")
 	id := fs.String("id", "", "bundle identifier (default com.vst3go.<name>)")
 	version := fs.String("version", "1.0.0", "bundle version")
 	if err := fs.Parse(args); err != nil {
@@ -102,6 +103,9 @@ Tags in GOFLAGS are kept. Windows builds: scripts/docker_build_windows.sh.
 		}
 		if f == "au" && goos != "darwin" {
 			return errors.New("Audio Units build on macOS only")
+		}
+		if f == "lv2" && goos != "linux" {
+			return errors.New("LV2 plugins build on Linux only")
 		}
 		if !slices.Contains(c.formats, f) {
 			c.formats = append(c.formats, f)
@@ -149,6 +153,8 @@ func (c *buildConfig) build() error {
 			path, err = c.clap(lib)
 		case "au":
 			path, err = c.au(lib)
+		case "lv2":
+			path, err = c.lv2(lib)
 		case "app":
 			path, err = c.app()
 		}
@@ -279,6 +285,20 @@ func (c *buildConfig) au(lib string) (string, error) {
 	return bundle, os.MkdirAll(filepath.Join(bundle, "Contents", "Resources"), 0o755)
 }
 
+func (c *buildConfig) lv2(lib string) (string, error) {
+	bundle := filepath.Join(c.out, c.name+".lv2")
+	binary := filepath.Join(bundle, c.name+".so")
+	if err := c.freshBundle(bundle, binary, lib); err != nil {
+		return "", err
+	}
+	tool, err := c.tool("lv2info")
+	if err != nil {
+		return "", err
+	}
+	_, err = output(tool, binary, bundle)
+	return bundle, err
+}
+
 func (c *buildConfig) app() (string, error) {
 	if c.goos != "darwin" {
 		path := filepath.Join(c.out, c.name)
@@ -381,6 +401,8 @@ func (c *buildConfig) installAll(built []string) error {
 			if c.goos == "darwin" {
 				dir = filepath.Join(home, "Library", "Audio", "Plug-Ins", "CLAP")
 			}
+		case strings.HasSuffix(path, ".lv2"):
+			dir = filepath.Join(home, ".lv2")
 		case strings.HasSuffix(path, ".component"):
 			dir = filepath.Join(home, "Library", "Audio", "Plug-Ins", "Components")
 			registrar = true

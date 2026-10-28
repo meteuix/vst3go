@@ -6,9 +6,9 @@ This fork is intentionally different from the original `justyntemme/vst3go` proj
 
 It contains:
 
-- The official VST3 C API header (`include/vst3`), the CLAP headers (`include/clap`) and the C bridge glue in `pkg/plugin`
+- The official VST3 C API header (`include/vst3`), the CLAP headers (`include/clap`), the LV2 headers (`include/lv2`) and the C bridge glue in `pkg/plugin`
 - Go bindings for VST3 types and process structures
-- The plugin wrapper/runtime used to expose Go processors as VST3, CLAP and (on macOS) AUv2 plugins (one binary serves every format), and the same package as a standalone application with audio/MIDI devices and its editor in a window (`pkg/standalone`)
+- The plugin wrapper/runtime used to expose Go processors as VST3, CLAP, (on macOS) AUv2 and (on Linux) LV2 plugins (one binary serves every format), and the same package as a standalone application with audio/MIDI devices and its editor in a window (`pkg/standalone`)
 - A web editor SDK (`window.vst3go`, custom pages, typed TypeScript parameter bindings)
 - Generic plugin authoring primitives such as buses, parameters, process context, state, and MIDI/event transport
 - Host features for effects, instruments and MIDI plugins: sample-accurate automation, 32/64-bit processing, sidechains and surround, MIDI CC/learn/MIDI 2.0 mapping, note expression and MPE, keyswitches, factory programs, `.vstpreset` presets, units, SysEx, parameter smoothing, edit gestures, distributed processor/controller, several plugins per binary, and host-free plugin tests (`pkg/plugintest`)
@@ -37,7 +37,7 @@ The `vst3go` command creates a plugin module and builds it in every format
 go run github.com/th-release/vst3go/cmd/vst3go@latest new -type effect ./mygain "My Gain"
 cd mygain
 go test ./...                                # offline tests with pkg/plugintest
-go tool vst3go build -install . "My Gain"     # VST3, CLAP (and AU on macOS), into the user plugin folders
+go tool vst3go build -install . "My Gain"     # VST3, CLAP, AU (macOS) or LV2 (Linux), into the user plugin folders
 go tool vst3go build -format app . "My Gain"  # standalone application
 ```
 
@@ -109,7 +109,9 @@ just validate-clap /path/to/clap-validator   # clap-validator + clapcheck on int
 just au ./path/to/plugin MyPlugin            # build a macOS Audio Unit (.component)
 just check-cli                                # vst3go new/build: scaffolded modules, tests, every format
 just validate-au                              # auval (strict) + aucheck on internal/validation
-just docker-validate-linux /path/to/vst3sdk   # VST3 and CLAP validation on Linux in Docker
+just lv2 ./path/to/plugin MyPlugin           # build a Linux LV2 bundle (.lv2)
+just validate-lv2                             # lv2_validate + lv2lint + lv2check (lilv) on internal/validation
+just docker-validate-linux /path/to/vst3sdk   # VST3, CLAP, LV2 and vst3go command checks on Linux in Docker
 just docker-check-linux-editor                # Linux WebKitGTK editor under Xvfb
 just check-macos-editor                       # macOS editor in a real window, VST3 and CLAP
 just check-editor-sdk                         # web editor SDK under node and tsc
@@ -121,7 +123,7 @@ just docker-build-windows                     # mingw-w64 Windows cross build
 
 ## Validation
 
-- This repo validates the shared runtime layer with `just test`, the VST3 contract with `just validate-vst3` (Steinberg validator in extensive mode plus `internal/validation/hostcheck` for sample-accurate processing), the CLAP contract with `just validate-clap` (clap-validator plus `hostcheck/clapcheck.c`), the Audio Unit contract with `just validate-au` (Apple's auval in strict mode plus `hostcheck/aucheck_darwin.m`), and the Windows build path with `just windows-smoke` when the host shell is available.
+- This repo validates the shared runtime layer with `just test`, the VST3 contract with `just validate-vst3` (Steinberg validator in extensive mode plus `internal/validation/hostcheck` for sample-accurate processing), the CLAP contract with `just validate-clap` (clap-validator plus `hostcheck/clapcheck.c`), the Audio Unit contract with `just validate-au` (Apple's auval in strict mode plus `hostcheck/aucheck_darwin.m`), the LV2 contract with `just validate-lv2` (lv2_validate, lv2lint and `hostcheck/lv2check.c` on lilv), and the Windows build path with `just windows-smoke` when the host shell is available.
 - Platform-specific integration checks, host app behavior, and downstream DSP/plugin wiring belong in the companion `synthkit` repository or the consumer project.
 - Windows packaging and bundle layout checks in this repo stay focused on the generated DLL, header sidecar, and layout contract.
 - Real Windows signoff should follow `docs/windows-validation.md` so toolchain, bundle, host, and WebView2 behavior are captured consistently.

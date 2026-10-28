@@ -177,7 +177,11 @@ work, without taking on DSP (that stays in `synthkit`).
       (effect, instrument, MIDI effect) with tests, `build` writes every
       format (VST3, CLAP, Audio Unit, standalone app) for a package in any
       module and installs them into the user plugin folders.
-- [ ] LV2 plugin format on Linux, validated with lv2lint.
+- [x] LV2 plugin format on Linux (`lv2_linux.c`, `lv2ui_linux.c`): every LV2
+      plugin hosts the plugin's CLAP entry; generated Turtle with ports,
+      units, scale points, presets from programs, state, MIDI and
+      transport atoms, latency, side chains and the X11 editor UI; passes
+      lv2_validate, lv2lint and `hostcheck/lv2check.c` (lilv).
 
 ## Ongoing Rules
 
