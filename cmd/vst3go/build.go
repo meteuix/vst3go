@@ -79,6 +79,12 @@ Tags in GOFLAGS are kept. Windows builds: scripts/docker_build_windows.sh.
 		pkg: fs.Arg(0), name: fs.Arg(1), out: *out, install: *install, version: *version,
 		goos: goos, goarch: goarch,
 	}
+	if !strings.HasPrefix(c.pkg, ".") && !filepath.IsAbs(c.pkg) {
+		// A folder of the current module, not an import path.
+		if info, err := os.Stat(c.pkg); err == nil && info.IsDir() {
+			c.pkg = "./" + c.pkg
+		}
+	}
 	if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 _.-]*$`).MatchString(c.name) {
 		return fmt.Errorf("name %q: use letters, digits, space, '_', '.' or '-'", c.name)
 	}
