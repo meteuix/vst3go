@@ -85,3 +85,5 @@ core
 core.*
 
 .gocache/
+
+.gjc
