@@ -311,35 +311,47 @@ func (c *componentImpl) collectParameterChanges(ctx *process.Context, changes un
 			continue
 		}
 		id := uint32(C.vst3go_paramqueue_id(queue))
-		isController := c.midiCC.owns(id)
 		points := C.vst3go_paramqueue_count(queue)
 		for j := C.int32_t(0); j < points; j++ {
-			if C.vst3go_paramqueue_point(queue, j, &scratch.c.sampleOffset, &scratch.c.value) != C.Steinberg_tresult(vst3.ResultOK) {
-				continue
-			}
-			offset := int(scratch.c.sampleOffset)
-			value := float64(scratch.c.value)
-			if isController {
-				c.midiCC.set(id, value)
-				ctx.AddInputEvent(c.midiCC.event(id, value, int32(offset)))
-				continue
-			}
-			ctx.AddParameterChange(id, value, offset)
-			if id == ProgramParamID && c.programs != nil {
-				c.applyProgram(ctx, c.programs.index(value), offset)
+			if C.vst3go_paramqueue_point(queue, j, &scratch.c.sampleOffset, &scratch.c.value) == C.Steinberg_tresult(vst3.ResultOK) {
+				c.queueParameterChange(ctx, id, float64(scratch.c.value), int(scratch.c.sampleOffset))
 			}
 		}
 	}
 }
 
-func (c *componentImpl) writeOutputParameters(ctx *process.Context, changes unsafe.Pointer) {
+// queueParameterChange routes one incoming automation point: hidden MIDI
+// controller parameters become events, the program selector also queues the
+// program's values, everything else is a sample-accurate change.
+func (c *componentImpl) queueParameterChange(ctx *process.Context, id uint32, value float64, offset int) {
+	if c.midiCC.owns(id) {
+		c.midiCC.set(id, value)
+		ctx.AddInputEvent(c.midiCC.event(id, value, int32(offset)))
+		return
+	}
+	ctx.AddParameterChange(id, value, offset)
+	if id == ProgramParamID && c.programs != nil {
+		c.applyProgram(ctx, c.programs.index(value), offset)
+	}
+}
+
+// publishOutputParameters stores the block's output parameter values
+// (meters) in the registry, where the controller and editor read them.
+func (c *componentImpl) publishOutputParameters(ctx *process.Context) {
 	for _, change := range ctx.OutputParameterChanges() {
 		if p, ok := c.params.GetOK(change.ParamID); ok {
 			p.SetNormalized(change.Value)
 		}
-		if changes != nil {
-			C.vst3go_paramchanges_add_point(changes, C.uint32_t(change.ParamID), C.int32_t(change.SampleOffset), C.double(change.Value))
-		}
+	}
+}
+
+func (c *componentImpl) writeOutputParameters(ctx *process.Context, changes unsafe.Pointer) {
+	c.publishOutputParameters(ctx)
+	if changes == nil {
+		return
+	}
+	for _, change := range ctx.OutputParameterChanges() {
+		C.vst3go_paramchanges_add_point(changes, C.uint32_t(change.ParamID), C.int32_t(change.SampleOffset), C.double(change.Value))
 	}
 }
 

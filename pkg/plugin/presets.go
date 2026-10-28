@@ -34,8 +34,9 @@ func (c *componentImpl) presetDir() (string, error) {
 	return preset.UserDir(c.pluginInfo.Vendor, c.pluginInfo.Name)
 }
 
-func (h hostHandle) SavePreset(path string) error {
-	f, err := h.w.component.presetFile()
+// savePreset writes the current state to a .vstpreset file.
+func (c *componentImpl) savePreset(path string) error {
+	f, err := c.presetFile()
 	if err != nil {
 		return err
 	}
@@ -45,15 +46,27 @@ func (h hostHandle) SavePreset(path string) error {
 	return preset.WriteFile(path, f)
 }
 
-func (h hostHandle) LoadPreset(path string) error {
+// readPreset returns the component state of a .vstpreset file saved for
+// this plugin.
+func (c *componentImpl) readPreset(path string) ([]byte, error) {
 	f, err := preset.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if f.ClassID != c.pluginInfo.UID() {
+		return nil, fmt.Errorf("%s: %w", path, errForeignPreset)
+	}
+	return f.Component, nil
+}
+
+func (h hostHandle) SavePreset(path string) error { return h.w.component.savePreset(path) }
+
+func (h hostHandle) LoadPreset(path string) error {
+	state, err := h.w.component.readPreset(path)
 	if err != nil {
 		return err
 	}
-	if f.ClassID != h.w.component.pluginInfo.UID() {
-		return fmt.Errorf("%s: %w", path, errForeignPreset)
-	}
-	return h.w.applyState(f.Component, true)
+	return h.w.applyState(state, true)
 }
 
 // applyState restores a component state outside the host's setState: it

@@ -35,6 +35,39 @@ One binary can hold several plugins: call `plugin.Register` once per plugin
 `CategoryFxEQ`, `CategoryFxDynamics` or `CategoryInstrumentSynth`; combine
 several with `|`.
 
+## Testing plugins
+
+`pkg/plugintest` runs a plugin in `go test` without a host, through the same
+runtime a VST3 host drives (lifecycle, sample-accurate automation, MIDI
+controller mapping, programs, smoothing, state, presets):
+
+```go
+func TestSynth(t *testing.T) {
+	p := plugintest.New(t, synthPlugin{})
+	p.Note(0, 69, 1, 300, 0)                                  // A4 at sample 300
+	p.SendController(0, plugin.MIDIControllerPitchBend, 0, 1) // via IMidiMapping
+	p.Automate(paramCutoff, 1000, 0.25)                       // sample-accurate
+	out := p.RenderSilence(48000, 0, 2)
+	if f := plugintest.ZeroCrossingFrequency(out[0][1000:], 48000); ... {}
+}
+```
+
+- `plugintest.New` creates and activates an instance (`plugin.OfflineSetup`
+  for sample rate, block size, 64-bit, process mode); `Render`,
+  `RenderSilence`, `ProcessBuses` (sidechains, aux outputs), `Process64` and
+  `ProcessEvents` (MIDI effects) process buffers of any length in host-sized
+  blocks, filling buses the test leaves out with silence.
+- `Transport` sets tempo and play state; it advances while playing.
+- `OutputEvents`, `OutputParameters` (meters), `Latency`, `TakeRestarts` and
+  `TakeMessages` expose what the plugin reported; `State`/`SetState` round
+  trip state.
+- Signal helpers (`Sine`, `Impulse`, `Constant`, `Silence`) and analysis
+  (`Peak`, `RMS`, `PeakDB`, `FirstNonZero`, `ZeroCrossingFrequency`).
+
+`plugin.Offline` is the same engine without `testing`, for offline
+renderers and batch tools. Each plugin in `internal/validation` has tests
+written this way.
+
 ## Processing model
 
 `ProcessAudio(ctx)` runs on the audio thread. It must not lock, block or do I/O.

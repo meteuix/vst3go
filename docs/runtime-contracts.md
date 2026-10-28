@@ -15,6 +15,7 @@ Downstream projects should treat these packages as the supported API surface:
 - `pkg/framework/process`
 - `pkg/framework/state`
 - `pkg/preset`
+- `pkg/plugintest`
 
 The C bridge sources in `pkg/plugin`, embedded editor assets, and platform-specific editor shims support that API surface but are not intended to become a higher-level product framework.
 
