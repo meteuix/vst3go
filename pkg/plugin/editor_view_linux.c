@@ -96,21 +96,11 @@ static struct Steinberg_Linux_ITimerHandlerVtbl timerVtbl = {
 static void onScriptMessage(WebKitUserContentManager* manager, WebKitJavascriptResult* result, gpointer userData) {
     (void)manager;
     VST3GoEditorView* view = (VST3GoEditorView*)userData;
-    JSCValue* message = webkit_javascript_result_get_js_value(result);
-    if (!jsc_value_is_object(message)) {
-        return;
+    char* json = jsc_value_to_json(webkit_javascript_result_get_js_value(result), 0);
+    if (json) {
+        GoEditorMessage(view->component, json, (int)strlen(json));
+        g_free(json);
     }
-    JSCValue* type = jsc_value_object_get_property(message, "type");
-    JSCValue* id = jsc_value_object_get_property(message, "id");
-    JSCValue* value = jsc_value_object_get_property(message, "value");
-    char* typeName = jsc_value_is_string(type) ? jsc_value_to_string(type) : NULL;
-    if (typeName && strcmp(typeName, "param-change") == 0 && jsc_value_is_number(id) && jsc_value_is_number(value)) {
-        GoEditControllerSetParamNormalizedWithNotification(view->component, (Steinberg_Vst_ParamID)jsc_value_to_double(id), jsc_value_to_double(value));
-    }
-    g_free(typeName);
-    g_object_unref(type);
-    g_object_unref(id);
-    g_object_unref(value);
 }
 
 static void loadContent(VST3GoEditorView* view) {

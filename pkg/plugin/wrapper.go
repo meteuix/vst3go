@@ -231,7 +231,7 @@ func (w *componentWrapper) notifyEditorParameterChanged(id uint32, normalized, p
 const (
 	messagePrefix  = "vst3go."
 	messageRestart = messagePrefix + "restart" // int32 flags
-	messageEdit    = messagePrefix + "edit"    // uint32 id, float64 normalized
+	messageEdit    = messagePrefix + "edit"    // uint8 op, uint32 id, float64 normalized
 )
 
 // hostHandle implements Host for a processor.
@@ -254,16 +254,32 @@ func (h hostHandle) RestartComponent(flags RestartFlags) error {
 	return nil
 }
 
+// Edit operations forwarded from the processor side of a distributed plugin.
+const (
+	editPerform uint8 = iota
+	editBegin
+	editEnd
+)
+
 func (h hostHandle) EditParameter(id uint32, normalized float64) error {
+	return h.edit(editPerform, id, normalized)
+}
+
+func (h hostHandle) BeginEdit(id uint32) error { return h.edit(editBegin, id, 0) }
+
+func (h hostHandle) EndEdit(id uint32) error { return h.edit(editEnd, id, 0) }
+
+func (h hostHandle) edit(op uint8, id uint32, normalized float64) error {
 	if h.w.kind == kindProcessor {
 		if !h.w.component.params.Has(id) {
 			return errInvalidArgument
 		}
-		data := binary.LittleEndian.AppendUint32(nil, id)
+		data := []byte{op}
+		data = binary.LittleEndian.AppendUint32(data, id)
 		data = binary.LittleEndian.AppendUint64(data, math.Float64bits(normalized))
 		return h.w.sendMessage(messageEdit, data)
 	}
-	return h.w.component.EditParameter(id, normalized)
+	return h.w.component.edit(op, id, normalized)
 }
 
 func (h hostHandle) SendMessage(id string, data []byte) error {
@@ -299,10 +315,10 @@ func (w *componentWrapper) receiveMessage(id string, data []byte) {
 		}
 		return
 	case messageEdit:
-		if w.kind == kindController && len(data) >= 12 {
-			id := binary.LittleEndian.Uint32(data)
-			value := math.Float64frombits(binary.LittleEndian.Uint64(data[4:]))
-			_ = w.component.EditParameter(id, value)
+		if w.kind == kindController && len(data) >= 13 {
+			id := binary.LittleEndian.Uint32(data[1:])
+			value := math.Float64frombits(binary.LittleEndian.Uint64(data[5:]))
+			_ = w.component.edit(data[0], id, value)
 		}
 		return
 	}

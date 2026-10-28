@@ -380,9 +380,14 @@ type Host interface {
 	// RestartComponent asks the host to re-query state, e.g. latency.
 	RestartComponent(flags RestartFlags) error
 	// EditParameter changes a parameter from the plugin side (a preset
-	// load, a MIDI-learn result, ...) and records it as a host edit
-	// (beginEdit/performEdit/endEdit), so automation and undo see it.
+	// load, a MIDI-learn result, a custom control) and records it as a host
+	// edit, so automation and undo see it. Outside a gesture it is a
+	// complete edit; between BeginEdit and EndEdit it is one gesture step.
 	EditParameter(id uint32, normalized float64) error
+	// BeginEdit and EndEdit bracket a continuous edit such as a knob drag,
+	// so the host records it as one automation pass and one undo step.
+	BeginEdit(id uint32) error
+	EndEdit(id uint32) error
 	// SendMessage delivers data to the MessageReceiver of the other side of
 	// a DistributedPlugin. Single-component plugins have no other side and
 	// get an error.

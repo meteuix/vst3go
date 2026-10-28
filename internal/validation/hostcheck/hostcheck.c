@@ -144,16 +144,19 @@ static Steinberg_tresult SMTG_STDMETHODCALLTYPE h_create(void* t, Steinberg_TUID
 }
 static struct Steinberg_Vst_IHostApplicationVtbl hostVtbl = { h_qi, ref, ref, h_name, h_create };
 
-typedef struct { struct Steinberg_Vst_IComponentHandlerVtbl* lpVtbl; Steinberg_int32 restarts; int edits; Steinberg_Vst_ParamID lastEdit; double lastValue; } Handler;
+typedef struct { struct Steinberg_Vst_IComponentHandlerVtbl* lpVtbl; Steinberg_int32 restarts; int edits; Steinberg_Vst_ParamID lastEdit; double lastValue; char gestures[64]; int ngestures; } Handler;
 static Handler handler;
 static Steinberg_tresult SMTG_STDMETHODCALLTYPE hd_qi(void* t, const Steinberg_TUID iid, void** o) {
     if (uid_eq(iid, Steinberg_FUnknown_iid) || uid_eq(iid, Steinberg_Vst_IComponentHandler_iid)) { *o = t; return Steinberg_kResultOk; }
     *o = NULL; return Steinberg_kNoInterface;
 }
-static Steinberg_tresult SMTG_STDMETHODCALLTYPE hd_edit(void* t, Steinberg_Vst_ParamID id) { (void)t; (void)id; return Steinberg_kResultOk; }
-static Steinberg_tresult SMTG_STDMETHODCALLTYPE hd_perform(void* t, Steinberg_Vst_ParamID id, Steinberg_Vst_ParamValue v) { Handler* h = t; h->edits++; h->lastEdit = id; h->lastValue = v; return Steinberg_kResultOk; }
+// gestures logs edit calls as B(egin), P(erform) and E(nd).
+static void hd_log(Handler* h, char op) { if (h->ngestures < 63) { h->gestures[h->ngestures++] = op; h->gestures[h->ngestures] = 0; } }
+static Steinberg_tresult SMTG_STDMETHODCALLTYPE hd_begin(void* t, Steinberg_Vst_ParamID id) { (void)id; hd_log(t, 'B'); return Steinberg_kResultOk; }
+static Steinberg_tresult SMTG_STDMETHODCALLTYPE hd_end(void* t, Steinberg_Vst_ParamID id) { (void)id; hd_log(t, 'E'); return Steinberg_kResultOk; }
+static Steinberg_tresult SMTG_STDMETHODCALLTYPE hd_perform(void* t, Steinberg_Vst_ParamID id, Steinberg_Vst_ParamValue v) { Handler* h = t; h->edits++; h->lastEdit = id; h->lastValue = v; hd_log(h, 'P'); return Steinberg_kResultOk; }
 static Steinberg_tresult SMTG_STDMETHODCALLTYPE hd_restart(void* t, Steinberg_int32 flags) { ((Handler*)t)->restarts |= flags; return Steinberg_kResultOk; }
-static struct Steinberg_Vst_IComponentHandlerVtbl handlerVtbl = { hd_qi, ref, ref, hd_edit, hd_perform, hd_edit, hd_restart };
+static struct Steinberg_Vst_IComponentHandlerVtbl handlerVtbl = { hd_qi, ref, ref, hd_begin, hd_perform, hd_end, hd_restart };
 
 // Connection proxy between processor and controller that logs message IDs.
 typedef struct { struct Steinberg_Vst_IConnectionPointVtbl* lpVtbl; struct Steinberg_Vst_IConnectionPoint* target; char log[16][64]; int count; } Proxy;
@@ -508,6 +511,19 @@ static void test_ducker(const char* path) {
     data.numSamples = N * 4; data.numInputs = 2; data.numOutputs = 1; data.inputs = ins; data.outputs = &out;
     CHECK(p.proc->lpVtbl->process(p.proc, &data) == Steinberg_kResultOk, "process");
     for (int i = 0; i < N * 4; i++) CHECK(o0[i] == (i == (int)latency ? 1.0f : 0.0f), "impulse delayed by latency: o[%d]=%f", i, o0[i]);
+
+    // Threshold learn: the processor answers "ducker.learn" with a
+    // Host.BeginEdit/EditParameter/EndEdit gesture, which the runtime
+    // forwards to the controller and on to the host as one gesture.
+    struct Steinberg_Vst_IMessage* learn;
+    CHECK(hostApp.lpVtbl->createInstance(&hostApp, (char*)Steinberg_Vst_IMessage_iid, (char*)Steinberg_Vst_IMessage_iid, (void**)&learn) == Steinberg_kResultOk, "create message");
+    learn->lpVtbl->setMessageID(learn, "ducker.learn");
+    handler.ngestures = 0; handler.gestures[0] = 0;
+    CHECK(toProcessor.lpVtbl->notify(&toProcessor, learn) == Steinberg_kResultOk, "notify learn");
+    learn->lpVtbl->release(learn);
+    CHECK(!strcmp(handler.gestures, "BPE"), "learn gesture %s, want BPE", handler.gestures);
+    CHECK(handler.lastEdit == 0 && handler.lastValue == 0.0, "learned threshold id=%u value=%f (silent sidechain = -60 dB)", handler.lastEdit, handler.lastValue);
+    CHECK(p.ctrl->lpVtbl->getParamNormalized(p.ctrl, 0) == 0.0, "controller has the learned threshold");
     printf("ducker ok\n");
 }
 

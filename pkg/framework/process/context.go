@@ -92,6 +92,16 @@ type Context struct {
 
 	// Output parameter values (meters, gain reduction, ...)
 	outParams []ParameterChange
+
+	// Parameter ramps for parameters with a smoothing time
+	smooth      []smoothedParam
+	smoothIndex map[uint32]int
+	smoothRate  float64 // sample rate the ramps were prepared for
+}
+
+type smoothedParam struct {
+	param *param.Parameter
+	ramp  param.Ramp
 }
 
 const (
@@ -500,6 +510,9 @@ func (c *Context) Dispatch(process func(*Context)) {
 	total := c.blockSamples
 	c.setMainBuses()
 	changes := c.paramChanges[:c.changeCount]
+	if c.smoothIndex == nil || c.smoothRate != c.SampleRate {
+		c.PrepareSmoothing()
+	}
 
 	if total == 0 {
 		for _, change := range changes {
@@ -543,6 +556,7 @@ func (c *Context) setMainBuses() {
 }
 
 func (c *Context) runSegment(process func(*Context), start, end, total int) {
+	c.updateSmoothing()
 	if start == 0 && end == total {
 		process(c)
 		return
@@ -573,6 +587,49 @@ func (c *Context) runSegment(process func(*Context), start, end, total int) {
 	}
 
 	process(c)
+}
+
+// PrepareSmoothing creates the ramps of all parameters with a smoothing time
+// for the current SampleRate, starting at their current values. The runtime
+// calls it whenever processing is (re)started; Dispatch calls it when the
+// sample rate changed since.
+func (c *Context) PrepareSmoothing() {
+	c.smooth = c.smooth[:0]
+	c.smoothIndex = make(map[uint32]int)
+	c.smoothRate = c.SampleRate
+	if c.params == nil {
+		return
+	}
+	for _, p := range c.params.All() {
+		if p.Smoothing <= 0 {
+			continue
+		}
+		c.smoothIndex[p.ID] = len(c.smooth)
+		c.smooth = append(c.smooth, smoothedParam{
+			param: p,
+			ramp:  param.NewRamp(p.SmoothingMode, c.SampleRate, p.Smoothing, p.GetPlain()),
+		})
+	}
+}
+
+// Smoothed returns the ramp of a parameter that has a smoothing time
+// (param.Builder.Smooth), in plain units. At the start of every
+// ProcessAudio call its target is the current parameter value; call Next
+// once per sample (or Fill/Skip) to advance it. The ramp continues across
+// calls, so a host automation step glides over the smoothing time.
+//
+// It returns nil for parameters without a smoothing time.
+func (c *Context) Smoothed(id uint32) *param.Ramp {
+	if i, ok := c.smoothIndex[id]; ok {
+		return &c.smooth[i].ramp
+	}
+	return nil
+}
+
+func (c *Context) updateSmoothing() {
+	for i := range c.smooth {
+		c.smooth[i].ramp.SetTarget(c.smooth[i].param.GetPlain())
+	}
 }
 
 func (c *Context) restoreFullBlock(total int) {

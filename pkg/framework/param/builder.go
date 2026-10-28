@@ -89,6 +89,29 @@ func (b *Builder) Bypass() *Builder {
 	return b
 }
 
+// Smooth ramps value changes linearly over seconds in
+// process.Context.Smoothed (gains, mix, pan).
+func (b *Builder) Smooth(seconds float64) *Builder {
+	b.param.Smoothing = seconds
+	b.param.SmoothingMode = SmoothLinear
+	return b
+}
+
+// SmoothMultiplicative ramps value changes geometrically over seconds in
+// process.Context.Smoothed (frequencies, times). The range must be positive.
+func (b *Builder) SmoothMultiplicative(seconds float64) *Builder {
+	b.param.Smoothing = seconds
+	b.param.SmoothingMode = SmoothMultiplicative
+	return b
+}
+
+// InUnit places the parameter in a unit (parameter group); see
+// plugin.UnitProcessor.
+func (b *Builder) InUnit(unitID int32) *Builder {
+	b.param.UnitID = unitID
+	return b
+}
+
 // Formatter sets custom value formatting and parsing
 func (b *Builder) Formatter(format func(float64) string, parse func(string) (float64, error)) *Builder {
 	b.param.formatFunc = format

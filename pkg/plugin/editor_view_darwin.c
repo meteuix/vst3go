@@ -85,18 +85,11 @@ static Steinberg_IPlugViewVtbl editorViewVtbl = {
         return;
     }
 
-    NSDictionary *payload = (NSDictionary *)message.body;
-    if (![payload[@"type"] isEqualToString:@"param-change"]) {
+    NSData *json = [NSJSONSerialization dataWithJSONObject:message.body options:0 error:nil];
+    if (!json) {
         return;
     }
-
-    NSNumber *identifier = payload[@"id"];
-    NSNumber *value = payload[@"value"];
-    if (!identifier || !value) {
-        return;
-    }
-
-    GoEditControllerSetParamNormalizedWithNotification(self.owner->component, (Steinberg_Vst_ParamID)[identifier unsignedIntValue], (Steinberg_Vst_ParamValue)[value doubleValue]);
+    GoEditorMessage(self.owner->component, (char *)json.bytes, (int)json.length);
 }
 @end
 

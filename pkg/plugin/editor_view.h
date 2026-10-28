@@ -13,7 +13,9 @@ void* VST3GoCreateEditorView(uintptr_t component);
 void VST3GoEditorViewUpdateParameter(void* view, Steinberg_Vst_ParamID id, Steinberg_Vst_ParamValue normalized, Steinberg_Vst_ParamValue plain);
 extern char* GoEditControllerGetEditorHTML(uintptr_t component);
 extern void GoEditControllerClearEditorView(uintptr_t component, void* view);
-extern Steinberg_tresult GoEditControllerSetParamNormalizedWithNotification(uintptr_t component, Steinberg_Vst_ParamID id, Steinberg_Vst_ParamValue value);
+// GoEditorMessage handles a JSON message posted by the editor page
+// (window.vst3go in editor.js): parameter gestures and plugin messages.
+extern void GoEditorMessage(uintptr_t component, char* json, int size);
 
 #ifdef __cplusplus
 }

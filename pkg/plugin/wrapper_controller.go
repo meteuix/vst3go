@@ -162,16 +162,39 @@ func GoEditControllerSetParamNormalized(componentID C.uintptr_t, id C.uint32_t, 
 	return resultOK
 }
 
-// GoEditControllerSetParamNormalizedWithNotification is called by the
-// built-in editor when the user moves a control.
+// editorMessage is a message posted by the editor page.
+type editorMessage struct {
+	Type  string  `json:"type"`
+	ID    uint32  `json:"id"`
+	Value float64 `json:"value"`
+}
+
+// GoEditorMessage is called by the platform editor views with each JSON
+// message the page posts: "begin-edit", "param-change" and "end-edit".
 //
-//export GoEditControllerSetParamNormalizedWithNotification
-func GoEditControllerSetParamNormalizedWithNotification(componentID C.uintptr_t, id C.Steinberg_Vst_ParamID, value C.Steinberg_Vst_ParamValue) C.Steinberg_tresult {
+//export GoEditorMessage
+func GoEditorMessage(componentID C.uintptr_t, data *C.char, size C.int) {
+	defer recoverPanic(nil)
 	wrapper := getComponent(componentID)
-	if wrapper == nil {
-		return resultFalse
+	if wrapper == nil || data == nil || size <= 0 {
+		return
 	}
-	return resultFromError(wrapper.component.EditParameter(uint32(id), float64(value)))
+	wrapper.handleEditorMessage(C.GoBytes(unsafe.Pointer(data), size))
+}
+
+func (w *componentWrapper) handleEditorMessage(data []byte) {
+	var msg editorMessage
+	if json.Unmarshal(data, &msg) != nil {
+		return
+	}
+	switch msg.Type {
+	case "begin-edit":
+		_ = w.component.BeginEdit(msg.ID)
+	case "param-change":
+		_ = w.component.EditParameter(msg.ID, msg.Value)
+	case "end-edit":
+		_ = w.component.EndEdit(msg.ID)
+	}
 }
 
 //export GoEditControllerSetComponentHandler
@@ -205,6 +228,7 @@ func GoEditControllerCreateView(componentID C.uintptr_t, name *C.char) unsafe.Po
 func GoEditControllerClearEditorView(componentID C.uintptr_t, view unsafe.Pointer) {
 	if wrapper := getComponent(componentID); wrapper != nil {
 		wrapper.clearEditorView(view)
+		wrapper.component.endGestures()
 	}
 }
 

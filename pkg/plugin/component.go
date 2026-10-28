@@ -47,6 +47,9 @@ type componentImpl struct {
 	use64        atomic.Bool // host set up 64-bit processing
 
 	wrapper *componentWrapper // host notifications; nil in pure-Go tests
+
+	editMu   sync.Mutex
+	gestures map[uint32]bool // parameters inside a begin/end edit gesture
 }
 
 func newComponent(processor Processor, info plugin.Info) (*componentImpl, error) {
@@ -100,6 +103,7 @@ func (c *componentImpl) rebuildProcessContext() {
 	outputs := c.audioChannelCounts(bus.DirectionOutput)
 	ctx.ConfigureBuses(inputs, outputs, c.sidechainIndex())
 	ctx.SampleRate = c.sampleRate
+	ctx.PrepareSmoothing()
 	ctx.ProcessMode = c.processMode
 	c.processCtx = ctx
 }
@@ -442,22 +446,101 @@ func (c *componentImpl) ApplyEditorSnapshot(snapshot *EditorSnapshot) error {
 	return snapshot.Apply(c.params)
 }
 
-// EditParameter performs a plugin-initiated parameter change and reports it
-// to the host as a complete begin/perform/end edit gesture.
+// EditParameter performs a plugin-initiated parameter change. Inside a
+// BeginEdit/EndEdit gesture it is one step of the gesture; otherwise it is
+// reported to the host as a complete begin/perform/end edit.
 func (c *componentImpl) EditParameter(id uint32, value float64) error {
+	if !c.params.Has(id) {
+		return errInvalidArgument
+	}
+	if c.inGesture(id) {
+		return c.performEdit(id, value)
+	}
+	if err := c.BeginEdit(id); err != nil {
+		return err
+	}
+	err := c.performEdit(id, value)
+	if endErr := c.EndEdit(id); err == nil {
+		err = endErr
+	}
+	return err
+}
+
+// BeginEdit opens an edit gesture (a knob drag) so the host records the
+// following EditParameter calls as one automation pass and undo step.
+func (c *componentImpl) BeginEdit(id uint32) error {
+	if !c.params.Has(id) {
+		return errInvalidArgument
+	}
+	c.editMu.Lock()
+	if c.gestures[id] {
+		c.editMu.Unlock()
+		return nil
+	}
+	if c.gestures == nil {
+		c.gestures = make(map[uint32]bool)
+	}
+	c.gestures[id] = true
+	c.editMu.Unlock()
+	if c.wrapper != nil {
+		c.wrapper.notifyParamBeginEdit(id)
+	}
+	return nil
+}
+
+// EndEdit closes the gesture opened by BeginEdit.
+func (c *componentImpl) EndEdit(id uint32) error {
+	c.editMu.Lock()
+	open := c.gestures[id]
+	delete(c.gestures, id)
+	c.editMu.Unlock()
+	if open && c.wrapper != nil {
+		c.wrapper.notifyParamEndEdit(id)
+	}
+	return nil
+}
+
+func (c *componentImpl) edit(op uint8, id uint32, value float64) error {
+	switch op {
+	case editBegin:
+		return c.BeginEdit(id)
+	case editEnd:
+		return c.EndEdit(id)
+	default:
+		return c.EditParameter(id, value)
+	}
+}
+
+// endGestures closes every open gesture, e.g. when the editor closes while
+// a control is held.
+func (c *componentImpl) endGestures() {
+	c.editMu.Lock()
+	open := c.gestures
+	c.gestures = nil
+	c.editMu.Unlock()
+	if c.wrapper != nil {
+		for id := range open {
+			c.wrapper.notifyParamEndEdit(id)
+		}
+	}
+}
+
+func (c *componentImpl) inGesture(id uint32) bool {
+	c.editMu.Lock()
+	defer c.editMu.Unlock()
+	return c.gestures[id]
+}
+
+func (c *componentImpl) performEdit(id uint32, value float64) error {
 	p, ok := c.params.GetOK(id)
 	if !ok {
 		return errInvalidArgument
 	}
 	value = clampUnit(value)
-	if c.wrapper == nil {
-		p.SetNormalized(value)
-	} else {
-		c.wrapper.notifyParamBeginEdit(id)
-		p.SetNormalized(value)
+	p.SetNormalized(value)
+	if c.wrapper != nil {
 		c.wrapper.notifyParamPerformEdit(id, value)
 		c.wrapper.notifyEditorParameterChanged(id, p.GetNormalized(), p.GetPlain())
-		c.wrapper.notifyParamEndEdit(id)
 	}
 	if id == ProgramParamID {
 		c.selectProgram(c.programs.index(value))

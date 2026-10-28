@@ -23,6 +23,11 @@ type Parameter struct {
 	Flags        uint32
 	UnitID       int32
 
+	// Smoothing is the ramp time in seconds that process.Context.Smoothed
+	// uses when the value changes; 0 disables smoothing.
+	Smoothing     float64
+	SmoothingMode SmoothingMode
+
 	// Atomic value for lock-free access in audio thread
 	value uint64 // Store as uint64 for atomic operations
 

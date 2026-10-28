@@ -9,15 +9,42 @@ document.getElementById("plugin-vendor").textContent = model.plugin.vendor || "V
 document.getElementById("plugin-name").textContent = model.plugin.name || "Plugin Editor";
 document.getElementById("plugin-meta").textContent = [model.plugin.category, model.plugin.version].filter(Boolean).join(" · ");
 
-function sendChange(id, value) {
+// post sends a message to the plugin: WKWebView/WebKitGTK script message
+// handler or WebView2.
+function post(message) {
   if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.vst3go) {
-    window.webkit.messageHandlers.vst3go.postMessage({ type: "param-change", id, value });
+    window.webkit.messageHandlers.vst3go.postMessage(message);
     return;
   }
 
   if (window.chrome && window.chrome.webview) {
-    window.chrome.webview.postMessage({ type: "param-change", id, value });
+    window.chrome.webview.postMessage(message);
   }
+}
+
+function sendChange(id, value) {
+  post({ type: "param-change", id, value });
+}
+
+// bindGesture reports a pointer drag on element as one edit gesture, so the
+// host records it as one automation pass and undo step.
+function bindGesture(element, id) {
+  let active = false;
+  const end = () => {
+    if (active) {
+      active = false;
+      post({ type: "end-edit", id });
+    }
+  };
+  element.addEventListener("pointerdown", () => {
+    if (!active) {
+      active = true;
+      post({ type: "begin-edit", id });
+    }
+  });
+  element.addEventListener("pointerup", end);
+  element.addEventListener("pointercancel", end);
+  element.addEventListener("lostpointercapture", end);
 }
 
 const controlBindings = new Map();
@@ -212,6 +239,7 @@ function renderControl(control) {
     }
 
     range.addEventListener("input", () => updateFromNormalized(Number(range.value)));
+    bindGesture(range, control.id);
     value.addEventListener("change", () => {
       const plain = Number(value.value);
       const normalized = control.max > control.min ? (plain - control.min) / (control.max - control.min) : 0;

@@ -1,7 +1,9 @@
 // Command ducker is an example sidechain effect: the main signal is ducked
 // whenever the sidechain gets loud. A short lookahead delay shows latency
-// reporting. It is a distributed plugin: processor and controller are
-// separate objects that exchange messages through the host.
+// reporting, and Depth changes are smoothed. It is a distributed plugin:
+// processor and controller are separate objects that exchange messages
+// through the host; "ducker.learn" makes the processor set Threshold to the
+// measured sidechain peak with a host edit gesture.
 //
 // Build: scripts/build_vst3.sh internal/validation/ducker Ducker
 package main
@@ -50,7 +52,7 @@ func (duckerPlugin) CreateProcessor() plugin.Processor {
 	p := &duckerProcessor{BaseProcessor: frameworkplugin.NewBaseProcessor(bus.NewEffectStereoSidechain())}
 	p.Parameters().Add(
 		param.ThresholdParameter(paramThreshold, "Threshold", -60, 0, -30).Build(),
-		param.New(paramDepth, "Depth").Range(0, 48).Default(18).Unit("dB").Build(),
+		param.New(paramDepth, "Depth").Range(0, 48).Default(18).Unit("dB").Smooth(0.02).Build(),
 		param.ReleaseParameter(paramRelease, "Release", 1000).Build(),
 		param.New(paramReduction, "Gain Reduction").Range(0, 48).Default(0).Unit("dB").ReadOnly().Build(),
 		param.BypassParameter(paramBypass, "Bypass").Build(),
@@ -67,7 +69,8 @@ type duckerProcessor struct {
 	envelope float64
 
 	host     atomic.Pointer[hostRef]
-	reported int32 // latency last announced to the host
+	reported int32         // latency last announced to the host
+	peak     atomic.Uint64 // sidechain peak of the last block (float64 bits)
 }
 
 type hostRef struct{ plugin.Host }
@@ -76,6 +79,7 @@ type hostRef struct{ plugin.Host }
 const (
 	messageLatency = "ducker.latency" // processor -> controller
 	messageAck     = "ducker.ack"     // controller -> processor
+	messageLearn   = "ducker.learn"   // -> processor: learn the threshold
 )
 
 // SetHost receives the host handle: on the processor side its
@@ -103,11 +107,36 @@ func (p *duckerProcessor) SetActive(active bool) error {
 // ReceiveMessage runs on the side that did not send the message; the
 // controller acknowledges the processor's latency announcement.
 func (p *duckerProcessor) ReceiveMessage(id string, data []byte) {
-	if id == messageLatency && len(data) == 4 {
-		if host := p.host.Load(); host != nil {
+	host := p.host.Load()
+	if host == nil {
+		return
+	}
+	switch id {
+	case messageLatency:
+		if len(data) == 4 {
 			_ = host.SendMessage(messageAck, data)
 		}
+	case messageLearn:
+		p.learnThreshold(host)
 	}
+}
+
+// learnThreshold sets Threshold to the last measured sidechain peak. The
+// edit goes through the host as one gesture, like a knob turn.
+func (p *duckerProcessor) learnThreshold(host plugin.Host) {
+	threshold, ok := p.Parameters().GetOK(paramThreshold)
+	if !ok {
+		return
+	}
+	db := -math.MaxFloat64
+	if peak := math.Float64frombits(p.peak.Load()); peak > 0 {
+		db = 20 * math.Log10(peak)
+	}
+	if host.BeginEdit(paramThreshold) != nil {
+		return
+	}
+	_ = host.EditParameter(paramThreshold, threshold.Normalize(db))
+	_ = host.EndEdit(paramThreshold)
 }
 
 func (p *duckerProcessor) prepare(sampleRate float64, _ int32) error {
@@ -129,13 +158,12 @@ func (p *duckerProcessor) ProcessAudio(ctx *process.Context) {
 	n := ctx.NumSamples()
 	sidechain := ctx.Sidechain()
 	threshold := math.Pow(10, ctx.ParamPlain(paramThreshold)/20)
-	depth := ctx.ParamPlain(paramDepth)
-	if ctx.Param(paramBypass) >= 0.5 {
-		depth = 0 // keep the lookahead delay so bypass stays latency-aligned
-	}
+	depth := ctx.Smoothed(paramDepth)
+	bypass := ctx.Param(paramBypass) >= 0.5 // keeps the lookahead delay so bypass stays latency-aligned
 	releaseCoeff := math.Exp(-1 / (math.Max(ctx.ParamPlain(paramRelease), 1) / 1000 * p.SampleRate()))
 	size := len(p.delay[0])
 	maxReduction := 0.0
+	peak := 0.0
 
 	for i := 0; i < n; i++ {
 		// Detect on the sidechain; without one the ducker stays open.
@@ -143,6 +171,7 @@ func (p *duckerProcessor) ProcessAudio(ctx *process.Context) {
 		for _, ch := range sidechain {
 			level = math.Max(level, math.Abs(float64(ch[i])))
 		}
+		peak = math.Max(peak, level)
 		target := 0.0
 		if level > threshold {
 			target = 1
@@ -152,7 +181,10 @@ func (p *duckerProcessor) ProcessAudio(ctx *process.Context) {
 		} else {
 			p.envelope = target + (p.envelope-target)*releaseCoeff
 		}
-		reduction := depth * p.envelope
+		reduction := depth.Next() * p.envelope
+		if bypass {
+			reduction = 0
+		}
 		maxReduction = math.Max(maxReduction, reduction)
 		gain := float32(math.Pow(10, -reduction/20))
 
@@ -170,6 +202,8 @@ func (p *duckerProcessor) ProcessAudio(ctx *process.Context) {
 	for ch := maxChannels; ch < len(ctx.Output); ch++ {
 		clear(ctx.Output[ch])
 	}
+
+	p.peak.Store(math.Float64bits(peak))
 
 	if meter, ok := p.Parameters().GetOK(paramReduction); ok {
 		ctx.SetOutputParameter(paramReduction, meter.Normalize(maxReduction))

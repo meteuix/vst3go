@@ -49,6 +49,13 @@ several with `|`.
 - **Events** keep their host-block offsets: inside a segment, the sample index
   of an event is `int(event.Offset) - ctx.BlockOffset()`.
   `ctx.GetAllInputEvents()` returns the segment's events in order.
+- **Smoothing.** Give a parameter a ramp time with
+  `param.New(...).Smooth(seconds)` (linear: gain, mix, pan) or
+  `.SmoothMultiplicative(seconds)` (frequencies, times). `ctx.Smoothed(id)`
+  returns its `*param.Ramp` in plain units, retargeted at every segment start;
+  advance it with `Next()` per sample, `Fill(buf)` or `Skip(n)`. Ramps keep
+  running across segments and blocks and restart at the current value when
+  processing starts. `param.NewRamp` is available for DSP-internal values.
 - **Silence flags.** `ctx.InputSilenceFlags(bus)` reports silent input channels;
   `ctx.SetOutputSilenceFlags(bus, mask)` tells the host an output is silent.
 - **Output parameters** (meters, gain reduction): `ctx.SetOutputParameter(id, normalized)`
@@ -165,7 +172,11 @@ Implement `HostAwareProcessor.SetHost(plugin.Host)` to talk back to the host
 (from the UI/main thread only):
 
 - `EditParameter(id, normalized)` — plugin-side parameter changes (preset
-  loads, MIDI learn) recorded by the host as a full edit gesture.
+  loads, MIDI learn, custom controls) recorded by the host as an edit.
+- `BeginEdit(id)`/`EndEdit(id)` — bracket a continuous change (a drag) so the
+  host records one automation pass and one undo step; `EditParameter` calls
+  in between are steps of that gesture. The built-in editor does this for
+  slider drags.
 - `RestartComponent(flags)` — ask the host to re-read latency, parameter
   values/titles, I/O layout, MIDI assignments, note expressions or keyswitches.
 - `SendMessage(id, data)` — message the other side of a distributed plugin.

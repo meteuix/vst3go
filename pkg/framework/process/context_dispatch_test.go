@@ -278,3 +278,43 @@ func TestAppendEventText(t *testing.T) {
 		t.Fatal("event texts of one block must not overlap")
 	}
 }
+
+func TestSmoothedParameterGlidesAcrossSegments(t *testing.T) {
+	registry := param.NewRegistry()
+	gain := param.New(1, "Gain").Range(0, 1).Default(0).Smooth(0.008).Build() // 8 samples at 1 kHz
+	plain := param.New(2, "Plain").Range(0, 1).Build()
+	if err := registry.Add(gain, plain); err != nil {
+		t.Fatal(err)
+	}
+	ctx := NewContext(16, registry)
+	ctx.SampleRate = 1000
+	ctx.ConfigureBuses(nil, []int{1}, -1)
+	out := make([]float32, 16)
+	ctx.BeginBlock(16)
+	ctx.AddOutputChannel(0, out)
+	ctx.AddParameterChange(1, 1, 4)
+
+	if ctx.Smoothed(2) != nil {
+		t.Fatal("parameter without smoothing time must have no ramp")
+	}
+	ctx.Dispatch(func(c *Context) {
+		c.Smoothed(1).Fill(c.Output[0])
+	})
+	// 0 until the change at sample 4, then 8 linear steps to 1.
+	want := []float32{0, 0, 0, 0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1, 1, 1, 1, 1}
+	for i := range want {
+		if out[i] != want[i] {
+			t.Fatalf("out = %v, want %v", out, want)
+		}
+	}
+
+	// A sample-rate change re-prepares ramps at the current value.
+	ctx.SampleRate = 2000
+	ctx.BeginBlock(16)
+	ctx.AddOutputChannel(0, out)
+	ctx.Dispatch(func(c *Context) {
+		if r := c.Smoothed(1); r.IsSmoothing() || r.Current() != 1 {
+			t.Fatalf("ramp after sample-rate change: smoothing=%v current=%v", r.IsSmoothing(), r.Current())
+		}
+	})
+}

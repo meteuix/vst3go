@@ -19,7 +19,9 @@ When you switch to a React build, keep the same data contract:
 - The build output should replace the inline UI shell, not the data contract.
 - CSS can remain external or be inlined by the build pipeline.
 - JS should still receive the initial snapshot from Go, then hydrate the controls from that data.
-- Parameter change messages keep the same shape across platforms: `{ type: "param-change", id, value }` with the normalized `value`, posted to `window.webkit.messageHandlers.vst3go` (macOS, Linux) or `window.chrome.webview` (Windows).
+- Messages to the plugin are JSON objects posted to `window.webkit.messageHandlers.vst3go` (macOS, Linux) or `window.chrome.webview` (Windows); every platform view hands the JSON to `GoEditorMessage`:
+  - `{ type: "begin-edit", id }` / `{ type: "end-edit", id }` bracket a drag (host edit gesture),
+  - `{ type: "param-change", id, value }` sets the normalized `value`; outside a gesture it is a complete edit.
 - Host-side changes reach the page through `window.__vst3goUpdateParameter(id, normalized, plain)`.
 
 Recommended build layout for a React editor:

@@ -280,40 +280,6 @@ static void editorViewConfigureWebView(VST3GoEditorView* view) {
     settings->lpVtbl->Release(settings);
 }
 
-static BOOL editorViewParseParameterMessage(const wchar_t* message, Steinberg_Vst_ParamID* id, Steinberg_Vst_ParamValue* normalized, Steinberg_Vst_ParamValue* plain) {
-    if (!message || !id || !normalized) {
-        return FALSE;
-    }
-
-    if (!wcsstr(message, L"\"type\":\"param-change\"")) {
-        return FALSE;
-    }
-
-    const wchar_t* idField = wcsstr(message, L"\"id\":");
-    const wchar_t* normalizedField = wcsstr(message, L"\"normalized\":");
-    if (!normalizedField) {
-        normalizedField = wcsstr(message, L"\"value\":");
-    }
-
-    if (!idField || !normalizedField) {
-        return FALSE;
-    }
-
-    *id = (Steinberg_Vst_ParamID)wcstoul(idField + 5, NULL, 10);
-    *normalized = (Steinberg_Vst_ParamValue)wcstod(normalizedField + (normalizedField[1] == L'n' ? 13 : 8), NULL);
-
-    if (plain) {
-        const wchar_t* plainField = wcsstr(message, L"\"plain\":");
-        if (plainField) {
-            *plain = (Steinberg_Vst_ParamValue)wcstod(plainField + 8, NULL);
-        } else {
-            *plain = *normalized;
-        }
-    }
-
-    return TRUE;
-}
-
 static EditorEnvironmentHandler* editorViewCreateEnvironmentHandler(VST3GoEditorView* view) {
     EditorEnvironmentHandler* handler = (EditorEnvironmentHandler*)calloc(1, sizeof(EditorEnvironmentHandler));
     if (!handler) {
@@ -699,12 +665,14 @@ static HRESULT STDMETHODCALLTYPE editorMessageHandler_Invoke(ICoreWebView2WebMes
         return result;
     }
 
-    Steinberg_Vst_ParamID id = 0;
-    Steinberg_Vst_ParamValue normalized = 0;
-    Steinberg_Vst_ParamValue plain = 0;
-    if (editorViewParseParameterMessage(message, &id, &normalized, &plain)) {
-        (void)plain;
-        GoEditControllerSetParamNormalizedWithNotification(view->component, id, normalized);
+    int size = WideCharToMultiByte(CP_UTF8, 0, message, -1, NULL, 0, NULL, NULL);
+    if (size > 1) {
+        char* json = (char*)malloc((size_t)size);
+        if (json) {
+            WideCharToMultiByte(CP_UTF8, 0, message, -1, json, size, NULL, NULL);
+            GoEditorMessage(view->component, json, size - 1);
+            free(json);
+        }
     }
 
     CoTaskMemFree(message);
