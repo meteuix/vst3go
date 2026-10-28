@@ -97,10 +97,48 @@ func TestSynth(t *testing.T) {
   trip state.
 - Signal helpers (`Sine`, `Impulse`, `Constant`, `Silence`) and analysis
   (`Peak`, `RMS`, `PeakDB`, `FirstNonZero`, `ZeroCrossingFrequency`).
+- `LoadAudio` decodes recorded material for a render and `SaveAudio` writes
+  a render to listen to (`pkg/audiofile`).
 
 `plugin.Offline` is the same engine without `testing`, for offline
 renderers and batch tools. Each plugin in `internal/validation` has tests
 written this way.
+
+## Audio files
+
+`pkg/audiofile` reads and writes audio files, for samplers, impulse
+responses, wavetables, offline renders and tests:
+
+```go
+b, err := audiofile.Load(path)          // or DecodeBytes(embedded)
+// b.SampleRate, b.Channels[ch][frame]
+
+r, err := audiofile.Open(path)          // streaming
+info := r.Info()                        // format, rate, channels, frames, bit depth, root note, loops
+n, err := r.Read(dst)                   // dst[ch][:n], io.EOF at the end
+err = r.SeekFrame(frame)
+
+err = audiofile.Save("render.wav", b, audiofile.Float32)
+w, err := audiofile.Create("take.flac", 48000, 2, audiofile.PCM24) // Write blocks, then Close
+```
+
+- Reads WAV (RIFF and RF64, 8 to 32-bit PCM, 32/64-bit float,
+  `WAVE_FORMAT_EXTENSIBLE`), AIFF and AIFF-C (PCM, `sowt`, `fl32`, `fl64`),
+  FLAC, Ogg Vorbis and MP3; the format comes from the contents.
+- Sample loops and the root note come from WAV `smpl` and AIFF
+  `INST`/`MARK` chunks (`Info.Loops`, `Info.RootNote`).
+- Writes WAV (16/24/32-bit PCM, 32-bit float; extensible past two channels),
+  AIFF (PCM; AIFF-C for float) and FLAC (16/24-bit, up to eight channels),
+  clipping integer samples. `Encode` writes to any `io.Writer`.
+- Files are decoded on a background goroutine, never in `ProcessAudio`;
+  hand the decoded `Buffer` to the processor through an `atomic.Pointer`.
+  Sample-rate conversion is DSP and stays out of this package.
+- MP3 decodes to two channels and keeps the encoder delay and padding (no
+  gapless trimming); Vorbis and the lossless formats are sample-exact.
+
+The tests decode fixtures made by afconvert, flac, oggenc and lame
+(`pkg/audiofile/testdata/generate.sh`) and check the written files with
+afconvert on macOS and with `flac -t` and sox on Linux.
 
 ## Processing model
 

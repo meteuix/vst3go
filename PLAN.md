@@ -182,6 +182,10 @@ work, without taking on DSP (that stays in `synthkit`).
       units, scale points, presets from programs, state, MIDI and
       transport atoms, latency, side chains and the X11 editor UI; passes
       lv2_validate, lv2lint and `hostcheck/lv2check.c` (lilv).
+- [x] Audio files (`pkg/audiofile`): WAV, AIFF, FLAC, Ogg Vorbis and MP3
+      decoding with streaming, seeking, loops and root notes; WAV, AIFF and
+      FLAC encoding; `plugintest.LoadAudio`/`SaveAudio`. Checked against
+      files from afconvert, flac, oggenc and lame and with their decoders.
 
 ## Ongoing Rules
 

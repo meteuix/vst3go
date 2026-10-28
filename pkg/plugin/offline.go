@@ -376,6 +376,9 @@ func (o *Offline) SetState(state []byte) error { return o.c.SetState(state) }
 // Latency returns the reported latency in samples.
 func (o *Offline) Latency() int { return int(o.c.GetLatencySamples()) }
 
+// SampleRate returns the processing sample rate.
+func (o *Offline) SampleRate() float64 { return o.c.sampleRate }
+
 // TakeRestarts returns and clears the restart flags requested through
 // Host.RestartComponent.
 func (o *Offline) TakeRestarts() RestartFlags {

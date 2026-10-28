@@ -72,9 +72,10 @@ docker run --rm ${platform_args[@]+"${platform_args[@]}"} \
       apt-get install -y -qq --no-install-recommends g++ >/dev/null
     fi
     # lilv and the LV2 schemas for validate_lv2.sh, ALSA for the standalone
-    # apps of check_cli.sh.
+    # apps of check_cli.sh, flac and sox to check the files pkg/audiofile
+    # writes.
     apt-get update -qq
-    apt-get install -y -qq --no-install-recommends lv2-dev liblilv-dev lilv-utils sordi libasound2-dev pkg-config >/dev/null
+    apt-get install -y -qq --no-install-recommends lv2-dev liblilv-dev lilv-utils sordi libasound2-dev pkg-config flac sox >/dev/null
     if [[ ! -x /cache/lv2lint-${LV2LINT_REV}/lv2lint ]]; then
       apt-get install -y -qq --no-install-recommends meson ninja-build libelf-dev libcurl4-openssl-dev git ca-certificates >/dev/null
       rm -rf /tmp/lv2lint

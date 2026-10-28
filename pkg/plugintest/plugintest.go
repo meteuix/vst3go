@@ -15,8 +15,11 @@ package plugintest
 
 import (
 	"math"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/th-release/vst3go/pkg/audiofile"
 	"github.com/th-release/vst3go/pkg/midi"
 	"github.com/th-release/vst3go/pkg/plugin"
 )
@@ -98,6 +101,32 @@ func (i *Instance) Note(channel, note uint8, velocity float32, onset, length int
 	if length > 0 {
 		i.SendEvent(midi.NoteOff(channel, note, 0).At(int32(onset + length)))
 	}
+}
+
+// SaveAudio writes channels to an audio file at the instance's sample
+// rate, in the format the name gives (.wav, .aif, .aiff, .flac): 32-bit
+// float for WAV and AIFF, 24-bit for FLAC. Use it to listen to renders.
+func (i *Instance) SaveAudio(path string, channels [][]float32) {
+	i.t.Helper()
+	e := audiofile.Float32
+	if strings.EqualFold(filepath.Ext(path), ".flac") {
+		e = audiofile.PCM24
+	}
+	b := &audiofile.Buffer{SampleRate: i.SampleRate(), Channels: channels}
+	if err := audiofile.Save(path, b, e); err != nil {
+		i.t.Fatalf("plugintest: save %s: %v", path, err)
+	}
+}
+
+// LoadAudio decodes an audio file (any format pkg/audiofile reads) and
+// returns its channels and sample rate, for rendering recorded material.
+func LoadAudio(t testing.TB, path string) ([][]float32, float64) {
+	t.Helper()
+	b, err := audiofile.Load(path)
+	if err != nil {
+		t.Fatalf("plugintest: load %s: %v", path, err)
+	}
+	return b.Channels, b.SampleRate
 }
 
 // Signals

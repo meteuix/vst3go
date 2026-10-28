@@ -2,6 +2,7 @@ package main
 
 import (
 	"math"
+	"path/filepath"
 	"testing"
 
 	"github.com/th-release/vst3go/pkg/plugin"
@@ -40,5 +41,26 @@ func TestGainBypassAndDoublePrecision(t *testing.T) {
 	p.Set(paramBypass, 1)
 	if err := p.Process64(in, out); err != nil || out[0][0] != 1 {
 		t.Fatalf("bypass: out = %v, err = %v", out[0][0], err)
+	}
+}
+
+func TestGainRendersAudioFiles(t *testing.T) {
+	p := plugintest.New(t, gainPlugin{}, plugin.OfflineSetup{SampleRate: 44100})
+	p.Set(paramGain, -6)
+	dir := t.TempDir()
+	in := plugintest.Channels(2, plugintest.Sine(440, 44100, 9000, 0.5))
+	p.SaveAudio(filepath.Join(dir, "in.flac"), in)
+	loaded, rate := plugintest.LoadAudio(t, filepath.Join(dir, "in.flac"))
+	if rate != 44100 || len(loaded) != 2 || len(loaded[0]) != 9000 {
+		t.Fatalf("loaded %d channels of %d frames at %g Hz", len(loaded), len(loaded[0]), rate)
+	}
+	out := p.Render(loaded, 2)
+	p.SaveAudio(filepath.Join(dir, "out.wav"), out)
+	rendered, _ := plugintest.LoadAudio(t, filepath.Join(dir, "out.wav"))
+	g := math.Pow(10, -6.0/20)
+	for n := 4096; n < 9000; n++ { // after the gain ramp
+		if d := math.Abs(float64(rendered[1][n]) - float64(in[1][n])*g); d > 1e-4 {
+			t.Fatalf("frame %d = %g, want %g", n, rendered[1][n], float64(in[1][n])*g)
+		}
 	}
 }

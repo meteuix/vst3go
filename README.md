@@ -11,7 +11,7 @@ It contains:
 - The plugin wrapper/runtime used to expose Go processors as VST3, CLAP, (on macOS) AUv2 and (on Linux) LV2 plugins (one binary serves every format), and the same package as a standalone application with audio/MIDI devices and its editor in a window (`pkg/standalone`)
 - A web editor SDK (`window.vst3go`, custom pages, typed TypeScript parameter bindings)
 - Generic plugin authoring primitives such as buses, parameters, process context, state, and MIDI/event transport
-- Host features for effects, instruments and MIDI plugins: sample-accurate automation, 32/64-bit processing, sidechains and surround, MIDI CC/learn/MIDI 2.0 mapping, note expression and MPE, keyswitches, factory programs, `.vstpreset` presets, units, SysEx, parameter smoothing, edit gestures, distributed processor/controller, several plugins per binary, and host-free plugin tests (`pkg/plugintest`)
+- Host features for effects, instruments and MIDI plugins: sample-accurate automation, 32/64-bit processing, sidechains and surround, MIDI CC/learn/MIDI 2.0 mapping, note expression and MPE, keyswitches, factory programs, `.vstpreset` presets, units, SysEx, parameter smoothing, edit gestures, distributed processor/controller, several plugins per binary, host-free plugin tests (`pkg/plugintest`), and audio file reading and writing (`pkg/audiofile`: WAV, AIFF, FLAC, Ogg Vorbis, MP3)
 
 The higher-level audio and synth layer now lives in the companion `synthkit` repository.
 
@@ -56,6 +56,7 @@ MIDI transposer. The new module lists `vst3go` as a `tool` dependency, so
 - `pkg/midi/`
 - `pkg/preset/`
 - `pkg/plugintest/`
+- `pkg/audiofile/`
 - `pkg/standalone/` (and `internal/midiport`)
 - `pkg/framework/bus`
 - `pkg/framework/param`
@@ -74,7 +75,7 @@ The companion `synthkit` repo owns:
 
 ## Public API Boundary
 
-- Downstream code should treat `pkg/plugin`, `pkg/vst3`, `pkg/midi`, `pkg/preset`, `pkg/plugintest`, `pkg/standalone`, and the retained `pkg/framework/*` packages as the supported API surface.
+- Downstream code should treat `pkg/plugin`, `pkg/vst3`, `pkg/midi`, `pkg/preset`, `pkg/plugintest`, `pkg/audiofile`, `pkg/standalone`, and the retained `pkg/framework/*` packages as the supported API surface.
 - The C bridge (`pkg/plugin/*.c`) and the editor assets exist to support that API surface, but product-specific DSP and showcase logic stay out of this repo.
 - If a feature needs higher-level audio product behavior, it belongs in `synthkit` or the consumer project instead of this runtime layer.
 
