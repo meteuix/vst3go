@@ -117,19 +117,32 @@ func TestMIDIControllerParameters(t *testing.T) {
 		t.Fatalf("controller string = %q, %v", s, err)
 	}
 
-	event := c.midiCC.event(id, 1, 12)
-	cc, isCC := event.(midi.ControlChangeEvent)
-	if !isCC || cc.Controller != 7 || cc.Value != 127 || cc.Channel() != 1 || cc.SampleOffset() != 12 {
-		t.Fatalf("controller event = %#v", event)
+	cc := c.midiCC.event(id, 1, 12)
+	if cc.Type != midi.EventTypeControlChange || cc.Controller != 7 || cc.Value7() != 127 || cc.Channel != 1 || cc.Offset != 12 {
+		t.Fatalf("controller event = %v", cc)
 	}
 	bendID, _ := c.midiCC.paramID(0, int(MIDIControllerPitchBend))
 	for _, tc := range []struct {
 		value float64
 		want  int16
 	}{{0, -8192}, {0.5, 0}, {1, 8191}} {
-		bend := c.midiCC.event(bendID, tc.value, 0).(midi.PitchBendEvent)
-		if bend.Value != tc.want {
-			t.Fatalf("pitch bend %v = %d, want %d", tc.value, bend.Value, tc.want)
+		bend := c.midiCC.event(bendID, tc.value, 0)
+		if bend.Type != midi.EventTypePitchBend || bend.PitchBend14() != tc.want {
+			t.Fatalf("pitch bend %v = %d, want %d", tc.value, bend.PitchBend14(), tc.want)
+		}
+	}
+	if bend := c.midiCC.event(bendID, 0, 0); bend.Value != -1 {
+		t.Fatalf("pitch bend minimum = %v, want -1", bend.Value)
+	}
+
+	// IMidiMapping2 enumerates the same assignments as IMidiMapping.
+	assignments := c.midi1Assignments()
+	if want := 2 * midiControllersPerChannel; len(assignments) != want {
+		t.Fatalf("MIDI 1 assignments = %d, want %d", len(assignments), want)
+	}
+	for _, a := range assignments {
+		if id, ok := c.MIDIControllerAssignment(a.busIndex, a.channel, a.controller); !ok || id != a.paramID {
+			t.Fatalf("assignment %+v disagrees with IMidiMapping (%d, %v)", a, id, ok)
 		}
 	}
 }

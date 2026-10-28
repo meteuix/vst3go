@@ -1,179 +1,74 @@
 package midi
 
 import (
+	"math"
 	"testing"
 )
 
-func TestNoteOnEvent(t *testing.T) {
-	event := NoteOnEvent{
-		BaseEvent: BaseEvent{
-			EventChannel: 0,
-			Offset:       100,
-		},
-		NoteNumber: 60, // Middle C
-		Velocity:   64,
+func TestConstructors(t *testing.T) {
+	on := NoteOn(2, 60, 0.5).At(12)
+	if on.Type != EventTypeNoteOn || on.Channel != 2 || on.Note != 60 || on.Offset != 12 || on.NoteID != NoteIDNone {
+		t.Fatalf("NoteOn = %+v", on)
+	}
+	if on.Velocity7() != 64 {
+		t.Fatalf("Velocity7 = %d, want 64", on.Velocity7())
+	}
+	if !on.IsNote() || !NoteOff(0, 1, 0).IsNote() || ControlChange(0, 1, 0).IsNote() {
+		t.Fatal("IsNote mismatch")
 	}
 
-	if event.Type() != EventTypeNoteOn {
-		t.Errorf("Expected type %v, got %v", EventTypeNoteOn, event.Type())
-	}
-
-	if event.Channel() != 0 {
-		t.Errorf("Expected channel 0, got %d", event.Channel())
-	}
-
-	if event.SampleOffset() != 100 {
-		t.Errorf("Expected offset 100, got %d", event.SampleOffset())
-	}
-
-	expected := "NoteOn{ch:0, note:60, vel:64, offset:100}"
-	if event.String() != expected {
-		t.Errorf("Expected string %s, got %s", expected, event.String())
+	cc := ControlChange(0, CCModWheel, 1)
+	if cc.Value7() != 127 || cc.Controller != CCModWheel {
+		t.Fatalf("ControlChange = %+v", cc)
 	}
 }
 
-func TestNoteOffEvent(t *testing.T) {
-	event := NoteOffEvent{
-		BaseEvent: BaseEvent{
-			EventChannel: 1,
-			Offset:       200,
-		},
-		NoteNumber: 72, // C5
-		Velocity:   0,
-	}
-
-	if event.Type() != EventTypeNoteOff {
-		t.Errorf("Expected type %v, got %v", EventTypeNoteOff, event.Type())
-	}
-
-	if event.Channel() != 1 {
-		t.Errorf("Expected channel 1, got %d", event.Channel())
-	}
-}
-
-func TestControlChangeEvent(t *testing.T) {
-	event := ControlChangeEvent{
-		BaseEvent: BaseEvent{
-			EventChannel: 0,
-			Offset:       50,
-		},
-		Controller: CCModWheel,
-		Value:      100,
-	}
-
-	if event.Type() != EventTypeControlChange {
-		t.Errorf("Expected type %v, got %v", EventTypeControlChange, event.Type())
-	}
-
-	expected := "CC{ch:0, ctrl:1, val:100, offset:50}"
-	if event.String() != expected {
-		t.Errorf("Expected string %s, got %s", expected, event.String())
-	}
-}
-
-func TestPitchBendEvent(t *testing.T) {
-	tests := []struct {
-		value      int16
-		normalized float64
-	}{
-		{0, 0.0},
-		{8191, 0.999878}, // Close to 1.0
-		{-8192, -1.0},
-		{4096, 0.5},
-		{-4096, -0.5},
-	}
-
-	for _, tt := range tests {
-		event := PitchBendEvent{
-			BaseEvent: BaseEvent{
-				EventChannel: 0,
-				Offset:       0,
-			},
-			Value: tt.value,
-		}
-
-		normalized := event.NormalizedValue()
-		if diff := normalized - tt.normalized; diff > 0.01 && diff < -0.01 {
-			t.Errorf("For value %d, expected normalized %f, got %f", tt.value, tt.normalized, normalized)
+func TestPitchBend14(t *testing.T) {
+	for _, tc := range []struct {
+		value float64
+		want  int16
+	}{{-1, -8192}, {0, 0}, {1, 8191}, {0.5, 4096}, {-2, -8192}} {
+		if got := PitchBend(0, tc.value).PitchBend14(); got != tc.want {
+			t.Fatalf("PitchBend14(%v) = %d, want %d", tc.value, got, tc.want)
 		}
 	}
 }
 
-func TestNoteToFrequency(t *testing.T) {
-	tests := []struct {
-		note uint8
-		freq float64
-	}{
-		{69, 440.0},  // A4
-		{60, 261.63}, // Middle C (C4)
-		{57, 220.0},  // A3
-		{81, 880.0},  // A5
+func TestAppendUTF16(t *testing.T) {
+	text := []uint16{'a', 0x00E9, 0xD83D, 0xDE00, 0xD800}
+	buf := make([]byte, 0, 32)
+	got := AppendUTF16(buf, text)
+	if string(got) != "aé😀\uFFFD" {
+		t.Fatalf("AppendUTF16 = %q", got)
 	}
-
-	for _, tt := range tests {
-		freq := NoteToFrequency(tt.note, 440.0)
-		if diff := freq - tt.freq; diff > 0.1 && diff < -0.1 {
-			t.Errorf("For note %d, expected frequency %f, got %f", tt.note, tt.freq, freq)
-		}
+	if allocs := testing.AllocsPerRun(100, func() { _ = AppendUTF16(buf[:0], text) }); allocs != 0 {
+		t.Fatalf("AppendUTF16 allocated %v times", allocs)
 	}
 }
 
-func TestFrequencyToNote(t *testing.T) {
-	tests := []struct {
-		frequency float64
-		expected  uint8
-	}{
-		{440.0, 69},
-		{261.63, 60},
-		{220.0, 57},
-		{880.0, 81},
+func TestNoteHelpers(t *testing.T) {
+	if f := NoteToFrequency(69, 0); f != 440 {
+		t.Fatalf("A4 = %v", f)
 	}
-
-	for _, tt := range tests {
-		if got := FrequencyToNote(tt.frequency, 440.0); got != tt.expected {
-			t.Errorf("FrequencyToNote(%f) = %d, want %d", tt.frequency, got, tt.expected)
-		}
+	if f := NoteToFrequency(81, 440); math.Abs(f-880) > 1e-9 {
+		t.Fatalf("A5 = %v", f)
 	}
-
-	if got := FrequencyToNote(0, 440.0); got != 0 {
-		t.Fatalf("FrequencyToNote(0) = %d, want 0", got)
+	if n := FrequencyToNote(261.63, 0); n != 60 {
+		t.Fatalf("FrequencyToNote(C4) = %d", n)
+	}
+	if n := FrequencyToNote(1e6, 0); n != 127 {
+		t.Fatalf("FrequencyToNote clamps high, got %d", n)
+	}
+	if name := NoteNumberToName(60); name != "C4" {
+		t.Fatalf("NoteNumberToName(60) = %q", name)
 	}
 }
 
-func TestNoteNumberToName(t *testing.T) {
-	tests := []struct {
-		note uint8
-		name string
-	}{
-		{60, "C4"},  // Middle C
-		{69, "A4"},  // A440
-		{0, "C-1"},  // Lowest MIDI note
-		{127, "G9"}, // Highest MIDI note
-		{61, "C#4"}, // C# above middle C
-		{70, "A#4"}, // A# above A4
+func TestEventString(t *testing.T) {
+	if s := NoteOn(0, 60, 1).At(3).String(); s != "NoteOn{ch:0 note:60 vel:1.000 id:-1 offset:3}" {
+		t.Fatalf("String = %q", s)
 	}
-
-	for _, tt := range tests {
-		name := NoteNumberToName(tt.note)
-		if name != tt.name {
-			t.Errorf("For note %d, expected name %s, got %s", tt.note, tt.name, name)
-		}
-	}
-}
-
-func TestEventInterface(t *testing.T) {
-	events := []Event{
-		NoteOnEvent{BaseEvent: BaseEvent{EventChannel: 0, Offset: 0}, NoteNumber: 60, Velocity: 100},
-		NoteOffEvent{BaseEvent: BaseEvent{EventChannel: 0, Offset: 100}, NoteNumber: 60, Velocity: 0},
-		ControlChangeEvent{BaseEvent: BaseEvent{EventChannel: 0, Offset: 200}, Controller: CCSustain, Value: 127},
-		PitchBendEvent{BaseEvent: BaseEvent{EventChannel: 0, Offset: 300}, Value: 0},
-	}
-
-	for _, event := range events {
-		// Ensure all events implement the interface
-		_ = event.Type()
-		_ = event.Channel()
-		_ = event.SampleOffset()
-		_ = event.String()
+	if s := EventType(200).String(); s != "EventType(200)" {
+		t.Fatalf("unknown type string = %q", s)
 	}
 }

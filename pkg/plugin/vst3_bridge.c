@@ -276,6 +276,30 @@ Steinberg_tresult vst3go_events_get(void* list, int32_t index, VST3GoEvent* out)
         out->noteId = e.Steinberg_Vst_Event_noteExpressionValue.noteId;
         out->expressionValue = e.Steinberg_Vst_Event_noteExpressionValue.value;
         break;
+    case Steinberg_Vst_Event_EventTypes_kNoteExpressionIntValueEvent:
+        out->expressionType = e.Steinberg_Vst_Event_noteExpressionIntValue.typeId;
+        out->noteId = e.Steinberg_Vst_Event_noteExpressionIntValue.noteId;
+        out->expressionIntValue = e.Steinberg_Vst_Event_noteExpressionIntValue.value;
+        break;
+    case Steinberg_Vst_Event_EventTypes_kNoteExpressionTextEvent:
+        out->expressionType = e.Steinberg_Vst_Event_noteExpressionText.typeId;
+        out->noteId = e.Steinberg_Vst_Event_noteExpressionText.noteId;
+        out->text = e.Steinberg_Vst_Event_noteExpressionText.text;
+        out->textLen = e.Steinberg_Vst_Event_noteExpressionText.textLen;
+        break;
+    case Steinberg_Vst_Event_EventTypes_kChordEvent:
+        out->root = e.Steinberg_Vst_Event_chord.root;
+        out->bassNote = e.Steinberg_Vst_Event_chord.bassNote;
+        out->mask = e.Steinberg_Vst_Event_chord.mask;
+        out->text = e.Steinberg_Vst_Event_chord.text;
+        out->textLen = e.Steinberg_Vst_Event_chord.textLen;
+        break;
+    case Steinberg_Vst_Event_EventTypes_kScaleEvent:
+        out->root = e.Steinberg_Vst_Event_scale.root;
+        out->mask = e.Steinberg_Vst_Event_scale.mask;
+        out->text = e.Steinberg_Vst_Event_scale.text;
+        out->textLen = e.Steinberg_Vst_Event_scale.textLen;
+        break;
     case Steinberg_Vst_Event_EventTypes_kDataEvent:
         out->data = e.Steinberg_Vst_Event_data.bytes;
         out->dataSize = e.Steinberg_Vst_Event_data.size;
@@ -333,6 +357,35 @@ Steinberg_tresult vst3go_events_add(void* list, const VST3GoEvent* in) {
         e.Steinberg_Vst_Event_noteExpressionValue.noteId = in->noteId;
         e.Steinberg_Vst_Event_noteExpressionValue.value = in->expressionValue;
         break;
+    case Steinberg_Vst_Event_EventTypes_kNoteExpressionIntValueEvent:
+        e.Steinberg_Vst_Event_noteExpressionIntValue.typeId = in->expressionType;
+        e.Steinberg_Vst_Event_noteExpressionIntValue.noteId = in->noteId;
+        e.Steinberg_Vst_Event_noteExpressionIntValue.value = in->expressionIntValue;
+        break;
+    case Steinberg_Vst_Event_EventTypes_kNoteExpressionTextEvent:
+        e.Steinberg_Vst_Event_noteExpressionText.typeId = in->expressionType;
+        e.Steinberg_Vst_Event_noteExpressionText.noteId = in->noteId;
+        e.Steinberg_Vst_Event_noteExpressionText.text = in->text;
+        e.Steinberg_Vst_Event_noteExpressionText.textLen = in->textLen;
+        break;
+    case Steinberg_Vst_Event_EventTypes_kChordEvent:
+        e.Steinberg_Vst_Event_chord.root = in->root;
+        e.Steinberg_Vst_Event_chord.bassNote = in->bassNote;
+        e.Steinberg_Vst_Event_chord.mask = in->mask;
+        e.Steinberg_Vst_Event_chord.text = in->text;
+        e.Steinberg_Vst_Event_chord.textLen = (Steinberg_uint16)in->textLen;
+        break;
+    case Steinberg_Vst_Event_EventTypes_kScaleEvent:
+        e.Steinberg_Vst_Event_scale.root = in->root;
+        e.Steinberg_Vst_Event_scale.mask = in->mask;
+        e.Steinberg_Vst_Event_scale.text = in->text;
+        e.Steinberg_Vst_Event_scale.textLen = (Steinberg_uint16)in->textLen;
+        break;
+    case Steinberg_Vst_Event_EventTypes_kDataEvent:
+        e.Steinberg_Vst_Event_data.bytes = in->data;
+        e.Steinberg_Vst_Event_data.size = in->dataSize;
+        e.Steinberg_Vst_Event_data.type = in->dataType;
+        break;
     case Steinberg_Vst_Event_EventTypes_kLegacyMIDICCOutEvent:
         e.Steinberg_Vst_Event_midiCCOut.controlNumber = (Steinberg_uint8)in->controlNumber;
         e.Steinberg_Vst_Event_midiCCOut.channel = (Steinberg_int8)in->channel;
@@ -347,6 +400,10 @@ Steinberg_tresult vst3go_events_add(void* list, const VST3GoEvent* in) {
 
 float** vst3go_bus_channels32(struct Steinberg_Vst_AudioBusBuffers* bus) {
     return bus ? bus->Steinberg_Vst_AudioBusBuffers_channelBuffers32 : NULL;
+}
+
+double** vst3go_bus_channels64(struct Steinberg_Vst_AudioBusBuffers* bus) {
+    return bus ? bus->Steinberg_Vst_AudioBusBuffers_channelBuffers64 : NULL;
 }
 
 // IComponentHandler
@@ -383,4 +440,37 @@ void vst3go_unknown_release(void* unknown) {
     if (u && u->lpVtbl) {
         u->lpVtbl->release(u);
     }
+}
+
+// IInfoListener attributes
+
+static void read_attr_string(struct Steinberg_Vst_IAttributeList* list, const char* key, Steinberg_char16* dst) {
+    dst[0] = 0;
+    if (list->lpVtbl->getString(list, key, dst, sizeof(Steinberg_Vst_String128)) != Steinberg_kResultOk) {
+        dst[0] = 0;
+    }
+    dst[127] = 0;
+}
+
+static int32_t read_attr_int(struct Steinberg_Vst_IAttributeList* list, const char* key, int64_t* dst) {
+    Steinberg_int64 value = 0;
+    if (list->lpVtbl->getInt(list, key, &value) != Steinberg_kResultOk) {
+        return 0;
+    }
+    *dst = value;
+    return 1;
+}
+
+void vst3go_read_channel_info(void* attributeList, VST3GoChannelInfo* out) {
+    struct Steinberg_Vst_IAttributeList* list = (struct Steinberg_Vst_IAttributeList*)attributeList;
+    memset(out, 0, sizeof(*out));
+    if (!list || !list->lpVtbl) {
+        return;
+    }
+    read_attr_string(list, Steinberg_Vst_ChannelContext_kChannelNameKey, out->name);
+    read_attr_string(list, Steinberg_Vst_ChannelContext_kChannelUIDKey, out->uid);
+    read_attr_string(list, Steinberg_Vst_ChannelContext_kChannelIndexNamespaceKey, out->indexNamespace);
+    out->hasColor = read_attr_int(list, Steinberg_Vst_ChannelContext_kChannelColorKey, &out->color);
+    out->hasIndex = read_attr_int(list, Steinberg_Vst_ChannelContext_kChannelIndexKey, &out->index);
+    out->hasPluginLocation = read_attr_int(list, Steinberg_Vst_ChannelContext_kChannelPluginLocationKey, &out->pluginLocation);
 }

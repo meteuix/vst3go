@@ -6,7 +6,7 @@ This repo now treats the VST editor as a browser-rendered surface instead of a s
 
 1. `pkg/plugin/component.go` builds an `EditorModel` from the live parameter registry.
 2. `pkg/plugin/wrapper_controller.go` serializes that model into the HTML bootstrap returned by `GoEditControllerGetEditorHTML`.
-3. `pkg/plugin/editor_view_darwin.c` loads the HTML into `WKWebView` on macOS.
+3. The platform view loads the HTML: `editor_view_darwin.c` into `WKWebView` on macOS, `editor_view_windows.c` into WebView2 on Windows, and `editor_view_linux.c` into WebKitGTK on Linux (build tag `webkitgtk`, embedded into the host's X11 window).
 4. Parameter changes flow back through the web message handler and end up in the Go processor state.
 
 ## HTML, CSS, And JS
@@ -19,8 +19,8 @@ When you switch to a React build, keep the same data contract:
 - The build output should replace the inline UI shell, not the data contract.
 - CSS can remain external or be inlined by the build pipeline.
 - JS should still receive the initial snapshot from Go, then hydrate the controls from that data.
-- Parameter change messages should keep the same shape across platforms: `{ type: "param-change", id, normalized, plain }`.
-- Native hosts should treat `normalized` as the canonical value and use `plain` only as a rendered companion value.
+- Parameter change messages keep the same shape across platforms: `{ type: "param-change", id, value }` with the normalized `value`, posted to `window.webkit.messageHandlers.vst3go` (macOS, Linux) or `window.chrome.webview` (Windows).
+- Host-side changes reach the page through `window.__vst3goUpdateParameter(id, normalized, plain)`.
 
 Recommended build layout for a React editor:
 

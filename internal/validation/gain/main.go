@@ -1,11 +1,13 @@
 // Command gain is an example audio effect: gain with bypass and an output
-// level meter. It runs in mono or stereo, whichever the host asks for.
+// level meter. It runs in mono or stereo, whichever the host asks for, in
+// 32-bit or 64-bit, and follows the host channel name.
 //
 // Build: scripts/build_vst3.sh internal/validation/gain Gain
 package main
 
 import (
 	"math"
+	"sync"
 
 	"github.com/th-release/vst3go/pkg/framework/bus"
 	"github.com/th-release/vst3go/pkg/framework/param"
@@ -44,6 +46,19 @@ func (gainPlugin) CreateProcessor() plugin.Processor {
 
 type gainProcessor struct {
 	*frameworkplugin.BaseProcessor
+
+	mu      sync.Mutex
+	channel plugin.ChannelInfo
+}
+
+// SupportsDoublePrecision enables 64-bit processing (ctx.Output64).
+func (p *gainProcessor) SupportsDoublePrecision() bool { return true }
+
+// SetChannelInfo receives the mixer channel the plugin is inserted on.
+func (p *gainProcessor) SetChannelInfo(info plugin.ChannelInfo) {
+	p.mu.Lock()
+	p.channel = info
+	p.mu.Unlock()
 }
 
 // AcceptBusArrangements accepts any symmetric mono or stereo layout.
@@ -61,24 +76,15 @@ func (p *gainProcessor) ProcessAudio(ctx *process.Context) {
 		return
 	}
 
-	gain := float32(0) // the -80 dB floor is -inf
+	gain := 0.0 // the -80 dB floor is -inf
 	if db := ctx.ParamPlain(paramGain); db > -80 {
-		gain = float32(math.Pow(10, db/20))
+		gain = math.Pow(10, db/20)
 	}
-	peak := float32(0)
-	for ch := range ctx.Output {
-		out := ctx.Output[ch]
-		if ch >= len(ctx.Input) {
-			clear(out)
-			continue
-		}
-		for i, x := range ctx.Input[ch] {
-			y := x * gain
-			out[i] = y
-			if a := float32(math.Abs(float64(y))); a > peak {
-				peak = a
-			}
-		}
+	var peak float64
+	if ctx.Is64Bit() {
+		peak = applyGain(ctx.Input64, ctx.Output64, gain)
+	} else {
+		peak = applyGain(ctx.Input, ctx.Output, float32(gain))
 	}
 	ctx.SetOutputSilenceFlags(0, ctx.InputSilenceFlags(0))
 
@@ -90,6 +96,23 @@ func (p *gainProcessor) ProcessAudio(ctx *process.Context) {
 	if meter, ok := p.Parameters().GetOK(paramLevel); ok {
 		ctx.SetOutputParameter(paramLevel, meter.Normalize(db))
 	}
+}
+
+// applyGain scales in into out and returns the output peak.
+func applyGain[T float32 | float64](in, out [][]T, gain T) float64 {
+	var peak float64
+	for ch := range out {
+		if ch >= len(in) {
+			clear(out[ch])
+			continue
+		}
+		for i, x := range in[ch] {
+			y := x * gain
+			out[ch][i] = y
+			peak = math.Max(peak, math.Abs(float64(y)))
+		}
+	}
+	return peak
 }
 
 func init() {

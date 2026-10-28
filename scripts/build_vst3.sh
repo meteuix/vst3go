@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds a VST3 bundle for the host platform (macOS or Linux) from a Go main
-# package that registers a plugin.
+# package that registers a plugin, including Contents/Resources/moduleinfo.json.
+# Needs a C compiler (cgo already requires one).
 #
 # usage: scripts/build_vst3.sh <main-package-dir> <PluginName> [output-dir]
 #   scripts/build_vst3.sh examples/gain Gain dist
@@ -68,6 +69,13 @@ esac
   CGO_ENABLED=1 go build -buildmode=c-shared -trimpath -o "$binary" "./${package_dir#./}"
 )
 rm -f "${binary%.so}.h" "${binary}.h"
+
+# moduleinfo.json lets hosts scan the bundle without loading the binary.
+tool_dir="$(mktemp -d)"
+trap 'rm -rf "$tool_dir"' EXIT
+cc -O1 -Wall -I"${repo_root}/include" "${script_dir}/moduleinfo.c" -o "${tool_dir}/moduleinfo" -ldl
+mkdir -p "${bundle}/Contents/Resources"
+"${tool_dir}/moduleinfo" "$binary" "$plugin_name" > "${bundle}/Contents/Resources/moduleinfo.json"
 
 if [[ "$host_os" == "darwin" ]] && command -v codesign >/dev/null 2>&1; then
   codesign --force --sign - "$bundle" >/dev/null 2>&1

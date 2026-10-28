@@ -10,19 +10,37 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"unsafe"
+
+	"github.com/th-release/vst3go/pkg/vst3"
 )
 
-// IEditController callbacks. Processor and controller are one object, so
-// the parameter registry is shared and the controller keeps no extra state.
+// IEditController callbacks. A single-component object shares the parameter
+// registry with the processor; the controller of a distributed plugin has
+// its own registry, synchronized through the host. Neither keeps controller
+// state of its own.
 
 //export GoEditControllerSetComponentState
-func GoEditControllerSetComponentState(componentID C.uintptr_t, state unsafe.Pointer) C.Steinberg_tresult {
-	// The component already restored this state on the same registry; just
-	// make sure an open editor shows it.
+func GoEditControllerSetComponentState(componentID C.uintptr_t, state unsafe.Pointer) (result C.Steinberg_tresult) {
+	defer recoverPanic(&result)
 	wrapper := getComponent(componentID)
 	if wrapper == nil {
 		return resultFalse
 	}
+	if wrapper.kind == kindController {
+		stream := vst3.NewStreamWrapper(state)
+		if stream == nil {
+			return resultInvalidArgument
+		}
+		data, err := stream.ReadAll()
+		if err != nil {
+			return resultFalse
+		}
+		if err := wrapper.component.SetState(data); err != nil {
+			return resultFalse
+		}
+	}
+	// A single component already restored this state on the shared
+	// registry; make sure an open editor shows it.
 	wrapper.refreshEditorParameters()
 	return resultOK
 }

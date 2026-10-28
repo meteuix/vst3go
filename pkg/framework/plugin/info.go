@@ -72,6 +72,13 @@ func (i *Info) UID() [16]byte {
 	return i.generateDeterministicUID()
 }
 
+// ControllerUID is the class ID of the edit controller of a distributed
+// plugin, derived from the plugin ID like UID.
+func (i *Info) ControllerUID() [16]byte {
+	controller := Info{ID: i.ID + "#controller"}
+	return controller.generateDeterministicUID()
+}
+
 // generateDeterministicUID creates a deterministic UUID v4 from the plugin ID
 func (i *Info) generateDeterministicUID() [16]byte {
 	// Generate deterministic UUID from plugin ID string

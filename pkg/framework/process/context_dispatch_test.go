@@ -43,15 +43,15 @@ func TestDispatchSplitsAtParameterChanges(t *testing.T) {
 	ctx.AddParameterChange(7, 0.5, 40)
 	ctx.AddParameterChange(7, 0.25, 0)
 	ctx.AddParameterChange(7, 0.75, 40) // same offset: later host point wins
-	ctx.AddInputEvent(midi.NoteOnEvent{BaseEvent: midi.BaseEvent{Offset: 10}, NoteNumber: 60})
-	ctx.AddInputEvent(midi.NoteOnEvent{BaseEvent: midi.BaseEvent{Offset: 40}, NoteNumber: 61})
-	ctx.AddInputEvent(midi.NoteOnEvent{BaseEvent: midi.BaseEvent{Offset: 63}, NoteNumber: 62})
+	ctx.AddInputEvent(midi.NoteOn(0, 60, 0).At(10))
+	ctx.AddInputEvent(midi.NoteOn(0, 61, 0).At(40))
+	ctx.AddInputEvent(midi.NoteOn(0, 62, 0).At(63))
 
 	var got []segment
 	ctx.Dispatch(func(c *Context) {
 		seg := segment{offset: c.BlockOffset(), length: c.NumSamples(), gain: c.Param(7), inputFirst: c.Input[0][0]}
 		for _, ev := range c.GetAllInputEvents() {
-			seg.notes = append(seg.notes, ev.(midi.NoteOnEvent).NoteNumber)
+			seg.notes = append(seg.notes, ev.Note)
 		}
 		for i := range c.Output[0] {
 			c.Output[0][i] = float32(seg.gain)
@@ -201,7 +201,7 @@ func TestEventDataBuffer(t *testing.T) {
 
 func TestDispatchDoesNotAllocate(t *testing.T) {
 	ctx, _, _ := runtimeContext(t, 64)
-	note := midi.Event(midi.NoteOnEvent{BaseEvent: midi.BaseEvent{Offset: 20}, NoteNumber: 60})
+	note := midi.NoteOn(0, 60, 0).At(20)
 	process := func(c *Context) {
 		for range c.GetAllInputEvents() {
 		}
@@ -221,5 +221,60 @@ func TestDispatchDoesNotAllocate(t *testing.T) {
 	})
 	if allocs != 0 {
 		t.Fatalf("Dispatch allocated %.1f times per block", allocs)
+	}
+}
+
+func TestDispatch64BitSegments(t *testing.T) {
+	ctx := NewContext(32, newGainRegistry(t))
+	ctx.ConfigureBuses([]int{1}, []int{1}, -1)
+	in := make([]float64, 32)
+	for i := range in {
+		in[i] = float64(i)
+	}
+	out := make([]float64, 32)
+	ctx.BeginBlock64(32)
+	ctx.AddInputChannel64(0, in)
+	ctx.AddOutputChannel64(0, out)
+	ctx.AddParameterChange(7, 0.5, 16)
+
+	var offsets []int
+	ctx.Dispatch(func(c *Context) {
+		if !c.Is64Bit() || c.Input != nil || c.Output != nil {
+			t.Fatal("64-bit block must expose only Input64/Output64")
+		}
+		offsets = append(offsets, c.BlockOffset())
+		for i, x := range c.Input64[0] {
+			c.Output64[0][i] = x * c.Param(7)
+		}
+	})
+	if len(offsets) != 2 || offsets[1] != 16 {
+		t.Fatalf("segment offsets = %v, want [0 16]", offsets)
+	}
+	if out[15] != 0 || out[16] != 8 || out[31] != 15.5 {
+		t.Fatalf("64-bit output = %v", out)
+	}
+
+	// The next 32-bit block switches back.
+	in32, out32 := make([]float32, 32), make([]float32, 32)
+	ctx.BeginBlock(32)
+	ctx.AddInputChannel(0, in32)
+	ctx.AddOutputChannel(0, out32)
+	ctx.Dispatch(func(c *Context) {
+		if c.Is64Bit() || c.Input64 != nil || len(c.Output) != 1 {
+			t.Fatal("32-bit block must expose only Input/Output")
+		}
+	})
+}
+
+func TestAppendEventText(t *testing.T) {
+	ctx := NewContext(16, nil)
+	ctx.BeginBlock(16)
+	text := ctx.AppendEventText([]uint16{'C', 'm', 0xD834, 0xDD1E}) // "Cm𝄞"
+	if string(text) != "Cm𝄞" {
+		t.Fatalf("text = %q", text)
+	}
+	other := ctx.AppendEventText([]uint16{'x'})
+	if string(text) != "Cm𝄞" || string(other) != "x" {
+		t.Fatal("event texts of one block must not overlap")
 	}
 }

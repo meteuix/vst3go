@@ -56,7 +56,7 @@ func (q *EventQueue) GetEventsInRange(startSample, endSample int32) []Event {
 
 	// Binary search for start position
 	startIdx := sort.Search(len(q.events), func(i int) bool {
-		return q.events[i].SampleOffset() >= startSample
+		return q.events[i].Offset >= startSample
 	})
 
 	if startIdx >= len(q.events) {
@@ -65,7 +65,7 @@ func (q *EventQueue) GetEventsInRange(startSample, endSample int32) []Event {
 
 	// Find end position
 	endIdx := startIdx
-	for endIdx < len(q.events) && q.events[endIdx].SampleOffset() < endSample {
+	for endIdx < len(q.events) && q.events[endIdx].Offset < endSample {
 		endIdx++
 	}
 
@@ -114,7 +114,7 @@ func (q *EventQueue) RemoveProcessedEvents(upToSample int32) {
 
 	// Find the first event that should be kept
 	keepIdx := sort.Search(len(q.events), func(i int) bool {
-		return q.events[i].SampleOffset() > upToSample
+		return q.events[i].Offset > upToSample
 	})
 
 	if keepIdx > 0 {
@@ -138,7 +138,7 @@ func (q *EventQueue) IsEmpty() bool {
 
 func (q *EventQueue) sortEvents() {
 	sort.SliceStable(q.events, func(i, j int) bool {
-		return q.events[i].SampleOffset() < q.events[j].SampleOffset()
+		return q.events[i].Offset < q.events[j].Offset
 	})
 	q.sorted = true
 }
@@ -148,47 +148,7 @@ func (q *EventQueue) OffsetEvents(offset int32) {
 	defer q.mu.Unlock()
 
 	for i := range q.events {
-		switch e := q.events[i].(type) {
-		case NoteOnEvent:
-			e.Offset += offset
-			q.events[i] = e
-		case NoteOffEvent:
-			e.Offset += offset
-			q.events[i] = e
-		case ControlChangeEvent:
-			e.Offset += offset
-			q.events[i] = e
-		case PitchBendEvent:
-			e.Offset += offset
-			q.events[i] = e
-		case PolyPressureEvent:
-			e.Offset += offset
-			q.events[i] = e
-		case ChannelPressureEvent:
-			e.Offset += offset
-			q.events[i] = e
-		case ProgramChangeEvent:
-			e.Offset += offset
-			q.events[i] = e
-		case ClockEvent:
-			e.Offset += offset
-			q.events[i] = e
-		case StartEvent:
-			e.Offset += offset
-			q.events[i] = e
-		case StopEvent:
-			e.Offset += offset
-			q.events[i] = e
-		case ContinueEvent:
-			e.Offset += offset
-			q.events[i] = e
-		case NoteExpressionEvent:
-			e.Offset += offset
-			q.events[i] = e
-		case SysExEvent:
-			e.Offset += offset
-			q.events[i] = e
-		}
+		q.events[i].Offset += offset
 	}
 }
 

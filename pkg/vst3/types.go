@@ -1,17 +1,10 @@
 // Package vst3 provides Go helpers for the VST3 C API used by the runtime.
 package vst3
 
-// #include "../../include/vst3/vst3_c_api.h"
-import "C"
-
-// Result codes (Steinberg::tresult) as plain Go values.
-const (
-	ResultOK              = C.Steinberg_kResultOk
-	ResultFalse           = C.Steinberg_kResultFalse
-	ResultInvalidArgument = C.Steinberg_kInvalidArgument
-	ResultNotImplemented  = C.Steinberg_kNotImplemented
-	ResultNoInterface     = C.Steinberg_kNoInterface
-)
+// Result codes (Steinberg::tresult) are defined per platform in
+// results_com.go (Windows, COM HRESULT values) and results_posix.go. The C
+// header declares them as static const variables, which cgo cannot use as
+// Go constants on every compiler.
 
 // Error codes
 type Error int

@@ -65,11 +65,7 @@ func BenchmarkProcessEvents(b *testing.B) {
 	ctx.Output = [][]float32{make([]float32, 256)}
 
 	for i := 0; i < 128; i++ {
-		ctx.AddInputEvent(midi.NoteOnEvent{
-			BaseEvent:  midi.BaseEvent{Offset: int32(i * 2)},
-			NoteNumber: uint8(60 + i%12),
-			Velocity:   100,
-		})
+		ctx.AddInputEvent(midi.NoteOn(0, uint8(60+i%12), 0.8).At(int32(i * 2)))
 	}
 
 	processor := &benchmarkEventProcessor{}

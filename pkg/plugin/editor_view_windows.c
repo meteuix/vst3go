@@ -694,7 +694,7 @@ static HRESULT STDMETHODCALLTYPE editorMessageHandler_Invoke(ICoreWebView2WebMes
     }
 
     LPWSTR message = NULL;
-    HRESULT result = args->lpVtbl->GetWebMessageAsJson(args, &message);
+    HRESULT result = args->lpVtbl->get_WebMessageAsJson(args, &message);
     if (FAILED(result) || !message) {
         return result;
     }

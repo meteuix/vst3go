@@ -9,6 +9,7 @@ import (
 
 	"github.com/th-release/vst3go/pkg/framework/bus"
 	"github.com/th-release/vst3go/pkg/framework/process"
+	"github.com/th-release/vst3go/pkg/vst3"
 )
 
 // IAudioProcessor callbacks
@@ -54,8 +55,13 @@ func GoAudioGetBusArrangement(componentID C.uintptr_t, dir, index C.int32_t, arr
 
 //export GoAudioCanProcessSampleSize
 func GoAudioCanProcessSampleSize(componentID C.uintptr_t, symbolicSampleSize C.int32_t) C.Steinberg_tresult {
-	if symbolicSampleSize == sampleSize32 {
+	switch symbolicSampleSize {
+	case sampleSize32:
 		return resultOK
+	case sampleSize64:
+		if wrapper := getComponent(componentID); wrapper != nil && wrapper.component.CanProcess64() {
+			return resultOK
+		}
 	}
 	return resultFalse
 }
@@ -76,10 +82,11 @@ func GoAudioSetupProcessing(componentID C.uintptr_t, setup *C.struct_Steinberg_V
 	if wrapper == nil || setup == nil {
 		return resultInvalidArgument
 	}
-	if setup.symbolicSampleSize != sampleSize32 {
+	use64 := setup.symbolicSampleSize == sampleSize64
+	if setup.symbolicSampleSize != sampleSize32 && (!use64 || !wrapper.component.CanProcess64()) {
 		return resultFalse
 	}
-	err := wrapper.component.SetupProcessing(float64(setup.sampleRate), int32(setup.maxSamplesPerBlock), process.ProcessMode(setup.processMode))
+	err := wrapper.component.SetupProcessing(float64(setup.sampleRate), int32(setup.maxSamplesPerBlock), process.ProcessMode(setup.processMode), use64)
 	return resultFromError(err)
 }
 
@@ -113,4 +120,58 @@ func GoAudioGetTailSamples(componentID C.uintptr_t) C.uint32_t {
 		return 0
 	}
 	return C.uint32_t(wrapper.component.GetTailSamples())
+}
+
+// IProgramListData
+
+func (w *componentWrapper) programList(listID C.int32_t) *programs {
+	if w == nil || w.component.programs == nil || int32(listID) != programListID {
+		return nil
+	}
+	return w.component.programs
+}
+
+//export GoProgramDataSupported
+func GoProgramDataSupported(componentID C.uintptr_t, listID C.int32_t) C.Steinberg_tresult {
+	if getComponent(componentID).programList(listID) == nil {
+		return resultFalse
+	}
+	return resultOK
+}
+
+//export GoProgramDataGet
+func GoProgramDataGet(componentID C.uintptr_t, listID, programIndex C.int32_t, state unsafe.Pointer) (result C.Steinberg_tresult) {
+	defer recoverPanic(&result)
+	programs := getComponent(componentID).programList(listID)
+	stream := vst3.NewStreamWrapper(state)
+	if programs == nil || stream == nil {
+		return resultInvalidArgument
+	}
+	data, err := programs.encode(int32(programIndex))
+	if err != nil {
+		return resultFromError(err)
+	}
+	if _, err := stream.Write(data); err != nil {
+		return resultFalse
+	}
+	return resultOK
+}
+
+//export GoProgramDataSet
+func GoProgramDataSet(componentID C.uintptr_t, listID, programIndex C.int32_t, state unsafe.Pointer) (result C.Steinberg_tresult) {
+	defer recoverPanic(&result)
+	wrapper := getComponent(componentID)
+	programs := wrapper.programList(listID)
+	stream := vst3.NewStreamWrapper(state)
+	if programs == nil || stream == nil {
+		return resultInvalidArgument
+	}
+	data, err := stream.ReadAll()
+	if err != nil {
+		return resultFalse
+	}
+	if err := programs.decode(int32(programIndex), data, wrapper.component.params); err != nil {
+		return resultFromError(err)
+	}
+	return resultOK
 }

@@ -35,6 +35,9 @@ For the real-host validation checklist and required evidence, see `docs/windows-
 ## Build Expectations
 
 - Cross-compiling from Linux is possible only when the Windows C toolchain and WebView2 headers are available.
+- `scripts/docker_build_windows.sh [out]` (`just docker-build-windows`) does this on any Docker host: it installs mingw-w64 and the WebView2 NuGet package (`WEBVIEW2_VERSION`, cached in the `vst3go-windows-cross` volume), runs `go vet` for `windows/amd64`, builds every validation plugin as a `.vst3` DLL and checks the `GetPluginFactory`/`InitDll`/`ExitDll` exports. It does not run the plugins.
+- The WebView2 editor links `WebView2Loader`, `ole32` and `user32`.
+- Cross builds do not generate `moduleinfo.json`; it needs to load the binary on the target platform.
 - Current Windows packaging targets `amd64` and the `x86_64-win` bundle layout.
 - The Windows scripts resolve relative bundle roots, bundle inputs, and build helpers against the repository root, so they can be called from any working directory.
 - The repo-level Go tests continue to validate the shared runtime code on the current platform.

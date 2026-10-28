@@ -16,16 +16,8 @@ func TestContextEventProcessing(t *testing.T) {
 	ctx.Output = [][]float32{make([]float32, 512)}
 
 	// Test adding input events
-	noteOn := midi.NoteOnEvent{
-		BaseEvent:  midi.BaseEvent{EventChannel: 0, Offset: 100},
-		NoteNumber: 60,
-		Velocity:   100,
-	}
-	noteOff := midi.NoteOffEvent{
-		BaseEvent:  midi.BaseEvent{EventChannel: 0, Offset: 200},
-		NoteNumber: 60,
-		Velocity:   0,
-	}
+	noteOn := midi.NoteOn(0, 60, 0.8).At(100)
+	noteOff := midi.NoteOff(0, 60, 0).At(200)
 
 	ctx.AddInputEvent(noteOn)
 	ctx.AddInputEvent(noteOff)
@@ -64,15 +56,8 @@ func TestContextOutputEvents(t *testing.T) {
 	ctx := NewContext(512, registry)
 
 	// Add output events
-	cc := midi.ControlChangeEvent{
-		BaseEvent:  midi.BaseEvent{EventChannel: 0, Offset: 50},
-		Controller: midi.CCVolume,
-		Value:      100,
-	}
-	pitchBend := midi.PitchBendEvent{
-		BaseEvent: midi.BaseEvent{EventChannel: 0, Offset: 75},
-		Value:     1000,
-	}
+	cc := midi.ControlChange(0, midi.CCVolume, 0.8).At(50)
+	pitchBend := midi.PitchBend(0, 0.1).At(75)
 
 	ctx.AddOutputEvent(cc)
 	ctx.AddOutputEvent(pitchBend)
@@ -106,10 +91,10 @@ func TestContextProcessEvents(t *testing.T) {
 
 	// Add events at different offsets
 	events := []midi.Event{
-		midi.NoteOnEvent{BaseEvent: midi.BaseEvent{Offset: 50}, NoteNumber: 60, Velocity: 100},
-		midi.NoteOnEvent{BaseEvent: midi.BaseEvent{Offset: 150}, NoteNumber: 61, Velocity: 100},
-		midi.NoteOnEvent{BaseEvent: midi.BaseEvent{Offset: 250}, NoteNumber: 62, Velocity: 100},
-		midi.NoteOnEvent{BaseEvent: midi.BaseEvent{Offset: 350}, NoteNumber: 63, Velocity: 100},
+		midi.NoteOn(0, 60, 0.7874).At(50),
+		midi.NoteOn(0, 61, 0.7874).At(150),
+		midi.NoteOn(0, 62, 0.7874).At(250),
+		midi.NoteOn(0, 63, 0.7874).At(350),
 	}
 
 	for _, e := range events {
@@ -138,8 +123,8 @@ func TestContextClearAllEvents(t *testing.T) {
 	ctx := NewContext(512, registry)
 
 	// Add both input and output events
-	ctx.AddInputEvent(midi.NoteOnEvent{BaseEvent: midi.BaseEvent{Offset: 100}, NoteNumber: 60, Velocity: 100})
-	ctx.AddOutputEvent(midi.ControlChangeEvent{BaseEvent: midi.BaseEvent{Offset: 50}, Controller: midi.CCVolume, Value: 100})
+	ctx.AddInputEvent(midi.NoteOn(0, 60, 0.7874).At(100))
+	ctx.AddOutputEvent(midi.ControlChange(0, midi.CCVolume, 0.7874).At(50))
 
 	// Clear all events
 	ctx.ClearAllEvents()

@@ -111,14 +111,14 @@ func (m *midiControllers) set(id uint32, value float64) {
 func (m *midiControllers) event(id uint32, value float64, offset int32) midi.Event {
 	channel, controller := m.split(id)
 	value = clampUnit(value)
-	base := midi.BaseEvent{EventChannel: uint8(channel), Offset: offset}
 	switch int16(controller) {
 	case MIDIControllerAfterTouch:
-		return midi.ChannelPressureEvent{BaseEvent: base, Pressure: uint8(math.Round(value * 127))}
+		return midi.ChannelPressure(uint8(channel), value).At(offset)
 	case MIDIControllerPitchBend:
-		return midi.PitchBendEvent{BaseEvent: base, Value: int16(math.Round(value*16383) - 8192)}
+		// 14-bit parameter steps, center 8192 = 0.
+		return midi.PitchBend(uint8(channel), (math.Round(value*16383)-8192)/8192).At(offset)
 	default:
-		return midi.ControlChangeEvent{BaseEvent: base, Controller: uint8(controller), Value: uint8(math.Round(value * 127))}
+		return midi.ControlChange(uint8(channel), uint8(controller), value).At(offset)
 	}
 }
 

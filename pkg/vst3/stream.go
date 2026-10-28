@@ -49,7 +49,7 @@ func (s *StreamWrapper) Read(buffer []byte) (int32, error) {
 
 	var numBytesRead C.Steinberg_int32
 	result := C.stream_read(s.stream, unsafe.Pointer(&buffer[0]), C.Steinberg_int32(len(buffer)), &numBytesRead)
-	if result != C.Steinberg_kResultOk {
+	if result != C.Steinberg_tresult(ResultOK) {
 		return 0, ErrNotImplemented
 	}
 	return int32(numBytesRead), nil
@@ -62,7 +62,7 @@ func (s *StreamWrapper) Write(buffer []byte) (int32, error) {
 	for written < len(buffer) {
 		var n C.Steinberg_int32
 		result := C.stream_write(s.stream, unsafe.Pointer(&buffer[written]), C.Steinberg_int32(len(buffer)-written), &n)
-		if result != C.Steinberg_kResultOk {
+		if result != C.Steinberg_tresult(ResultOK) {
 			return int32(written), ErrNotImplemented
 		}
 		if n <= 0 {

@@ -33,18 +33,23 @@ const (
 //
 // Input and Output are the channels of the main (index 0) audio buses. Every
 // other bus, including sidechains and auxiliary outputs, is available through
-// InputBus/OutputBus. When the host automates parameters inside a block, the
-// runtime splits the block at each change and calls ProcessAudio once per
-// segment; BlockOffset reports where the current segment starts inside the
-// host block. All event and parameter-change offsets are relative to the host
-// block, so a sample index i of Output corresponds to block offset
-// BlockOffset()+i.
+// InputBus/OutputBus. When the host processes in 64-bit, Input64/Output64
+// and the *64 bus accessors carry the audio instead and Input/Output are nil;
+// this only happens for processors that opt into double precision.
+//
+// When the host automates parameters inside a block, the runtime splits the
+// block at each change and calls ProcessAudio once per segment; BlockOffset
+// reports where the current segment starts inside the host block. All event
+// and parameter-change offsets are relative to the host block, so a sample
+// index i of Output corresponds to block offset BlockOffset()+i.
 //
 // Slices returned by Context accessors are only valid during the current
 // ProcessAudio call.
 type Context struct {
 	Input       [][]float32
 	Output      [][]float32
+	Input64     [][]float64
+	Output64    [][]float64
 	SampleRate  float64
 	ProcessMode ProcessMode
 
@@ -64,15 +69,14 @@ type Context struct {
 	blockSamples int // samples in the host block
 	blockOffset  int // start of the current segment inside the host block
 
-	// Audio buses. fullIn/fullOut hold the host block buffers; segIn/segOut
-	// hold per-segment views; curIn/curOut point to whichever is active.
-	fullIn, fullOut [][][]float32
-	segIn, segOut   [][][]float32
-	curIn, curOut   [][][]float32
-	inSilence       []uint64
-	outSilence      []uint64
-	sidechainBus    int
-	busesManaged    bool // bus storage is filled by the runtime via BeginBlock
+	in, out       busSet[float32]
+	in64, out64   busSet[float64]
+	double        bool // the current block is 64-bit
+	inSilence     []uint64
+	outSilence    []uint64
+	sidechainBus  int
+	busesManaged  bool // bus storage is filled by the runtime via BeginBlock
+	manualBuffers bool // Input/Output were assigned by hand (tests, tools)
 
 	// Sample-accurate automation
 	paramChanges []ParameterChange
@@ -118,6 +122,70 @@ func NewContext(maxBlockSize int, params *param.Registry) *Context {
 	}
 }
 
+// busSet holds the channel buffers of all audio buses of one direction:
+// full is the host block, seg the per-segment views, cur whichever is active.
+type busSet[T float32 | float64] struct {
+	full, seg, cur [][][]T
+}
+
+func (b *busSet[T]) configure(channels []int) {
+	b.full = make([][][]T, len(channels))
+	b.seg = make([][][]T, len(channels))
+	for i, n := range channels {
+		b.full[i] = make([][]T, 0, n)
+		b.seg[i] = make([][]T, 0, n)
+	}
+	b.cur = b.full
+}
+
+func (b *busSet[T]) reset() {
+	for i := range b.full {
+		b.full[i] = b.full[i][:0]
+	}
+	b.cur = b.full
+}
+
+func (b *busSet[T]) add(bus int, samples []T) {
+	if bus >= 0 && bus < len(b.full) && len(b.full[bus]) < cap(b.full[bus]) {
+		b.full[bus] = append(b.full[bus], samples)
+	}
+}
+
+func (b *busSet[T]) slice(start, end int) {
+	for i := range b.full {
+		b.seg[i] = b.seg[i][:0]
+		for _, ch := range b.full[i] {
+			b.seg[i] = append(b.seg[i], ch[start:end])
+		}
+	}
+	b.cur = b.seg
+}
+
+func (b *busSet[T]) restore() { b.cur = b.full }
+
+func (b *busSet[T]) main() [][]T {
+	if len(b.cur) == 0 || len(b.cur[0]) == 0 {
+		return nil
+	}
+	return b.cur[0]
+}
+
+func (b *busSet[T]) bus(index int) [][]T {
+	if index < 0 || index >= len(b.cur) {
+		return nil
+	}
+	return b.cur[index]
+}
+
+// adopt makes hand-assigned main-bus channels bus 0.
+func (b *busSet[T]) adopt(channels [][]T) {
+	if len(b.full) != 1 || cap(b.full[0]) < len(channels) {
+		b.configure([]int{len(channels)})
+	}
+	b.full[0] = append(b.full[0][:0], channels...)
+	b.cur = b.full
+}
+
 // Param returns the current value of a parameter (0-1 normalized)
 func (c *Context) Param(id uint32) float64 {
 	if c.params == nil {
@@ -147,11 +215,15 @@ func (c *Context) NumSamples() int {
 	if c.numSamples > 0 {
 		return c.numSamples
 	}
-	if len(c.Input) > 0 && len(c.Input[0]) > 0 {
-		return len(c.Input[0])
+	for _, chans := range [][][]float32{c.Input, c.Output} {
+		if len(chans) > 0 && len(chans[0]) > 0 {
+			return len(chans[0])
+		}
 	}
-	if len(c.Output) > 0 && len(c.Output[0]) > 0 {
-		return len(c.Output[0])
+	for _, chans := range [][][]float64{c.Input64, c.Output64} {
+		if len(chans) > 0 && len(chans[0]) > 0 {
+			return len(chans[0])
+		}
 	}
 	return 0
 }
@@ -162,13 +234,25 @@ func (c *Context) BlockOffset() int {
 	return c.blockOffset
 }
 
+// Is64Bit reports whether the current block carries 64-bit audio
+// (Input64/Output64) instead of 32-bit audio (Input/Output).
+func (c *Context) Is64Bit() bool {
+	return c.double
+}
+
 // NumInputChannels returns the number of main input channels
 func (c *Context) NumInputChannels() int {
+	if c.double {
+		return len(c.Input64)
+	}
 	return len(c.Input)
 }
 
 // NumOutputChannels returns the number of main output channels
 func (c *Context) NumOutputChannels() int {
+	if c.double {
+		return len(c.Output64)
+	}
 	return len(c.Output)
 }
 
@@ -186,16 +270,17 @@ func (c *Context) TempBuffer() []float32 {
 
 // PassThrough copies main input to main output (for bypass)
 func (c *Context) PassThrough() {
-	numChannels := c.NumInputChannels()
-	if c.NumOutputChannels() < numChannels {
-		numChannels = c.NumOutputChannels()
-	}
+	passThrough(c.Input, c.Output)
+	passThrough(c.Input64, c.Output64)
+}
 
-	for ch := 0; ch < numChannels; ch++ {
-		copy(c.Output[ch], c.Input[ch])
+func passThrough[T float32 | float64](in, out [][]T) {
+	n := min(len(in), len(out))
+	for ch := 0; ch < n; ch++ {
+		copy(out[ch], in[ch])
 	}
-	for ch := numChannels; ch < c.NumOutputChannels(); ch++ {
-		clear(c.Output[ch])
+	for ch := n; ch < len(out); ch++ {
+		clear(out[ch])
 	}
 }
 
@@ -204,55 +289,42 @@ func (c *Context) Clear() {
 	for ch := range c.Output {
 		clear(c.Output[ch])
 	}
+	for ch := range c.Output64 {
+		clear(c.Output64[ch])
+	}
 }
 
 // Bus access
 
 // NumInputBuses returns the number of audio input buses.
 func (c *Context) NumInputBuses() int {
-	if c.curIn == nil {
-		return boolToInt(c.Input != nil)
+	if c.double {
+		return len(c.in64.cur)
 	}
-	return len(c.curIn)
+	return len(c.in.cur)
 }
 
 // NumOutputBuses returns the number of audio output buses.
 func (c *Context) NumOutputBuses() int {
-	if c.curOut == nil {
-		return boolToInt(c.Output != nil)
+	if c.double {
+		return len(c.out64.cur)
 	}
-	return len(c.curOut)
+	return len(c.out.cur)
 }
 
 // InputBus returns the channels of an audio input bus. Inactive buses have
 // zero channels.
-func (c *Context) InputBus(index int) [][]float32 {
-	if c.curIn == nil {
-		if index == 0 {
-			return c.Input
-		}
-		return nil
-	}
-	if index < 0 || index >= len(c.curIn) {
-		return nil
-	}
-	return c.curIn[index]
-}
+func (c *Context) InputBus(index int) [][]float32 { return c.in.bus(index) }
 
 // OutputBus returns the channels of an audio output bus. Inactive buses have
 // zero channels.
-func (c *Context) OutputBus(index int) [][]float32 {
-	if c.curOut == nil {
-		if index == 0 {
-			return c.Output
-		}
-		return nil
-	}
-	if index < 0 || index >= len(c.curOut) {
-		return nil
-	}
-	return c.curOut[index]
-}
+func (c *Context) OutputBus(index int) [][]float32 { return c.out.bus(index) }
+
+// InputBus64 is InputBus for 64-bit blocks.
+func (c *Context) InputBus64(index int) [][]float64 { return c.in64.bus(index) }
+
+// OutputBus64 is OutputBus for 64-bit blocks.
+func (c *Context) OutputBus64(index int) [][]float64 { return c.out64.bus(index) }
 
 // Sidechain returns the channels of the first auxiliary input bus, or nil
 // when the plugin has no sidechain or the host left it inactive.
@@ -260,11 +332,21 @@ func (c *Context) Sidechain() [][]float32 {
 	if c.sidechainBus < 0 {
 		return nil
 	}
-	bus := c.InputBus(c.sidechainBus)
-	if len(bus) == 0 {
+	if bus := c.InputBus(c.sidechainBus); len(bus) > 0 {
+		return bus
+	}
+	return nil
+}
+
+// Sidechain64 is Sidechain for 64-bit blocks.
+func (c *Context) Sidechain64() [][]float64 {
+	if c.sidechainBus < 0 {
 		return nil
 	}
-	return bus
+	if bus := c.InputBus64(c.sidechainBus); len(bus) > 0 {
+		return bus
+	}
+	return nil
 }
 
 // InputSilenceFlags returns the host silence bitmask of an input bus: bit n
@@ -300,52 +382,32 @@ func (c *Context) OutputSilenceFlags(bus int) uint64 {
 // of the first auxiliary input bus, or -1. It allocates and must not be
 // called from the audio thread.
 func (c *Context) ConfigureBuses(inputChannels, outputChannels []int, sidechainBus int) {
-	c.fullIn, c.segIn = makeBusStorage(inputChannels)
-	c.fullOut, c.segOut = makeBusStorage(outputChannels)
+	c.in.configure(inputChannels)
+	c.out.configure(outputChannels)
+	c.in64.configure(inputChannels)
+	c.out64.configure(outputChannels)
 	c.inSilence = make([]uint64, len(inputChannels))
 	c.outSilence = make([]uint64, len(outputChannels))
 	c.sidechainBus = sidechainBus
-	c.curIn = c.fullIn
-	c.curOut = c.fullOut
 	c.busesManaged = true
 }
 
-// adoptManualBuffers lets hand-built contexts (tests, offline tools) assign
-// Input/Output directly: the channels become bus 0 of the bus storage.
-func (c *Context) adoptManualBuffers() {
-	if c.busesManaged {
-		return
-	}
-	in, out := c.Input, c.Output
-	if len(c.fullIn) != 1 || cap(c.fullIn[0]) < len(in) {
-		c.fullIn, c.segIn = makeBusStorage([]int{len(in)})
-		c.inSilence = make([]uint64, 1)
-	}
-	if len(c.fullOut) != 1 || cap(c.fullOut[0]) < len(out) {
-		c.fullOut, c.segOut = makeBusStorage([]int{len(out)})
-		c.outSilence = make([]uint64, 1)
-	}
-	c.fullIn[0] = append(c.fullIn[0][:0], in...)
-	c.fullOut[0] = append(c.fullOut[0][:0], out...)
-	c.curIn = c.fullIn
-	c.curOut = c.fullOut
-}
-
-func makeBusStorage(channels []int) (full, seg [][][]float32) {
-	full = make([][][]float32, len(channels))
-	seg = make([][][]float32, len(channels))
-	for i, n := range channels {
-		full[i] = make([][]float32, 0, n)
-		seg[i] = make([][]float32, 0, n)
-	}
-	return full, seg
-}
-
-// BeginBlock resets the per-block state for a host block of numSamples.
+// BeginBlock resets the per-block state for a 32-bit host block of
+// numSamples.
 func (c *Context) BeginBlock(numSamples int) {
+	c.beginBlock(numSamples, false)
+}
+
+// BeginBlock64 resets the per-block state for a 64-bit host block.
+func (c *Context) BeginBlock64(numSamples int) {
+	c.beginBlock(numSamples, true)
+}
+
+func (c *Context) beginBlock(numSamples int, double bool) {
 	c.numSamples = numSamples
 	c.blockSamples = numSamples
 	c.blockOffset = 0
+	c.double = double
 	c.changeCount = 0
 	c.inEvents = c.inEvents[:0]
 	c.inSorted = true
@@ -353,35 +415,28 @@ func (c *Context) BeginBlock(numSamples int) {
 	c.outEvents = c.outEvents[:0]
 	c.eventData = c.eventData[:0]
 	c.outParams = c.outParams[:0]
-	for i := range c.fullIn {
-		c.fullIn[i] = c.fullIn[i][:0]
-		c.inSilence[i] = 0
-	}
-	for i := range c.fullOut {
-		c.fullOut[i] = c.fullOut[i][:0]
-		c.outSilence[i] = 0
-	}
-	c.curIn = c.fullIn
-	c.curOut = c.fullOut
-	c.Input = nil
-	c.Output = nil
+	c.in.reset()
+	c.out.reset()
+	c.in64.reset()
+	c.out64.reset()
+	clear(c.inSilence)
+	clear(c.outSilence)
+	c.Input, c.Output, c.Input64, c.Output64 = nil, nil, nil, nil
 }
 
 // AddInputChannel appends a host channel buffer to an input bus. Channels
 // beyond the configured count are ignored.
-func (c *Context) AddInputChannel(bus int, samples []float32) {
-	if bus >= 0 && bus < len(c.fullIn) && len(c.fullIn[bus]) < cap(c.fullIn[bus]) {
-		c.fullIn[bus] = append(c.fullIn[bus], samples)
-	}
-}
+func (c *Context) AddInputChannel(bus int, samples []float32) { c.in.add(bus, samples) }
 
 // AddOutputChannel appends a host channel buffer to an output bus. Channels
 // beyond the configured count are ignored.
-func (c *Context) AddOutputChannel(bus int, samples []float32) {
-	if bus >= 0 && bus < len(c.fullOut) && len(c.fullOut[bus]) < cap(c.fullOut[bus]) {
-		c.fullOut[bus] = append(c.fullOut[bus], samples)
-	}
-}
+func (c *Context) AddOutputChannel(bus int, samples []float32) { c.out.add(bus, samples) }
+
+// AddInputChannel64 is AddInputChannel for 64-bit blocks.
+func (c *Context) AddInputChannel64(bus int, samples []float64) { c.in64.add(bus, samples) }
+
+// AddOutputChannel64 is AddOutputChannel for 64-bit blocks.
+func (c *Context) AddOutputChannel64(bus int, samples []float64) { c.out64.add(bus, samples) }
 
 // SetInputSilenceFlags records the host silence flags of an input bus.
 func (c *Context) SetInputSilenceFlags(bus int, flags uint64) {
@@ -402,6 +457,32 @@ func (c *Context) EventDataBuffer(n int) []byte {
 	return c.eventData[start : start+n : start+n]
 }
 
+// AppendEventText converts UTF-16 event text (chord names, note expression
+// text) to UTF-8 in the per-block scratch memory.
+func (c *Context) AppendEventText(text []uint16) []byte {
+	start := len(c.eventData)
+	if start+3*len(text) > cap(c.eventData) {
+		return midi.AppendUTF16(nil, text)
+	}
+	c.eventData = midi.AppendUTF16(c.eventData, text)
+	return c.eventData[start:len(c.eventData):len(c.eventData)]
+}
+
+// adoptManualBuffers lets hand-built contexts (tests, offline tools) assign
+// Input/Output (or Input64/Output64) directly: they become bus 0.
+func (c *Context) adoptManualBuffers() {
+	c.double = c.Input64 != nil || c.Output64 != nil
+	c.in.adopt(c.Input)
+	c.out.adopt(c.Output)
+	c.in64.adopt(c.Input64)
+	c.out64.adopt(c.Output64)
+	if len(c.inSilence) != 1 {
+		c.inSilence = make([]uint64, 1)
+		c.outSilence = make([]uint64, 1)
+	}
+	c.manualBuffers = true
+}
+
 // Dispatch runs process over the current block. Parameter changes are applied
 // in sample order: the block is split at every change offset so each
 // ProcessAudio call sees the parameter values valid for its segment, together
@@ -411,14 +492,13 @@ func (c *Context) Dispatch(process func(*Context)) {
 	c.sortInputEvents()
 	c.SortParameterChanges()
 
-	total := c.NumSamples()
 	if !c.busesManaged {
+		total := c.NumSamples()
 		c.adoptManualBuffers()
 		c.blockSamples = total
 	}
-	total = c.blockSamples
-	c.Input = mainBus(c.fullIn)
-	c.Output = mainBus(c.fullOut)
+	total := c.blockSamples
+	c.setMainBuses()
 	changes := c.paramChanges[:c.changeCount]
 
 	if total == 0 {
@@ -452,6 +532,16 @@ func (c *Context) Dispatch(process func(*Context)) {
 	c.restoreFullBlock(total)
 }
 
+func (c *Context) setMainBuses() {
+	if c.double {
+		c.Input, c.Output = nil, nil
+		c.Input64, c.Output64 = c.in64.main(), c.out64.main()
+		return
+	}
+	c.Input, c.Output = c.in.main(), c.out.main()
+	c.Input64, c.Output64 = nil, nil
+}
+
 func (c *Context) runSegment(process func(*Context), start, end, total int) {
 	if start == 0 && end == total {
 		process(c)
@@ -460,18 +550,22 @@ func (c *Context) runSegment(process func(*Context), start, end, total int) {
 
 	c.blockOffset = start
 	c.numSamples = end - start
-	c.curIn = sliceBuses(c.segIn, c.fullIn, start, end)
-	c.curOut = sliceBuses(c.segOut, c.fullOut, start, end)
-	c.Input = mainBus(c.curIn)
-	c.Output = mainBus(c.curOut)
+	if c.double {
+		c.in64.slice(start, end)
+		c.out64.slice(start, end)
+	} else {
+		c.in.slice(start, end)
+		c.out.slice(start, end)
+	}
+	c.setMainBuses()
 
 	c.windowed = true
 	c.evStart = c.evEnd
-	for c.evStart < len(c.inEvents) && int(c.inEvents[c.evStart].SampleOffset()) < start {
+	for c.evStart < len(c.inEvents) && int(c.inEvents[c.evStart].Offset) < start {
 		c.evStart++
 	}
 	c.evEnd = c.evStart
-	for c.evEnd < len(c.inEvents) && int(c.inEvents[c.evEnd].SampleOffset()) < end {
+	for c.evEnd < len(c.inEvents) && int(c.inEvents[c.evEnd].Offset) < end {
 		c.evEnd++
 	}
 	if end == total {
@@ -484,41 +578,18 @@ func (c *Context) runSegment(process func(*Context), start, end, total int) {
 func (c *Context) restoreFullBlock(total int) {
 	c.blockOffset = 0
 	c.numSamples = total
+	c.windowed = false
+	c.evStart, c.evEnd = 0, 0
+	c.in.restore()
+	c.out.restore()
+	c.in64.restore()
+	c.out64.restore()
+	c.setMainBuses()
 	if !c.busesManaged {
 		// Hand-built contexts derive the length from Input/Output each block.
 		c.numSamples = 0
 		c.blockSamples = 0
 	}
-	c.windowed = false
-	c.evStart, c.evEnd = 0, 0
-	c.curIn = c.fullIn
-	c.curOut = c.fullOut
-	c.Input = mainBus(c.fullIn)
-	c.Output = mainBus(c.fullOut)
-}
-
-func mainBus(buses [][][]float32) [][]float32 {
-	if len(buses) == 0 {
-		return nil
-	}
-	return buses[0]
-}
-
-func sliceBuses(dst, src [][][]float32, start, end int) [][][]float32 {
-	for b := range src {
-		dst[b] = dst[b][:0]
-		for _, ch := range src[b] {
-			dst[b] = append(dst[b], ch[start:end])
-		}
-	}
-	return dst
-}
-
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 // Parameter changes
@@ -616,19 +687,21 @@ func (c *Context) OutputParameterChanges() []ParameterChange {
 
 // AddInputEvent adds an event to the input queue of the current block.
 func (c *Context) AddInputEvent(event midi.Event) {
-	if n := len(c.inEvents); n > 0 && c.inEvents[n-1].SampleOffset() > event.SampleOffset() {
+	if n := len(c.inEvents); n > 0 && c.inEvents[n-1].Offset > event.Offset {
 		c.inSorted = false
 	}
 	c.inEvents = append(c.inEvents, event)
+}
+
+func compareEventOffset(a, b midi.Event) int {
+	return cmp.Compare(a.Offset, b.Offset)
 }
 
 func (c *Context) sortInputEvents() {
 	if c.inSorted {
 		return
 	}
-	slices.SortStableFunc(c.inEvents, func(a, b midi.Event) int {
-		return cmp.Compare(a.SampleOffset(), b.SampleOffset())
-	})
+	slices.SortStableFunc(c.inEvents, compareEventOffset)
 	c.inSorted = true
 }
 
@@ -651,10 +724,10 @@ func (c *Context) GetAllInputEvents() []midi.Event {
 func (c *Context) GetInputEvents(startSample, endSample int32) []midi.Event {
 	events := c.visibleInputEvents()
 	lo, _ := slices.BinarySearchFunc(events, startSample, func(e midi.Event, t int32) int {
-		return cmp.Compare(e.SampleOffset(), t)
+		return cmp.Compare(e.Offset, t)
 	})
 	hi := lo
-	for hi < len(events) && events[hi].SampleOffset() < endSample {
+	for hi < len(events) && events[hi].Offset < endSample {
 		hi++
 	}
 	return events[lo:hi]
@@ -672,9 +745,9 @@ func (c *Context) ClearInputEvents() {
 	c.evStart, c.evEnd = 0, 0
 }
 
-// AddOutputEvent queues an event for the host. Its SampleOffset is relative
-// to the host block (add BlockOffset() when computing it from a segment
-// index). The plugin needs an event output bus for the host to receive it.
+// AddOutputEvent queues an event for the host. Its Offset is relative to
+// the host block (add BlockOffset() when computing it from a segment index).
+// The plugin needs an event output bus for the host to receive it.
 func (c *Context) AddOutputEvent(event midi.Event) {
 	c.outEvents = append(c.outEvents, event)
 }
@@ -682,9 +755,7 @@ func (c *Context) AddOutputEvent(event midi.Event) {
 // GetOutputEvents returns the events queued for the host this block, sorted
 // by sample offset. The slice is owned by the context; do not retain it.
 func (c *Context) GetOutputEvents() []midi.Event {
-	slices.SortStableFunc(c.outEvents, func(a, b midi.Event) int {
-		return cmp.Compare(a.SampleOffset(), b.SampleOffset())
-	})
+	slices.SortStableFunc(c.outEvents, compareEventOffset)
 	return c.outEvents
 }
 

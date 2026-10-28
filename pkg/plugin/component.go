@@ -34,6 +34,8 @@ type componentImpl struct {
 	buses      *bus.Configuration
 	midiCC     *midiControllers
 	mapper     MIDIMappingProcessor
+	programs   *programs // nil without ProgramListProcessor
+	double     bool      // processor supports 64-bit samples
 
 	mu           sync.Mutex
 	processCtx   *process.Context
@@ -42,6 +44,7 @@ type componentImpl struct {
 	processMode  process.ProcessMode
 	active       bool
 	processing   atomic.Bool
+	use64        atomic.Bool // host set up 64-bit processing
 
 	wrapper *componentWrapper // host notifications; nil in pure-Go tests
 }
@@ -66,6 +69,17 @@ func newComponent(processor Processor, info plugin.Info) (*componentImpl, error)
 	}
 	if mapper, ok := processor.(MIDIMappingProcessor); ok {
 		c.mapper = mapper
+	}
+	if double, ok := processor.(DoublePrecisionProcessor); ok {
+		c.double = double.SupportsDoublePrecision()
+	}
+	if lister, ok := processor.(ProgramListProcessor); ok {
+		programs, err := newPrograms(lister, params)
+		if err != nil {
+			return nil, err
+		}
+		c.programs = programs
+		c.programs.syncSelection()
 	}
 	if cc, ok := processor.(MIDIControllerProcessor); ok {
 		midiCC, err := newMIDIControllers(cc.MIDIControllerChannels(), params)
@@ -177,6 +191,9 @@ func (c *componentImpl) SetState(stateData []byte) error {
 	if err := c.stateManager().Load(bytes.NewReader(stateData)); err != nil {
 		return fmt.Errorf("set component state: %w", err)
 	}
+	// The state holds the program selector together with the (possibly
+	// edited) values; it must not re-apply the program.
+	c.programs.syncSelection()
 	return nil
 }
 
@@ -251,13 +268,19 @@ func (c *componentImpl) GetTailSamples() uint32 {
 	return uint32(c.processor.GetTailSamples())
 }
 
-func (c *componentImpl) SetupProcessing(sampleRate float64, maxBlockSize int32, mode process.ProcessMode) error {
+// CanProcess64 reports whether the processor handles 64-bit samples.
+func (c *componentImpl) CanProcess64() bool {
+	return c.double
+}
+
+func (c *componentImpl) SetupProcessing(sampleRate float64, maxBlockSize int32, mode process.ProcessMode, use64 bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if sampleRate <= 0 || maxBlockSize < 0 {
+	if sampleRate <= 0 || maxBlockSize < 0 || (use64 && !c.double) {
 		return errInvalidArgument
 	}
+	c.use64.Store(use64)
 	c.sampleRate = sampleRate
 	if maxBlockSize > 0 {
 		c.maxBlockSize = maxBlockSize
@@ -366,9 +389,30 @@ func (c *componentImpl) SetParamNormalized(id uint32, value float64) error {
 	}
 	if p, ok := c.params.GetOK(id); ok {
 		p.SetNormalized(value)
+		if id == ProgramParamID {
+			c.selectProgram(c.programs.index(value))
+		}
 		return nil
 	}
 	return errInvalidArgument
+}
+
+// selectProgram loads a program into the parameters on the host thread
+// when the selection changed, and tells the host to re-read the values.
+// The audio thread applies the same values sample-accurately.
+func (c *componentImpl) selectProgram(index int32) {
+	if c.programs == nil || c.programs.uiProgram.Swap(index) == index {
+		return
+	}
+	for _, v := range c.programs.valuesOf(index) {
+		if p, ok := c.params.GetOK(v.id); ok {
+			p.SetNormalized(v.normalized)
+		}
+	}
+	if c.wrapper != nil {
+		c.wrapper.refreshEditorParameters()
+		_ = hostHandle{c.wrapper}.RestartComponent(RestartParamValuesChanged)
+	}
 }
 
 // MIDIControllerAssignment implements IMidiMapping.
@@ -408,12 +452,15 @@ func (c *componentImpl) EditParameter(id uint32, value float64) error {
 	value = clampUnit(value)
 	if c.wrapper == nil {
 		p.SetNormalized(value)
-		return nil
+	} else {
+		c.wrapper.notifyParamBeginEdit(id)
+		p.SetNormalized(value)
+		c.wrapper.notifyParamPerformEdit(id, value)
+		c.wrapper.notifyEditorParameterChanged(id, p.GetNormalized(), p.GetPlain())
+		c.wrapper.notifyParamEndEdit(id)
 	}
-	c.wrapper.notifyParamBeginEdit(id)
-	p.SetNormalized(value)
-	c.wrapper.notifyParamPerformEdit(id, value)
-	c.wrapper.notifyEditorParameterChanged(id, p.GetNormalized(), p.GetPlain())
-	c.wrapper.notifyParamEndEdit(id)
+	if id == ProgramParamID {
+		c.selectProgram(c.programs.index(value))
+	}
 	return nil
 }

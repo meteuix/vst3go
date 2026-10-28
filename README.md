@@ -10,6 +10,7 @@ It contains:
 - Go bindings for VST3 types and process structures
 - The plugin wrapper/runtime used to expose Go processors as VST3 plugins
 - Generic plugin authoring primitives such as buses, parameters, process context, state, and MIDI/event transport
+- Host features for effects, instruments and MIDI plugins: sample-accurate automation, 32/64-bit processing, sidechains and surround, MIDI CC/learn/MIDI 2.0 mapping, note expression and MPE, keyswitches, factory programs, units, SysEx, distributed processor/controller, and several plugins per binary
 
 The higher-level audio and synth layer now lives in the companion `synthkit` repository.
 
@@ -80,6 +81,9 @@ just fmt-check
 just test
 just vst3 ./path/to/plugin MyPlugin          # build a macOS/Linux .vst3 bundle
 just validate-vst3 /path/to/vst3sdk/validator # validator + hostcheck on internal/validation
+just docker-validate-linux /path/to/vst3sdk   # the same on Linux in Docker
+just docker-check-linux-editor                # Linux WebKitGTK editor under Xvfb
+just docker-build-windows                     # mingw-w64 Windows cross build
 ```
 
 ## Validation

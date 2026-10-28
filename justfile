@@ -33,6 +33,19 @@ vst3 package name out='dist':
 validate-vst3 validator out='dist/validation':
   bash scripts/validate_vst3.sh "{{validator}}" "{{out}}"
 
+# Go tests + validator + hostcheck for every validation plugin on Linux in Docker.
+# sdk: VST3 SDK checkout; platform: e.g. linux/amd64 (default: native).
+docker-validate-linux sdk platform='':
+  bash scripts/docker_validate_linux.sh "{{sdk}}" {{platform}}
+
+# Build the gain plugin with the WebKitGTK editor and open it under Xvfb in Docker.
+docker-check-linux-editor platform='':
+  bash scripts/docker_check_linux_editor.sh {{platform}}
+
+# Cross-compile every validation plugin for Windows with mingw-w64 in Docker.
+docker-build-windows out='dist/windows-cross':
+  bash scripts/docker_build_windows.sh "{{out}}"
+
 windows-package plugin_dll bundle_root='dist/windows' plugin_name='vst3go':
   bash scripts/package_windows_vst3.sh "{{plugin_dll}}" "{{bundle_root}}" "{{plugin_name}}"
 

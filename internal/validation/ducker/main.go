@@ -1,12 +1,15 @@
 // Command ducker is an example sidechain effect: the main signal is ducked
 // whenever the sidechain gets loud. A short lookahead delay shows latency
-// reporting.
+// reporting. It is a distributed plugin: processor and controller are
+// separate objects that exchange messages through the host.
 //
 // Build: scripts/build_vst3.sh internal/validation/ducker Ducker
 package main
 
 import (
+	"encoding/binary"
 	"math"
+	"sync/atomic"
 
 	"github.com/th-release/vst3go/pkg/framework/bus"
 	"github.com/th-release/vst3go/pkg/framework/param"
@@ -40,6 +43,9 @@ func (duckerPlugin) GetInfo() frameworkplugin.Info {
 	}
 }
 
+// Distributed splits the plugin into a processor and a controller class.
+func (duckerPlugin) Distributed() bool { return true }
+
 func (duckerPlugin) CreateProcessor() plugin.Processor {
 	p := &duckerProcessor{BaseProcessor: frameworkplugin.NewBaseProcessor(bus.NewEffectStereoSidechain())}
 	p.Parameters().Add(
@@ -59,6 +65,49 @@ type duckerProcessor struct {
 	writePos int
 	latency  int32
 	envelope float64
+
+	host     atomic.Pointer[hostRef]
+	reported int32 // latency last announced to the host
+}
+
+type hostRef struct{ plugin.Host }
+
+// Messages between the processor and the controller.
+const (
+	messageLatency = "ducker.latency" // processor -> controller
+	messageAck     = "ducker.ack"     // controller -> processor
+)
+
+// SetHost receives the host handle: on the processor side its
+// RestartComponent and SendMessage go through the controller.
+func (p *duckerProcessor) SetHost(host plugin.Host) {
+	if host == nil {
+		p.host.Store(nil)
+		return
+	}
+	p.host.Store(&hostRef{host})
+}
+
+// SetActive announces a changed lookahead latency when processing starts.
+func (p *duckerProcessor) SetActive(active bool) error {
+	if host := p.host.Load(); active && host != nil {
+		if p.latency != p.reported {
+			p.reported = p.latency
+			_ = host.RestartComponent(plugin.RestartLatencyChanged)
+		}
+		_ = host.SendMessage(messageLatency, binary.LittleEndian.AppendUint32(nil, uint32(p.latency)))
+	}
+	return p.BaseProcessor.SetActive(active)
+}
+
+// ReceiveMessage runs on the side that did not send the message; the
+// controller acknowledges the processor's latency announcement.
+func (p *duckerProcessor) ReceiveMessage(id string, data []byte) {
+	if id == messageLatency && len(data) == 4 {
+		if host := p.host.Load(); host != nil {
+			_ = host.SendMessage(messageAck, data)
+		}
+	}
 }
 
 func (p *duckerProcessor) prepare(sampleRate float64, _ int32) error {

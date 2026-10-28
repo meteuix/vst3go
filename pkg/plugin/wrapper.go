@@ -8,10 +8,14 @@ package plugin
 import "C"
 
 import (
+	"encoding/binary"
+	"math"
+	"strings"
 	"sync"
 	"unsafe"
 
 	"github.com/th-release/vst3go/pkg/framework/bus"
+	"github.com/th-release/vst3go/pkg/framework/plugin"
 	"github.com/th-release/vst3go/pkg/vst3"
 )
 
@@ -24,6 +28,7 @@ type componentWrapper struct {
 	component *componentImpl
 	handle    unsafe.Pointer // C COM object
 	id        uintptr
+	kind      int32 // kindSingle, kindProcessor or kindController
 	scratch   processScratch
 
 	handlerMu        sync.RWMutex   // protects componentHandler and editorView
@@ -40,7 +45,14 @@ var (
 	nextID       uintptr
 )
 
-var globalPlugin Plugin
+// Object kinds (vst3_component.h).
+const (
+	kindSingle     = int32(C.VST3GO_KIND_SINGLE)
+	kindProcessor  = int32(C.VST3GO_KIND_PROCESSOR)
+	kindController = int32(C.VST3GO_KIND_CONTROLLER)
+)
+
+var registeredPlugins []Plugin
 
 // FactoryInfo describes the vendor reported by the plugin factory.
 type FactoryInfo struct {
@@ -55,14 +67,42 @@ var globalFactoryInfo = FactoryInfo{
 	Email:  "",
 }
 
-// Register sets the plugin exported by this binary. Call it from init().
+// Register adds a plugin to the factory of this binary. Call it from init();
+// one binary can register several plugins (a plugin bundle).
 func Register(p Plugin) {
-	globalPlugin = p
+	registeredPlugins = append(registeredPlugins, p)
 }
 
 // SetFactoryInfo sets the factory vendor information.
 func SetFactoryInfo(info FactoryInfo) {
 	globalFactoryInfo = info
+}
+
+// factoryClass is one class exported by the factory. A DistributedPlugin
+// exports a processor class and a controller class.
+type factoryClass struct {
+	plugin     Plugin
+	info       plugin.Info
+	kind       int32
+	cid        [16]byte
+	controller [16]byte // controller class of a processor class
+}
+
+func factoryClasses() []factoryClass {
+	classes := make([]factoryClass, 0, len(registeredPlugins))
+	for _, p := range registeredPlugins {
+		info := p.GetInfo()
+		uid := info.UID()
+		if d, ok := p.(DistributedPlugin); ok && d.Distributed() {
+			controller := info.ControllerUID()
+			classes = append(classes,
+				factoryClass{plugin: p, info: info, kind: kindProcessor, cid: uid, controller: controller},
+				factoryClass{plugin: p, info: info, kind: kindController, cid: controller})
+			continue
+		}
+		classes = append(classes, factoryClass{plugin: p, info: info, kind: kindSingle, cid: uid})
+	}
+	return classes
 }
 
 var (
@@ -89,7 +129,7 @@ func resultFromError(err error) C.Steinberg_tresult {
 // instead of unwinding through C, which would crash the host.
 func recoverPanic(result *C.Steinberg_tresult) {
 	if r := recover(); r != nil && result != nil {
-		*result = C.Steinberg_kInternalError
+		*result = C.Steinberg_tresult(vst3.ResultInternalError)
 	}
 }
 
@@ -187,12 +227,23 @@ func (w *componentWrapper) notifyEditorParameterChanged(id uint32, normalized, p
 	}
 }
 
+// Internal messages between the two sides of a distributed plugin.
+const (
+	messagePrefix  = "vst3go."
+	messageRestart = messagePrefix + "restart" // int32 flags
+	messageEdit    = messagePrefix + "edit"    // uint32 id, float64 normalized
+)
+
 // hostHandle implements Host for a processor.
 type hostHandle struct {
 	w *componentWrapper
 }
 
 func (h hostHandle) RestartComponent(flags RestartFlags) error {
+	if h.w.kind == kindProcessor {
+		data := binary.LittleEndian.AppendUint32(nil, uint32(flags))
+		return h.w.sendMessage(messageRestart, data)
+	}
 	handler := h.w.handler()
 	if handler == nil {
 		return errNotSupported
@@ -204,7 +255,74 @@ func (h hostHandle) RestartComponent(flags RestartFlags) error {
 }
 
 func (h hostHandle) EditParameter(id uint32, normalized float64) error {
+	if h.w.kind == kindProcessor {
+		if !h.w.component.params.Has(id) {
+			return errInvalidArgument
+		}
+		data := binary.LittleEndian.AppendUint32(nil, id)
+		data = binary.LittleEndian.AppendUint64(data, math.Float64bits(normalized))
+		return h.w.sendMessage(messageEdit, data)
+	}
 	return h.w.component.EditParameter(id, normalized)
+}
+
+func (h hostHandle) SendMessage(id string, data []byte) error {
+	if h.w.kind == kindSingle {
+		return errNotSupported
+	}
+	if id == "" || strings.HasPrefix(id, messagePrefix) {
+		return errInvalidArgument
+	}
+	return h.w.sendMessage(id, data)
+}
+
+// sendMessage sends an IMessage to the connected peer through the host.
+func (w *componentWrapper) sendMessage(id string, data []byte) error {
+	cid := C.CString(id)
+	defer C.free(unsafe.Pointer(cid))
+	var ptr unsafe.Pointer
+	if len(data) > 0 {
+		ptr = unsafe.Pointer(&data[0])
+	}
+	if C.vst3go_send_message(w.handle, cid, ptr, C.uint32_t(len(data))) != resultOK {
+		return errNotSupported
+	}
+	return nil
+}
+
+// receiveMessage handles a message from the peer object.
+func (w *componentWrapper) receiveMessage(id string, data []byte) {
+	switch id {
+	case messageRestart:
+		if w.kind == kindController && len(data) >= 4 {
+			_ = hostHandle{w}.RestartComponent(RestartFlags(int32(binary.LittleEndian.Uint32(data))))
+		}
+		return
+	case messageEdit:
+		if w.kind == kindController && len(data) >= 12 {
+			id := binary.LittleEndian.Uint32(data)
+			value := math.Float64frombits(binary.LittleEndian.Uint64(data[4:]))
+			_ = w.component.EditParameter(id, value)
+		}
+		return
+	}
+	if receiver, ok := w.component.processor.(MessageReceiver); ok {
+		receiver.ReceiveMessage(id, data)
+	}
+}
+
+//export GoConnectionNotify
+func GoConnectionNotify(componentID C.uintptr_t, id *C.char, data unsafe.Pointer, size C.uint32_t) {
+	defer recoverPanic(nil)
+	wrapper := getComponent(componentID)
+	if wrapper == nil || id == nil {
+		return
+	}
+	var payload []byte
+	if data != nil && size > 0 {
+		payload = unsafe.Slice((*byte)(data), int(size))
+	}
+	wrapper.receiveMessage(C.GoString(id), payload)
 }
 
 // Factory callbacks
@@ -219,37 +337,74 @@ func GoGetFactoryInfo(info *C.struct_Steinberg_PFactoryInfo) {
 
 //export GoCountClasses
 func GoCountClasses() C.int32_t {
-	if globalPlugin == nil {
-		return 0
-	}
-	return 1
+	return C.int32_t(len(factoryClasses()))
 }
 
 //export GoGetClassInfo2
 func GoGetClassInfo2(index C.int32_t, info *C.struct_Steinberg_PClassInfo2) (result C.Steinberg_tresult) {
 	defer recoverPanic(&result)
-	if globalPlugin == nil || index != 0 {
+	classes := factoryClasses()
+	if info == nil || index < 0 || int(index) >= len(classes) {
 		return resultInvalidArgument
 	}
+	class := classes[index]
 
-	pluginInfo := globalPlugin.GetInfo()
-	uid := pluginInfo.UID()
-	for i, b := range uid {
+	*info = C.struct_Steinberg_PClassInfo2{}
+	for i, b := range class.cid {
 		info.cid[i] = C.char(b)
 	}
 	info.cardinality = C.Steinberg_PClassInfo_ClassCardinality_kManyInstances
-	copyCString(&info.category[0], len(info.category), "Audio Module Class")
-	copyCString(&info.name[0], len(info.name), pluginInfo.Name)
-	info.classFlags = 0
-	copyCString(&info.subCategories[0], len(info.subCategories), pluginInfo.SubCategories())
-	vendor := pluginInfo.Vendor
+	name := class.info.Name
+	switch class.kind {
+	case kindController:
+		copyCString(&info.category[0], len(info.category), "Component Controller Class")
+		name += " Controller"
+	default:
+		copyCString(&info.category[0], len(info.category), "Audio Module Class")
+		copyCString(&info.subCategories[0], len(info.subCategories), class.info.SubCategories())
+		if class.kind == kindProcessor {
+			info.classFlags = C.Steinberg_Vst_ComponentFlags_kDistributable
+		}
+	}
+	copyCString(&info.name[0], len(info.name), name)
+	vendor := class.info.Vendor
 	if vendor == "" {
 		vendor = globalFactoryInfo.Vendor
 	}
 	copyCString(&info.vendor[0], len(info.vendor), vendor)
-	copyCString(&info.version[0], len(info.version), pluginInfo.Version)
+	copyCString(&info.version[0], len(info.version), class.info.Version)
 	copyCString(&info.sdkVersion[0], len(info.sdkVersion), SDKVersion)
 	return resultOK
+}
+
+// capabilities returns the optional interfaces an instance exposes.
+func capabilities(component *componentImpl) C.int32_t {
+	var caps C.int32_t
+	processor := component.processor
+	if _, ok := processor.(UnitProcessor); ok || component.programs != nil {
+		caps |= C.VST3GO_CAP_UNITS
+	}
+	if component.programs != nil {
+		caps |= C.VST3GO_CAP_PROGRAM_DATA
+	}
+	if _, ok := processor.(NoteExpressionProcessor); ok {
+		caps |= C.VST3GO_CAP_NOTE_EXPRESSION
+	}
+	if _, ok := processor.(PhysicalUIMappingProcessor); ok {
+		caps |= C.VST3GO_CAP_PHYSICAL_UI
+	}
+	if _, ok := processor.(KeyswitchProcessor); ok {
+		caps |= C.VST3GO_CAP_KEYSWITCH
+	}
+	_, learn1 := processor.(MIDILearnProcessor)
+	_, learn2 := processor.(MIDI2LearnProcessor)
+	if learn1 || learn2 {
+		caps |= C.VST3GO_CAP_MIDI_LEARN
+	}
+	if _, ok := processor.(ChannelInfoProcessor); ok {
+		caps |= C.VST3GO_CAP_INFO_LISTENER
+	}
+	return caps
 }
 
 //export GoCreateInstance
@@ -259,31 +414,38 @@ func GoCreateInstance(cid *C.char, iid *C.char) (instance unsafe.Pointer) {
 			instance = nil
 		}
 	}()
-	if globalPlugin == nil || cid == nil {
+	if cid == nil {
 		return nil
 	}
-
-	pluginInfo := globalPlugin.GetInfo()
 	requested := unsafe.Slice((*byte)(unsafe.Pointer(cid)), 16)
-	uid := pluginInfo.UID()
-	if string(requested) != string(uid[:]) {
+	var class *factoryClass
+	classes := factoryClasses()
+	for i := range classes {
+		if string(requested) == string(classes[i].cid[:]) {
+			class = &classes[i]
+			break
+		}
+	}
+	if class == nil {
 		return nil
 	}
 
-	processor := globalPlugin.CreateProcessor()
+	processor := class.plugin.CreateProcessor()
 	if processor == nil {
 		return nil
 	}
-	component, err := newComponent(processor, pluginInfo)
+	component, err := newComponent(processor, class.info)
 	if err != nil {
 		return nil
 	}
 
-	wrapper := &componentWrapper{component: component, scratch: newProcessScratch()}
+	wrapper := &componentWrapper{component: component, kind: class.kind, scratch: newProcessScratch()}
 	component.wrapper = wrapper
 	id := registerComponent(wrapper)
 
-	cComponent := C.createComponent(C.uintptr_t(id))
+	controller := C.CBytes(class.controller[:])
+	defer C.free(controller)
+	cComponent := C.createComponent(C.uintptr_t(id), C.int32_t(class.kind), capabilities(component), (*C.char)(controller))
 	if cComponent == nil {
 		unregisterComponent(id)
 		wrapper.scratch.free()
@@ -299,6 +461,7 @@ func GoReleaseComponent(componentID C.uintptr_t) {
 	if wrapper == nil {
 		return
 	}
+	// Drops the handler reference and detaches the processor's Host.
 	wrapper.setHandler(nil)
 	wrapper.scratch.free()
 }
@@ -306,17 +469,63 @@ func GoReleaseComponent(componentID C.uintptr_t) {
 // IComponent
 
 //export GoComponentInitialize
-func GoComponentInitialize(componentID C.uintptr_t, context unsafe.Pointer) (result C.Steinberg_tresult) {
+func GoComponentInitialize(componentID C.uintptr_t) (result C.Steinberg_tresult) {
 	defer recoverPanic(&result)
 	wrapper := getComponent(componentID)
 	if wrapper == nil {
 		return resultFalse
 	}
-	return resultFromError(wrapper.component.Initialize())
+	if err := wrapper.component.Initialize(); err != nil {
+		return resultFromError(err)
+	}
+	if wrapper.kind == kindProcessor {
+		wrapper.setProcessorHost(true)
+	}
+	return resultOK
 }
 
 //export GoComponentTerminate
 func GoComponentTerminate(componentID C.uintptr_t) (result C.Steinberg_tresult) {
+	defer recoverPanic(&result)
+	wrapper := getComponent(componentID)
+	if wrapper == nil {
+		return resultFalse
+	}
+	if wrapper.kind == kindProcessor {
+		wrapper.setProcessorHost(false)
+	} else {
+		wrapper.setHandler(nil)
+	}
+	return resultOK
+}
+
+// setProcessorHost hands the processor side of a distributed plugin its
+// message-based Host.
+func (w *componentWrapper) setProcessorHost(connected bool) {
+	aware, ok := w.component.processor.(HostAwareProcessor)
+	if !ok {
+		return
+	}
+	if connected {
+		aware.SetHost(hostHandle{w})
+	} else {
+		aware.SetHost(nil)
+	}
+}
+
+// IEditController lifecycle of controller-kind objects. A single-component
+// object is initialized through IComponent only.
+
+//export GoControllerInitialize
+func GoControllerInitialize(componentID C.uintptr_t) C.Steinberg_tresult {
+	if getComponent(componentID) == nil {
+		return resultFalse
+	}
+	return resultOK
+}
+
+//export GoControllerTerminate
+func GoControllerTerminate(componentID C.uintptr_t) (result C.Steinberg_tresult) {
 	defer recoverPanic(&result)
 	wrapper := getComponent(componentID)
 	if wrapper == nil {
@@ -328,7 +537,7 @@ func GoComponentTerminate(componentID C.uintptr_t) (result C.Steinberg_tresult) 
 
 //export GoComponentSetIoMode
 func GoComponentSetIoMode(componentID C.uintptr_t, mode C.int32_t) C.Steinberg_tresult {
-	// IoModes only matter for split component/controller plugins.
+	// IoModes (simple/advanced/offline) are deprecated by the SDK.
 	return resultNotImplemented
 }
 

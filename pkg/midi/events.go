@@ -1,10 +1,15 @@
-// Package midi provides MIDI event types, queues, and buffers for VST3 transport handling.
+// Package midi provides the note and controller event type exchanged between
+// the VST3 runtime and plugin processors, plus helpers for MIDI values.
 package midi
 
 import (
 	"fmt"
+	"math"
+	"unicode/utf16"
+	"unicode/utf8"
 )
 
+// EventType identifies the kind of an Event and which of its fields apply.
 type EventType uint8
 
 const (
@@ -15,93 +20,197 @@ const (
 	EventTypeProgramChange
 	EventTypeChannelPressure
 	EventTypePitchBend
-	EventTypeSystemExclusive
-	EventTypeClock
-	EventTypeStart
-	EventTypeStop
-	EventTypeContinue
-	EventTypeReset
-	EventTypeActiveSensing
-	EventTypeNoteExpression
+	EventTypeSysEx
+	EventTypeNoteExpression     // per-note float value
+	EventTypeNoteExpressionInt  // per-note integer value
+	EventTypeNoteExpressionText // per-note text (for example a phoneme)
+	EventTypeChord
+	EventTypeScale
 )
+
+var eventTypeNames = [...]string{
+	EventTypeNoteOff:            "NoteOff",
+	EventTypeNoteOn:             "NoteOn",
+	EventTypePolyPressure:       "PolyPressure",
+	EventTypeControlChange:      "ControlChange",
+	EventTypeProgramChange:      "ProgramChange",
+	EventTypeChannelPressure:    "ChannelPressure",
+	EventTypePitchBend:          "PitchBend",
+	EventTypeSysEx:              "SysEx",
+	EventTypeNoteExpression:     "NoteExpression",
+	EventTypeNoteExpressionInt:  "NoteExpressionInt",
+	EventTypeNoteExpressionText: "NoteExpressionText",
+	EventTypeChord:              "Chord",
+	EventTypeScale:              "Scale",
+}
+
+func (t EventType) String() string {
+	if int(t) < len(eventTypeNames) {
+		return eventTypeNames[t]
+	}
+	return fmt.Sprintf("EventType(%d)", t)
+}
 
 // NoteIDNone marks events whose host did not assign a note ID.
 const NoteIDNone int32 = -1
 
-type Event interface {
-	Type() EventType
-	Channel() uint8
-	SampleOffset() int32
-	String() string
+// Event is one note, controller or data event.
+//
+// It is a plain value type so the runtime can deliver events without heap
+// allocation. Type selects which fields are meaningful:
+//
+//	NoteOn, NoteOff        Note, NoteID, Velocity, Tuning, Length (NoteOn)
+//	PolyPressure           Note, NoteID, Value (pressure 0-1)
+//	ControlChange          Controller, Value (0-1)
+//	ChannelPressure        Value (0-1)
+//	PitchBend              Value (-1 to +1)
+//	ProgramChange          Program
+//	NoteExpression         NoteID, ExpressionType, Value (0-1)
+//	NoteExpressionInt      NoteID, ExpressionType, IntValue
+//	NoteExpressionText     NoteID, ExpressionType, Data (UTF-8 text)
+//	Chord                  Root, Bass, Mask, Data (UTF-8 name)
+//	Scale                  Root, Mask, Data (UTF-8 name)
+//	SysEx                  Data (complete message including F0/F7)
+//
+// Data on input events is only valid during the ProcessAudio call that
+// delivered it; copy it to keep it.
+type Event struct {
+	Type       EventType
+	Channel    uint8 // MIDI channel 0-15
+	Note       uint8 // MIDI note number 0-127
+	Controller uint8 // controller number 0-127
+	Program    uint8 // program number 0-127
+
+	// Offset is the sample position inside the host block.
+	Offset int32
+	// NoteID is the host note ID, NoteIDNone when unassigned.
+	NoteID int32
+	// Length is the note length in samples when the host knows it, else 0.
+	Length int32
+
+	Velocity float32 // 0-1
+	Tuning   float32 // pitch offset in cents
+
+	ExpressionType uint32
+	Value          float64
+	IntValue       uint64
+
+	Root int16  // chord/scale root, 0 = C ... 11 = B, -1 = none
+	Bass int16  // chord bass note, -1 = none
+	Mask uint16 // chord/scale notes, bit 0 = root, bit 1 = minor second, ...
+
+	Data []byte
 }
 
-type BaseEvent struct {
-	EventChannel uint8
-	Offset       int32
+// At returns a copy of e placed at a sample offset.
+func (e Event) At(offset int32) Event {
+	e.Offset = offset
+	return e
 }
 
-func (e BaseEvent) Channel() uint8 {
-	return e.EventChannel
+// IsNote reports whether e is a note-on or note-off.
+func (e Event) IsNote() bool {
+	return e.Type == EventTypeNoteOn || e.Type == EventTypeNoteOff
 }
 
-func (e BaseEvent) SampleOffset() int32 {
-	return e.Offset
+// Velocity7 returns the velocity as a 7-bit MIDI value.
+func (e Event) Velocity7() uint8 { return unitTo7Bit(float64(e.Velocity)) }
+
+// Value7 returns Value (pressure, CC value) as a 7-bit MIDI value.
+func (e Event) Value7() uint8 { return unitTo7Bit(e.Value) }
+
+// PitchBend14 returns a pitch bend Value as a signed 14-bit value
+// (-8192 to 8191, 0 is center).
+func (e Event) PitchBend14() int16 {
+	v := math.Round(e.Value * 8192)
+	return int16(math.Max(-8192, math.Min(8191, v)))
 }
 
-type NoteOnEvent struct {
-	BaseEvent
-	NoteNumber uint8
-	Velocity   uint8 // 0-127, rounded from VelocityNorm
-	// VelocityNorm is the full-precision host velocity in [0, 1]. When zero on
-	// output events, Velocity/127 is sent instead.
-	VelocityNorm float32
-	Tuning       float32 // pitch offset in cents
-	Length       int32   // note length in samples when known, otherwise 0
-	NoteID       int32   // host note ID, NoteIDNone when unassigned
+// Text returns Data as a string. It allocates; use Data on the audio thread.
+func (e Event) Text() string { return string(e.Data) }
+
+func (e Event) String() string {
+	switch e.Type {
+	case EventTypeNoteOn, EventTypeNoteOff:
+		return fmt.Sprintf("%s{ch:%d note:%d vel:%.3f id:%d offset:%d}", e.Type, e.Channel, e.Note, e.Velocity, e.NoteID, e.Offset)
+	case EventTypePolyPressure:
+		return fmt.Sprintf("PolyPressure{ch:%d note:%d value:%.3f offset:%d}", e.Channel, e.Note, e.Value, e.Offset)
+	case EventTypeControlChange:
+		return fmt.Sprintf("ControlChange{ch:%d cc:%d value:%.3f offset:%d}", e.Channel, e.Controller, e.Value, e.Offset)
+	case EventTypeProgramChange:
+		return fmt.Sprintf("ProgramChange{ch:%d program:%d offset:%d}", e.Channel, e.Program, e.Offset)
+	case EventTypeNoteExpression, EventTypeNoteExpressionInt, EventTypeNoteExpressionText:
+		return fmt.Sprintf("%s{type:%d id:%d value:%g int:%d offset:%d}", e.Type, e.ExpressionType, e.NoteID, e.Value, e.IntValue, e.Offset)
+	case EventTypeSysEx:
+		return fmt.Sprintf("SysEx{len:%d offset:%d}", len(e.Data), e.Offset)
+	default:
+		return fmt.Sprintf("%s{ch:%d value:%g offset:%d}", e.Type, e.Channel, e.Value, e.Offset)
+	}
 }
 
-func (e NoteOnEvent) Type() EventType {
-	return EventTypeNoteOn
+// Constructors for output events. Use At to set the sample offset.
+
+// NoteOn creates a note-on with a 0-1 velocity.
+func NoteOn(channel, note uint8, velocity float32) Event {
+	return Event{Type: EventTypeNoteOn, Channel: channel, Note: note, Velocity: velocity, NoteID: NoteIDNone}
 }
 
-func (e NoteOnEvent) String() string {
-	return fmt.Sprintf("NoteOn{ch:%d, note:%d, vel:%d, offset:%d}",
-		e.EventChannel, e.NoteNumber, e.Velocity, e.Offset)
+// NoteOff creates a note-off with a 0-1 release velocity.
+func NoteOff(channel, note uint8, velocity float32) Event {
+	return Event{Type: EventTypeNoteOff, Channel: channel, Note: note, Velocity: velocity, NoteID: NoteIDNone}
 }
 
-type NoteOffEvent struct {
-	BaseEvent
-	NoteNumber   uint8
-	Velocity     uint8 // 0-127, rounded from VelocityNorm
-	VelocityNorm float32
-	Tuning       float32 // pitch offset in cents
-	NoteID       int32   // host note ID, NoteIDNone when unassigned
+// PolyPressure creates a polyphonic aftertouch event with a 0-1 pressure.
+func PolyPressure(channel, note uint8, pressure float64) Event {
+	return Event{Type: EventTypePolyPressure, Channel: channel, Note: note, Value: pressure, NoteID: NoteIDNone}
 }
 
-func (e NoteOffEvent) Type() EventType {
-	return EventTypeNoteOff
+// ControlChange creates a controller event with a 0-1 value.
+func ControlChange(channel, controller uint8, value float64) Event {
+	return Event{Type: EventTypeControlChange, Channel: channel, Controller: controller, Value: value}
 }
 
-func (e NoteOffEvent) String() string {
-	return fmt.Sprintf("NoteOff{ch:%d, note:%d, vel:%d, offset:%d}",
-		e.EventChannel, e.NoteNumber, e.Velocity, e.Offset)
+// ChannelPressure creates a channel aftertouch event with a 0-1 pressure.
+func ChannelPressure(channel uint8, pressure float64) Event {
+	return Event{Type: EventTypeChannelPressure, Channel: channel, Value: pressure}
 }
 
-type ControlChangeEvent struct {
-	BaseEvent
-	Controller uint8
-	Value      uint8
+// PitchBend creates a pitch bend event, value -1 to +1 (0 is center).
+func PitchBend(channel uint8, value float64) Event {
+	return Event{Type: EventTypePitchBend, Channel: channel, Value: value}
 }
 
-func (e ControlChangeEvent) Type() EventType {
-	return EventTypeControlChange
+// ProgramChange creates a program change event.
+func ProgramChange(channel, program uint8) Event {
+	return Event{Type: EventTypeProgramChange, Channel: channel, Program: program}
 }
 
-func (e ControlChangeEvent) String() string {
-	return fmt.Sprintf("CC{ch:%d, ctrl:%d, val:%d, offset:%d}",
-		e.EventChannel, e.Controller, e.Value, e.Offset)
+// NoteExpression creates a per-note expression value (0-1) for a note ID.
+func NoteExpression(noteID int32, typeID uint32, value float64) Event {
+	return Event{Type: EventTypeNoteExpression, NoteID: noteID, ExpressionType: typeID, Value: value}
 }
 
+// SysEx creates a system exclusive event. The runtime copies data when the
+// event is sent, so the slice may be reused afterwards.
+func SysEx(data []byte) Event {
+	return Event{Type: EventTypeSysEx, Data: data}
+}
+
+// Note expression type IDs defined by VST3 (Steinberg::Vst::NoteExpressionTypeIDs).
+const (
+	NoteExpressionVolume     uint32 = 0 // gain = 4 * value: 0.25 = 0 dB, 0.5 = +6 dB, 1 = +12 dB
+	NoteExpressionPan        uint32 = 1 // 0 = left, 0.5 = center, 1 = right
+	NoteExpressionTuning     uint32 = 2 // 0.5 = no change, +/-120 semitones over the range
+	NoteExpressionVibrato    uint32 = 3
+	NoteExpressionExpression uint32 = 4
+	NoteExpressionBrightness uint32 = 5
+	NoteExpressionText       uint32 = 6 // text event
+	NoteExpressionPhoneme    uint32 = 7 // text event
+	// NoteExpressionCustomStart is the first ID free for plugin-defined types.
+	NoteExpressionCustomStart uint32 = 100000
+)
+
+// Controller numbers.
 const (
 	CCModWheel       uint8 = 1
 	CCBreath         uint8 = 2
@@ -123,224 +232,54 @@ const (
 	CCAllNotesOff    uint8 = 123
 )
 
-type PitchBendEvent struct {
-	BaseEvent
-	Value int16 // -8192 to 8191, 0 is center
+func unitTo7Bit(v float64) uint8 {
+	return uint8(math.Round(math.Max(0, math.Min(1, v)) * 127))
 }
 
-func (e PitchBendEvent) Type() EventType {
-	return EventTypePitchBend
+// AppendUTF16 appends UTF-16 text as UTF-8 to dst without allocating when
+// dst has room. Invalid surrogates become U+FFFD.
+func AppendUTF16(dst []byte, text []uint16) []byte {
+	for i := 0; i < len(text); i++ {
+		r := rune(text[i])
+		if utf16.IsSurrogate(r) {
+			if i+1 < len(text) {
+				r = utf16.DecodeRune(r, rune(text[i+1]))
+				if r != utf8.RuneError {
+					i++
+				}
+			} else {
+				r = utf8.RuneError
+			}
+		}
+		dst = utf8.AppendRune(dst, r)
+	}
+	return dst
 }
 
-func (e PitchBendEvent) String() string {
-	return fmt.Sprintf("PitchBend{ch:%d, val:%d, offset:%d}",
-		e.EventChannel, e.Value, e.Offset)
-}
-
-func (e PitchBendEvent) NormalizedValue() float64 {
-	return float64(e.Value) / 8192.0
-}
-
-type PolyPressureEvent struct {
-	BaseEvent
-	NoteNumber   uint8
-	Pressure     uint8 // 0-127, rounded from PressureNorm
-	PressureNorm float32
-	NoteID       int32 // host note ID, NoteIDNone when unassigned
-}
-
-func (e PolyPressureEvent) Type() EventType {
-	return EventTypePolyPressure
-}
-
-func (e PolyPressureEvent) String() string {
-	return fmt.Sprintf("PolyPressure{ch:%d, note:%d, pressure:%d, offset:%d}",
-		e.EventChannel, e.NoteNumber, e.Pressure, e.Offset)
-}
-
-type ChannelPressureEvent struct {
-	BaseEvent
-	Pressure uint8
-}
-
-func (e ChannelPressureEvent) Type() EventType {
-	return EventTypeChannelPressure
-}
-
-func (e ChannelPressureEvent) String() string {
-	return fmt.Sprintf("ChannelPressure{ch:%d, pressure:%d, offset:%d}",
-		e.EventChannel, e.Pressure, e.Offset)
-}
-
-type ProgramChangeEvent struct {
-	BaseEvent
-	Program uint8
-}
-
-func (e ProgramChangeEvent) Type() EventType {
-	return EventTypeProgramChange
-}
-
-func (e ProgramChangeEvent) String() string {
-	return fmt.Sprintf("ProgramChange{ch:%d, prog:%d, offset:%d}",
-		e.EventChannel, e.Program, e.Offset)
-}
-
-// Note expression type IDs defined by VST3.
-const (
-	NoteExpressionVolume     uint32 = 0 // linear volume, 0.25 = -12 dB, 1 = +6 dB
-	NoteExpressionPan        uint32 = 1 // 0 = left, 0.5 = center, 1 = right
-	NoteExpressionTuning     uint32 = 2 // 0.5 = no change, +/-120 semitones over the range
-	NoteExpressionVibrato    uint32 = 3
-	NoteExpressionExpression uint32 = 4
-	NoteExpressionBrightness uint32 = 5
-)
-
-// NoteExpressionEvent carries a per-note VST3 expression value addressed by
-// note ID. Value is normalized to [0, 1].
-type NoteExpressionEvent struct {
-	BaseEvent
-	TypeID uint32
-	NoteID int32
-	Value  float64
-}
-
-func (e NoteExpressionEvent) Type() EventType {
-	return EventTypeNoteExpression
-}
-
-func (e NoteExpressionEvent) String() string {
-	return fmt.Sprintf("NoteExpression{type:%d, note:%d, val:%.4f, offset:%d}",
-		e.TypeID, e.NoteID, e.Value, e.Offset)
-}
-
-// SysExEvent carries a system exclusive message. Data is only valid during
-// the ProcessAudio call that delivered it; copy it to keep it.
-type SysExEvent struct {
-	BaseEvent
-	Data []byte
-}
-
-func (e SysExEvent) Type() EventType {
-	return EventTypeSystemExclusive
-}
-
-func (e SysExEvent) String() string {
-	return fmt.Sprintf("SysEx{len:%d, offset:%d}", len(e.Data), e.Offset)
-}
-
-type ClockEvent struct {
-	BaseEvent
-}
-
-func (e ClockEvent) Type() EventType {
-	return EventTypeClock
-}
-
-func (e ClockEvent) String() string {
-	return fmt.Sprintf("Clock{offset:%d}", e.Offset)
-}
-
-type StartEvent struct {
-	BaseEvent
-}
-
-func (e StartEvent) Type() EventType {
-	return EventTypeStart
-}
-
-func (e StartEvent) String() string {
-	return fmt.Sprintf("Start{offset:%d}", e.Offset)
-}
-
-type StopEvent struct {
-	BaseEvent
-}
-
-func (e StopEvent) Type() EventType {
-	return EventTypeStop
-}
-
-func (e StopEvent) String() string {
-	return fmt.Sprintf("Stop{offset:%d}", e.Offset)
-}
-
-type ContinueEvent struct {
-	BaseEvent
-}
-
-func (e ContinueEvent) Type() EventType {
-	return EventTypeContinue
-}
-
-func (e ContinueEvent) String() string {
-	return fmt.Sprintf("Continue{offset:%d}", e.Offset)
-}
-
+// NoteToFrequency returns the frequency of a MIDI note for an A4 tuning
+// (0 means 440 Hz).
 func NoteToFrequency(note uint8, tuningA4 float64) float64 {
 	if tuningA4 == 0 {
 		tuningA4 = 440.0
 	}
-	return tuningA4 * pow2((float64(note)-69.0)/12.0)
+	return tuningA4 * math.Exp2((float64(note)-69.0)/12.0)
 }
 
-func pow2(x float64) float64 {
-	// Fast approximation of 2^x
-	if x >= 0 {
-		whole := int(x)
-		frac := x - float64(whole)
-		// 2^whole * 2^frac
-		// Use Taylor series approximation for fractional part
-		fracPow := 1.0 + frac*(0.693147+frac*(0.240227+frac*0.055504))
-		return float64(uint64(1)<<uint(whole)) * fracPow
-	} else {
-		// For negative x, use 2^x = 1 / 2^(-x)
-		return 1.0 / pow2(-x)
-	}
-}
-
+// FrequencyToNote returns the nearest MIDI note for a frequency.
 func FrequencyToNote(freq, tuningA4 float64) uint8 {
 	if tuningA4 == 0 {
 		tuningA4 = 440.0
 	}
-	note := 69.0 + 12.0*log2(freq/tuningA4)
-	if note < 0 {
+	if freq <= 0 {
 		return 0
 	}
-	if note > 127 {
-		return 127
-	}
-	return uint8(note + 0.5)
+	note := math.Round(69.0 + 12.0*math.Log2(freq/tuningA4))
+	return uint8(math.Max(0, math.Min(127, note)))
 }
 
-func log2(x float64) float64 {
-	// Fast approximation of log2(x)
-	if x <= 0 {
-		return -1000.0 // Return a very negative number for invalid input
-	}
+var noteNames = [12]string{"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"}
 
-	// Normalize x to [1, 2) range
-	exp := 0
-	for x >= 2.0 {
-		x /= 2.0
-		exp++
-	}
-	for x < 1.0 {
-		x *= 2.0
-		exp--
-	}
-
-	// Now x is in [1, 2), use polynomial approximation
-	// log2(x) ≈ (x-1) * (1.4427 - 0.7213*(x-1) + 0.4821*(x-1)^2)
-	t := x - 1.0
-	frac := t * (1.4427 - t*(0.7213-t*0.4821))
-
-	return float64(exp) + frac
-}
-
+// NoteNumberToName returns the note name, middle C (60) is "C4".
 func NoteNumberToName(note uint8) string {
-	noteNames := []string{"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"}
-	octave := int(note/12) - 1
-	noteName := noteNames[note%12]
-	return fmt.Sprintf("%s%d", noteName, octave)
+	return fmt.Sprintf("%s%d", noteNames[note%12], int(note/12)-1)
 }

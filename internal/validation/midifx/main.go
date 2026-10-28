@@ -1,5 +1,6 @@
 // Command midifx is an example MIDI effect: it transposes notes and passes
-// other events through, with no audio buses.
+// other events (controllers, SysEx, note expression) through, with no audio
+// buses.
 //
 // Build: scripts/build_vst3.sh internal/validation/midifx MidiFx
 package main
@@ -57,26 +58,26 @@ func (p *midiFxProcessor) Initialize(sampleRate float64, maxBlockSize int32) err
 func (p *midiFxProcessor) ProcessAudio(ctx *process.Context) {
 	shift := int(ctx.ParamPlain(paramTranspose))
 	for _, event := range ctx.GetAllInputEvents() {
-		switch e := event.(type) {
-		case midi.NoteOnEvent:
-			pitch := int(e.NoteNumber) + shift
+		switch event.Type {
+		case midi.EventTypeNoteOn:
+			pitch := int(event.Note) + shift
 			if pitch < 0 || pitch > 127 {
 				continue
 			}
-			p.sounding[e.EventChannel&15][e.NoteNumber] = int16(pitch)
-			e.NoteNumber = uint8(pitch)
-			ctx.AddOutputEvent(e)
-		case midi.NoteOffEvent:
-			pitch := p.sounding[e.EventChannel&15][e.NoteNumber]
+			p.sounding[event.Channel&15][event.Note] = int16(pitch)
+			event.Note = uint8(pitch)
+		case midi.EventTypeNoteOff:
+			pitch := p.sounding[event.Channel&15][event.Note]
 			if pitch < 0 {
 				continue
 			}
-			p.sounding[e.EventChannel&15][e.NoteNumber] = -1
-			e.NoteNumber = uint8(pitch)
-			ctx.AddOutputEvent(e)
-		default:
-			ctx.AddOutputEvent(event)
+			p.sounding[event.Channel&15][event.Note] = -1
+			event.Note = uint8(pitch)
+		case midi.EventTypeChord, midi.EventTypeScale:
+			continue // host-to-plugin only
 		}
+		// Everything else (controllers, SysEx, note expression) passes.
+		ctx.AddOutputEvent(event)
 	}
 }
 
