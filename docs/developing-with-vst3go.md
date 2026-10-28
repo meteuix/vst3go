@@ -23,6 +23,11 @@ If you want a mental model, think of `vst3go` as the layer that answers:
 
 It does not try to be a full DAW framework.
 
+For the full list of supported host features (instruments, MIDI CC and pitch
+bend, MIDI output, sidechains, bus layouts, latency, output meters, offline
+rendering) see [`plugin-capabilities.md`](plugin-capabilities.md). Working
+reference plugins live in `internal/validation/`.
+
 ## 1. The Three Layers You Need To Understand
 
 When you build a plugin with this repo, there are three separate layers:
@@ -86,7 +91,7 @@ func (p *Plugin) GetInfo() frameworkplugin.Info {
 		Name:     "My Plugin",
 		Version:  "0.1.0",
 		Vendor:   "Example Co",
-		Category: "Fx",
+		Category: frameworkplugin.CategoryFx,
 	}
 }
 

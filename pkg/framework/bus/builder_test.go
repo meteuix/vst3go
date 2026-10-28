@@ -131,6 +131,17 @@ func TestBuilder(t *testing.T) {
 		}
 	})
 
+	t.Run("ValidationAuxBeforeMain", func(t *testing.T) {
+		_, err := NewBuilder().
+			WithAuxOutput("Send", 2).
+			WithStereoOutput("Main").
+			Build()
+
+		if err == nil {
+			t.Error("Expected validation error for aux bus preceding main bus")
+		}
+	})
+
 	t.Run("MustBuildPanic", func(t *testing.T) {
 		defer func() {
 			if r := recover(); r == nil {
@@ -165,8 +176,8 @@ func TestBuilderConvenienceMethods(t *testing.T) {
 			builder: func() *Builder {
 				return NewBuilder().
 					WithAuxInput("Aux In", 4).
-					WithAuxOutput("Aux Out", 4).
-					WithStereoOutput("Main")
+					WithStereoOutput("Main").
+					WithAuxOutput("Aux Out", 4)
 			},
 			expected: 4,
 		},

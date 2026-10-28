@@ -38,9 +38,21 @@ type Info struct {
 	MediaType    MediaType
 	Direction    Direction
 	ChannelCount int32
-	Name         string
-	BusType      Type
-	IsActive     bool
+	// Arrangement is the speaker arrangement reported to the host for audio
+	// buses. When zero, it is derived from ChannelCount.
+	Arrangement SpeakerArrangement
+	Name        string
+	BusType     Type
+	IsActive    bool
+}
+
+// SpeakerArrangement returns the bus arrangement, deriving the conventional
+// arrangement from ChannelCount when none was set explicitly.
+func (i Info) SpeakerArrangement() SpeakerArrangement {
+	if i.Arrangement != ArrangementEmpty || i.MediaType != MediaTypeAudio {
+		return i.Arrangement
+	}
+	return ArrangementForChannels(i.ChannelCount)
 }
 
 // Configuration manages audio and event buses
@@ -57,6 +69,7 @@ func Stereo() *Configuration {
 				MediaType:    MediaTypeAudio,
 				Direction:    DirectionInput,
 				ChannelCount: 2,
+				Arrangement:  ArrangementStereo,
 				Name:         "Stereo In",
 				BusType:      TypeMain,
 				IsActive:     true,
@@ -65,6 +78,7 @@ func Stereo() *Configuration {
 				MediaType:    MediaTypeAudio,
 				Direction:    DirectionOutput,
 				ChannelCount: 2,
+				Arrangement:  ArrangementStereo,
 				Name:         "Stereo Out",
 				BusType:      TypeMain,
 				IsActive:     true,
@@ -81,6 +95,7 @@ func Mono() *Configuration {
 				MediaType:    MediaTypeAudio,
 				Direction:    DirectionInput,
 				ChannelCount: 1,
+				Arrangement:  ArrangementMono,
 				Name:         "Mono In",
 				BusType:      TypeMain,
 				IsActive:     true,
@@ -89,6 +104,7 @@ func Mono() *Configuration {
 				MediaType:    MediaTypeAudio,
 				Direction:    DirectionOutput,
 				ChannelCount: 1,
+				Arrangement:  ArrangementMono,
 				Name:         "Mono Out",
 				BusType:      TypeMain,
 				IsActive:     true,
@@ -180,6 +196,26 @@ func (c *Configuration) SetBusActive(mediaType MediaType, direction Direction, i
 	}
 
 	return fmt.Errorf("bus not found: mediaType=%d, direction=%d, index=%d", mediaType, direction, index)
+}
+
+// SetArrangement changes the speaker arrangement (and channel count) of an
+// audio bus. The runtime calls this when a host-proposed arrangement has been
+// accepted; it must not be called while processing.
+func (c *Configuration) SetArrangement(direction Direction, index int32, arrangement SpeakerArrangement) error {
+	busIndex := int32(0)
+	for i := range c.audioBuses {
+		if c.audioBuses[i].Direction != direction {
+			continue
+		}
+		if busIndex == index {
+			c.audioBuses[i].Arrangement = arrangement
+			c.audioBuses[i].ChannelCount = arrangement.ChannelCount()
+			return nil
+		}
+		busIndex++
+	}
+
+	return fmt.Errorf("audio bus not found: direction=%d, index=%d", direction, index)
 }
 
 // GetActiveInputChannelCount returns the total number of active input channels

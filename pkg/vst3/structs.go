@@ -3,17 +3,6 @@ package vst3
 // #include "../../include/vst3/vst3_c_api.h"
 import "C"
 
-// ProcessData wraps the VST3 process data
-type ProcessData struct {
-	ptr *C.struct_Steinberg_Vst_ProcessData
-}
-
-// AudioBusBuffers provides access to audio buffers
-type AudioBusBuffers struct {
-	NumChannels int32
-	Buffers     [][]float32
-}
-
 // ProcessSetup contains audio processing configuration
 type ProcessSetup struct {
 	ProcessMode        int32

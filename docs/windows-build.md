@@ -13,9 +13,8 @@ For the real-host validation checklist and required evidence, see `docs/windows-
 
 ## Current Contract
 
-- `bridge/windows_dll.c` provides a minimal `DllMain`.
-- `bridge/bridge.c` exports `GetPluginFactory` with a Windows-friendly symbol annotation.
-- `pkg/plugin/cbridge/windows_dll_windows.go` pulls the DLL entry source into the Windows cgo build.
+- `pkg/plugin/windows_dll_windows.c` provides a minimal `DllMain`.
+- `pkg/plugin/vst3_bridge.c` exports `GetPluginFactory`, `InitDll` and `ExitDll` with a Windows-friendly symbol annotation.
 - `pkg/plugin/editor_view_windows.c` hosts the editor through WebView2.
 - `pkg/plugin/windows_bundle.go` defines the canonical bundle path layout, including the generated header sidecar.
 - `pkg/plugin/editor_assets/` provides the HTML/CSS/JS snapshot shell.

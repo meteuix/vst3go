@@ -6,13 +6,14 @@ This fork is intentionally different from the original `justyntemme/vst3go` proj
 
 It contains:
 
-- VST3 C API headers and C bridge glue
+- The official VST3 C API header (`include/vst3`) and the C bridge glue in `pkg/plugin`
 - Go bindings for VST3 types and process structures
 - The plugin wrapper/runtime used to expose Go processors as VST3 plugins
 - Generic plugin authoring primitives such as buses, parameters, process context, state, and MIDI/event transport
 
 The higher-level audio and synth layer now lives in the companion `synthkit` repository.
 
+For what kinds of plugins you can build and how to use each host feature, see [`docs/plugin-capabilities.md`](docs/plugin-capabilities.md).
 For the web-rendered plugin editor flow, see [`docs/web-editor-bridge.md`](docs/web-editor-bridge.md).
 For Windows build and packaging notes, see [`docs/windows-build.md`](docs/windows-build.md).
 For the real Windows validation handoff checklist, see [`docs/windows-validation.md`](docs/windows-validation.md).
@@ -29,7 +30,6 @@ For publishing notes, see [`docs/release-notes-template.md`](docs/release-notes-
 
 `vst3go` keeps the VST3-facing pieces:
 
-- `bridge/`
 - `include/vst3/`
 - `pkg/vst3/`
 - `pkg/plugin/`
@@ -46,17 +46,17 @@ The companion `synthkit` repo owns:
 - `pkg/framework/dsp`
 - `pkg/framework/debug`
 - `pkg/framework/voice`
-- `examples/`
+- showcase plugins (`internal/validation/` only holds runtime validation plugins)
 
 ## Public API Boundary
 
 - Downstream code should treat `pkg/plugin`, `pkg/vst3`, `pkg/midi`, and the retained `pkg/framework/*` packages as the supported API surface.
-- `bridge/` and the editor assets exist to support that API surface, but product-specific DSP and showcase logic stay out of this repo.
+- The C bridge (`pkg/plugin/*.c`) and the editor assets exist to support that API surface, but product-specific DSP and showcase logic stay out of this repo.
 - If a feature needs higher-level audio product behavior, it belongs in `synthkit` or the consumer project instead of this runtime layer.
 
 ## Consumption
 
-- Downstream repos should import `github.com/cwbudde/vst3go` and build on the supported package surface rather than reaching into bridge internals.
+- Downstream repos should import `github.com/th-release/vst3go` and build on the supported package surface rather than reaching into bridge internals.
 - Once versions are tagged, consumers should pin a tag instead of a moving branch so bridge/runtime changes can be upgraded intentionally.
 - DAW validation, signing, installers, and product-specific DSP behavior remain downstream responsibilities.
 
@@ -78,11 +78,13 @@ Core checks in this repo:
 just fmt
 just fmt-check
 just test
+just vst3 ./path/to/plugin MyPlugin          # build a macOS/Linux .vst3 bundle
+just validate-vst3 /path/to/vst3sdk/validator # validator + hostcheck on internal/validation
 ```
 
 ## Validation
 
-- This repo validates the shared runtime layer with `just test` and the Windows build path with `just windows-smoke` when the host shell is available.
+- This repo validates the shared runtime layer with `just test`, the VST3 contract with `just validate-vst3` (Steinberg validator in extensive mode plus `internal/validation/hostcheck` for sample-accurate processing), and the Windows build path with `just windows-smoke` when the host shell is available.
 - Platform-specific integration checks, host app behavior, and downstream DSP/plugin wiring belong in the companion `synthkit` repository or the consumer project.
 - Windows packaging and bundle layout checks in this repo stay focused on the generated DLL, header sidecar, and layout contract.
 - Real Windows signoff should follow `docs/windows-validation.md` so toolchain, bundle, host, and WebView2 behavior are captured consistently.
@@ -96,9 +98,8 @@ just test
 
 Windows-specific editor and packaging notes:
 
-- `bridge/windows_dll.c` provides the DLL entry point.
-- `bridge/bridge.c` exports `GetPluginFactory` for the Windows build.
-- `pkg/plugin/cbridge/windows_dll_windows.go` makes the DLL entry source part of the Windows cgo build.
+- `pkg/plugin/windows_dll_windows.c` provides the DLL entry point.
+- `pkg/plugin/vst3_bridge.c` exports `GetPluginFactory`, `InitDll` and `ExitDll`.
 - `pkg/plugin/editor_view_windows.c` expects WebView2 headers and loader support.
 - Windows support currently targets `amd64` and the `x86_64-win` bundle layout.
 - `just windows-preflight` auto-selects a compatible Windows compiler when needed and checks for `windows.h`, `WebView2.h`, and `WebView2Loader`. If no compiler works, it reports the candidates it tried and why each one failed.

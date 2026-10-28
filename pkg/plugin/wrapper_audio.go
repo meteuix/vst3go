@@ -1,141 +1,116 @@
 package plugin
 
 // #cgo CFLAGS: -I../../include
-// #include "../../include/vst3/vst3_c_api.h"
+// #include "vst3_bridge.h"
 import "C"
 
 import (
 	"unsafe"
 
-	"github.com/th-release/vst3go/pkg/vst3"
+	"github.com/th-release/vst3go/pkg/framework/bus"
+	"github.com/th-release/vst3go/pkg/framework/process"
 )
 
 // IAudioProcessor callbacks
-//
+
+func arrangements(ptr *C.Steinberg_Vst_SpeakerArrangement, count C.int32_t) []bus.SpeakerArrangement {
+	if ptr == nil || count <= 0 {
+		return []bus.SpeakerArrangement{}
+	}
+	src := unsafe.Slice(ptr, int(count))
+	out := make([]bus.SpeakerArrangement, len(src))
+	for i, arrangement := range src {
+		out[i] = bus.SpeakerArrangement(arrangement)
+	}
+	return out
+}
+
 //export GoAudioSetBusArrangements
-func GoAudioSetBusArrangements(componentPtr unsafe.Pointer, inputs unsafe.Pointer, numIns C.int32_t, outputs unsafe.Pointer, numOuts C.int32_t) C.Steinberg_tresult {
-	wrapper := getComponent(uintptr(componentPtr))
-	if wrapper == nil {
-		return C.Steinberg_tresult(vst3.ResultFalse)
+func GoAudioSetBusArrangements(componentID C.uintptr_t, inputs *C.Steinberg_Vst_SpeakerArrangement, numIns C.int32_t, outputs *C.Steinberg_Vst_SpeakerArrangement, numOuts C.int32_t) (result C.Steinberg_tresult) {
+	defer recoverPanic(&result)
+	wrapper := getComponent(componentID)
+	if wrapper == nil || numIns < 0 || numOuts < 0 {
+		return resultInvalidArgument
 	}
-
-	// Convert arrangements
-	var inputArrs []int64
-	if numIns > 0 && inputs != nil {
-		inputArrs = (*[16]int64)(inputs)[:numIns:numIns]
+	if wrapper.component.SetBusArrangements(arrangements(inputs, numIns), arrangements(outputs, numOuts)) {
+		return resultOK
 	}
-
-	var outputArrs []int64
-	if numOuts > 0 && outputs != nil {
-		outputArrs = (*[16]int64)(outputs)[:numOuts:numOuts]
-	}
-
-	err := wrapper.component.SetBusArrangements(inputArrs, outputArrs)
-	if err != nil {
-		return C.Steinberg_tresult(vst3.ResultFalse)
-	}
-	return C.Steinberg_tresult(vst3.ResultOK)
+	return resultFalse
 }
 
 //export GoAudioGetBusArrangement
-func GoAudioGetBusArrangement(componentPtr unsafe.Pointer, dir, index C.int32_t, arr unsafe.Pointer) C.Steinberg_tresult {
-	wrapper := getComponent(uintptr(componentPtr))
-	if wrapper == nil {
-		return C.Steinberg_tresult(vst3.ResultFalse)
+func GoAudioGetBusArrangement(componentID C.uintptr_t, dir, index C.int32_t, arr *C.Steinberg_Vst_SpeakerArrangement) C.Steinberg_tresult {
+	wrapper := getComponent(componentID)
+	if wrapper == nil || arr == nil {
+		return resultInvalidArgument
 	}
-
-	arrangement, err := wrapper.component.GetBusArrangement(int32(dir), int32(index))
-	if err != nil {
-		return C.Steinberg_tresult(vst3.ResultFalse)
+	arrangement, ok := wrapper.component.GetBusArrangement(int32(dir), int32(index))
+	if !ok {
+		return resultInvalidArgument
 	}
-
-	*(*C.Steinberg_Vst_SpeakerArrangement)(arr) = C.Steinberg_Vst_SpeakerArrangement(arrangement)
-	return C.Steinberg_tresult(vst3.ResultOK)
+	*arr = C.Steinberg_Vst_SpeakerArrangement(arrangement)
+	return resultOK
 }
 
 //export GoAudioCanProcessSampleSize
-func GoAudioCanProcessSampleSize(componentPtr unsafe.Pointer, symbolicSampleSize C.int32_t) C.Steinberg_tresult {
-	wrapper := getComponent(uintptr(componentPtr))
-	if wrapper == nil {
-		return C.Steinberg_tresult(vst3.ResultFalse)
+func GoAudioCanProcessSampleSize(componentID C.uintptr_t, symbolicSampleSize C.int32_t) C.Steinberg_tresult {
+	if symbolicSampleSize == sampleSize32 {
+		return resultOK
 	}
-
-	err := wrapper.component.CanProcessSampleSize(int32(symbolicSampleSize))
-	if err != nil {
-		return C.Steinberg_tresult(vst3.ResultFalse)
-	}
-	return C.Steinberg_tresult(vst3.ResultOK)
+	return resultFalse
 }
 
 //export GoAudioGetLatencySamples
-func GoAudioGetLatencySamples(componentPtr unsafe.Pointer) C.uint32_t {
-	wrapper := getComponent(uintptr(componentPtr))
+func GoAudioGetLatencySamples(componentID C.uintptr_t) C.uint32_t {
+	wrapper := getComponent(componentID)
 	if wrapper == nil {
 		return 0
 	}
-
 	return C.uint32_t(wrapper.component.GetLatencySamples())
 }
 
 //export GoAudioSetupProcessing
-func GoAudioSetupProcessing(componentPtr unsafe.Pointer, setup unsafe.Pointer) C.Steinberg_tresult {
-	wrapper := getComponent(uintptr(componentPtr))
-	if wrapper == nil {
-		return C.Steinberg_tresult(vst3.ResultFalse)
+func GoAudioSetupProcessing(componentID C.uintptr_t, setup *C.struct_Steinberg_Vst_ProcessSetup) (result C.Steinberg_tresult) {
+	defer recoverPanic(&result)
+	wrapper := getComponent(componentID)
+	if wrapper == nil || setup == nil {
+		return resultInvalidArgument
 	}
-
-	// Convert setup
-	cSetup := (*C.struct_Steinberg_Vst_ProcessSetup)(setup)
-	goSetup := &vst3.ProcessSetup{
-		ProcessMode:        int32(cSetup.processMode),
-		SymbolicSampleSize: int32(cSetup.symbolicSampleSize),
-		MaxSamplesPerBlock: int32(cSetup.maxSamplesPerBlock),
-		SampleRate:         float64(cSetup.sampleRate),
+	if setup.symbolicSampleSize != sampleSize32 {
+		return resultFalse
 	}
-
-	err := wrapper.component.SetupProcessing(goSetup)
-	if err != nil {
-		return C.Steinberg_tresult(vst3.ResultFalse)
-	}
-	return C.Steinberg_tresult(vst3.ResultOK)
+	err := wrapper.component.SetupProcessing(float64(setup.sampleRate), int32(setup.maxSamplesPerBlock), process.ProcessMode(setup.processMode))
+	return resultFromError(err)
 }
 
 //export GoAudioSetProcessing
-func GoAudioSetProcessing(componentPtr unsafe.Pointer, state C.int32_t) C.Steinberg_tresult {
-	wrapper := getComponent(uintptr(componentPtr))
+func GoAudioSetProcessing(componentID C.uintptr_t, state C.int32_t) C.Steinberg_tresult {
+	wrapper := getComponent(componentID)
 	if wrapper == nil {
-		return C.Steinberg_tresult(vst3.ResultFalse)
+		return resultFalse
 	}
-
-	err := wrapper.component.SetProcessing(state != 0)
-	if err != nil {
-		return C.Steinberg_tresult(vst3.ResultFalse)
-	}
-	return C.Steinberg_tresult(vst3.ResultOK)
+	wrapper.component.SetProcessing(state != 0)
+	return resultOK
 }
 
 //export GoAudioProcess
-func GoAudioProcess(componentPtr unsafe.Pointer, data unsafe.Pointer) C.Steinberg_tresult {
-	defer recoverPanic("GoAudioProcess")
-
-	wrapper := getComponent(uintptr(componentPtr))
-	if wrapper == nil {
-		return C.Steinberg_tresult(vst3.ResultFalse)
+func GoAudioProcess(componentID C.uintptr_t, data *C.struct_Steinberg_Vst_ProcessData) (result C.Steinberg_tresult) {
+	defer recoverPanic(&result)
+	wrapper := getComponent(componentID)
+	if wrapper == nil || data == nil {
+		return resultInvalidArgument
 	}
-
-	err := wrapper.component.Process(data)
-	if err != nil {
-		return C.Steinberg_tresult(vst3.ResultFalse)
+	if !wrapper.component.Process(data, wrapper.scratch) {
+		return resultInvalidArgument
 	}
-	return C.Steinberg_tresult(vst3.ResultOK)
+	return resultOK
 }
 
 //export GoAudioGetTailSamples
-func GoAudioGetTailSamples(componentPtr unsafe.Pointer) C.uint32_t {
-	wrapper := getComponent(uintptr(componentPtr))
+func GoAudioGetTailSamples(componentID C.uintptr_t) C.uint32_t {
+	wrapper := getComponent(componentID)
 	if wrapper == nil {
 		return 0
 	}
-
 	return C.uint32_t(wrapper.component.GetTailSamples())
 }

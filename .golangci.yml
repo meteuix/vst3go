@@ -84,12 +84,8 @@ issues:
       linters:
         - revive
         - stylecheck
-    - path: bridge/
-      linters:
-        - revive
-        - stylecheck
     # Wrapper files interface with C code
-    - path: pkg/plugin/wrapper.*\.go
+    - path: pkg/plugin/(wrapper.*|component_process)\.go
       linters:
         - revive
         - stylecheck

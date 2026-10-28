@@ -36,8 +36,7 @@ build/
 *_cgo_gotypes.go
 *_cgo.go
 
-# But keep our bridge headers
-!bridge/*.h
+# But keep the VST3 C API headers
 !include/**/*.h
 
 # Platform-specific VST3 bundles

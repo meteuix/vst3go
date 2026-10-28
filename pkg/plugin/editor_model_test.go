@@ -1,14 +1,12 @@
 package plugin
 
 import (
-	"errors"
 	"testing"
 
 	frameworkbus "github.com/th-release/vst3go/pkg/framework/bus"
 	frameworkparam "github.com/th-release/vst3go/pkg/framework/param"
 	frameworkplugin "github.com/th-release/vst3go/pkg/framework/plugin"
 	"github.com/th-release/vst3go/pkg/framework/process"
-	"github.com/th-release/vst3go/pkg/vst3"
 )
 
 type editorModelTestProcessor struct {
@@ -92,20 +90,20 @@ func TestEditorModelReflectsParameterChanges(t *testing.T) {
 		t.Fatalf("registry.Add() failed: %v", err)
 	}
 
-	component := &componentImpl{
-		processor: &editorModelTestProcessor{
-			params: registry,
-			buses:  frameworkbus.Stereo(),
-		},
-		pluginInfo: frameworkplugin.Info{
-			ID:      "com.example.editor",
-			Name:    "Example Editor",
-			Version: "1.2.3",
-		},
+	component, err := newComponent(&editorModelTestProcessor{
+		params: registry,
+		buses:  frameworkbus.Stereo(),
+	}, frameworkplugin.Info{
+		ID:      "com.example.editor",
+		Name:    "Example Editor",
+		Version: "1.2.3",
+	})
+	if err != nil {
+		t.Fatalf("newComponent() failed: %v", err)
 	}
 
-	if err := component.SetEditorParameter(1, 0.75); err != nil {
-		t.Fatalf("SetEditorParameter() failed: %v", err)
+	if err := component.EditParameter(1, 0.75); err != nil {
+		t.Fatalf("EditParameter() failed: %v", err)
 	}
 
 	model, err := component.EditorModel()
@@ -151,37 +149,5 @@ func TestEditorSnapshotApply(t *testing.T) {
 
 	if got := gain.GetNormalized(); got != 0.9 {
 		t.Fatalf("gain.GetNormalized() = %v, want %v", got, 0.9)
-	}
-}
-
-func TestComponentCreateView(t *testing.T) {
-	registry := frameworkparam.NewRegistry()
-	gain := frameworkparam.New(1, "Gain").Range(-24, 24).Default(0).Build()
-	if err := registry.Add(gain); err != nil {
-		t.Fatalf("registry.Add() failed: %v", err)
-	}
-
-	component := &componentImpl{
-		processor: &editorModelTestProcessor{
-			params: registry,
-			buses:  frameworkbus.Stereo(),
-		},
-		pluginInfo: frameworkplugin.Info{
-			ID:      "com.example.editor",
-			Name:    "Example Editor",
-			Version: "1.2.3",
-		},
-	}
-
-	view, err := component.CreateView("editor")
-	if err != nil {
-		t.Fatalf("CreateView(\"editor\") failed: %v", err)
-	}
-	if _, ok := view.(*EditorModel); !ok {
-		t.Fatalf("CreateView(\"editor\") = %T, want *EditorModel", view)
-	}
-
-	if _, err := component.CreateView("not-editor"); !errors.Is(err, vst3.ErrNotImplemented) {
-		t.Fatalf("CreateView(\"not-editor\") error = %v, want ErrNotImplemented", err)
 	}
 }

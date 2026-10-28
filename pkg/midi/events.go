@@ -22,7 +22,11 @@ const (
 	EventTypeContinue
 	EventTypeReset
 	EventTypeActiveSensing
+	EventTypeNoteExpression
 )
+
+// NoteIDNone marks events whose host did not assign a note ID.
+const NoteIDNone int32 = -1
 
 type Event interface {
 	Type() EventType
@@ -47,7 +51,13 @@ func (e BaseEvent) SampleOffset() int32 {
 type NoteOnEvent struct {
 	BaseEvent
 	NoteNumber uint8
-	Velocity   uint8
+	Velocity   uint8 // 0-127, rounded from VelocityNorm
+	// VelocityNorm is the full-precision host velocity in [0, 1]. When zero on
+	// output events, Velocity/127 is sent instead.
+	VelocityNorm float32
+	Tuning       float32 // pitch offset in cents
+	Length       int32   // note length in samples when known, otherwise 0
+	NoteID       int32   // host note ID, NoteIDNone when unassigned
 }
 
 func (e NoteOnEvent) Type() EventType {
@@ -61,8 +71,11 @@ func (e NoteOnEvent) String() string {
 
 type NoteOffEvent struct {
 	BaseEvent
-	NoteNumber uint8
-	Velocity   uint8
+	NoteNumber   uint8
+	Velocity     uint8 // 0-127, rounded from VelocityNorm
+	VelocityNorm float32
+	Tuning       float32 // pitch offset in cents
+	NoteID       int32   // host note ID, NoteIDNone when unassigned
 }
 
 func (e NoteOffEvent) Type() EventType {
@@ -130,8 +143,10 @@ func (e PitchBendEvent) NormalizedValue() float64 {
 
 type PolyPressureEvent struct {
 	BaseEvent
-	NoteNumber uint8
-	Pressure   uint8
+	NoteNumber   uint8
+	Pressure     uint8 // 0-127, rounded from PressureNorm
+	PressureNorm float32
+	NoteID       int32 // host note ID, NoteIDNone when unassigned
 }
 
 func (e PolyPressureEvent) Type() EventType {
@@ -169,6 +184,49 @@ func (e ProgramChangeEvent) Type() EventType {
 func (e ProgramChangeEvent) String() string {
 	return fmt.Sprintf("ProgramChange{ch:%d, prog:%d, offset:%d}",
 		e.EventChannel, e.Program, e.Offset)
+}
+
+// Note expression type IDs defined by VST3.
+const (
+	NoteExpressionVolume     uint32 = 0 // linear volume, 0.25 = -12 dB, 1 = +6 dB
+	NoteExpressionPan        uint32 = 1 // 0 = left, 0.5 = center, 1 = right
+	NoteExpressionTuning     uint32 = 2 // 0.5 = no change, +/-120 semitones over the range
+	NoteExpressionVibrato    uint32 = 3
+	NoteExpressionExpression uint32 = 4
+	NoteExpressionBrightness uint32 = 5
+)
+
+// NoteExpressionEvent carries a per-note VST3 expression value addressed by
+// note ID. Value is normalized to [0, 1].
+type NoteExpressionEvent struct {
+	BaseEvent
+	TypeID uint32
+	NoteID int32
+	Value  float64
+}
+
+func (e NoteExpressionEvent) Type() EventType {
+	return EventTypeNoteExpression
+}
+
+func (e NoteExpressionEvent) String() string {
+	return fmt.Sprintf("NoteExpression{type:%d, note:%d, val:%.4f, offset:%d}",
+		e.TypeID, e.NoteID, e.Value, e.Offset)
+}
+
+// SysExEvent carries a system exclusive message. Data is only valid during
+// the ProcessAudio call that delivered it; copy it to keep it.
+type SysExEvent struct {
+	BaseEvent
+	Data []byte
+}
+
+func (e SysExEvent) Type() EventType {
+	return EventTypeSystemExclusive
+}
+
+func (e SysExEvent) String() string {
+	return fmt.Sprintf("SysEx{len:%d, offset:%d}", len(e.Data), e.Offset)
 }
 
 type ClockEvent struct {

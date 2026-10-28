@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows && amd64
 
 #include <windows.h>
 #include <WebView2.h>
@@ -7,7 +7,7 @@
 #include <wchar.h>
 #include <stdio.h>
 
-#include "../../bridge/editor_view.h"
+#include "editor_view.h"
 
 typedef struct VST3GoEditorView VST3GoEditorView;
 typedef struct EditorEnvironmentHandler EditorEnvironmentHandler;
@@ -17,7 +17,7 @@ typedef struct EditorMessageHandler EditorMessageHandler;
 struct VST3GoEditorView {
     Steinberg_IPlugView view;
     ULONG refCount;
-    void* component;
+    uintptr_t component;
     HWND parentWindow;
     ICoreWebView2Environment* environment;
     ICoreWebView2Controller* controller;
@@ -28,7 +28,7 @@ struct VST3GoEditorView {
     EventRegistrationToken messageToken;
     BOOL hasMessageToken;
     WCHAR* userDataFolder;
-    Steinberg_IPlugFrame* frame;
+    struct Steinberg_IPlugFrame* frame;
     Steinberg_ViewRect size;
     BOOL attached;
 };
@@ -58,15 +58,14 @@ static Steinberg_tresult editorView_isPlatformTypeSupported(void* thisInterface,
 static Steinberg_tresult editorView_attached(void* thisInterface, void* parent, Steinberg_FIDString type);
 static Steinberg_tresult editorView_removed(void* thisInterface);
 static Steinberg_tresult editorView_onWheel(void* thisInterface, float distance);
-static Steinberg_tresult editorView_onKeyDown(void* thisInterface, Steinberg_Vst_TChar key, Steinberg_int32 keyCode, Steinberg_int16 modifiers);
-static Steinberg_tresult editorView_onKeyUp(void* thisInterface, Steinberg_Vst_TChar key, Steinberg_int32 keyCode, Steinberg_int16 modifiers);
+static Steinberg_tresult editorView_onKeyDown(void* thisInterface, Steinberg_char16 key, Steinberg_int16 keyCode, Steinberg_int16 modifiers);
+static Steinberg_tresult editorView_onKeyUp(void* thisInterface, Steinberg_char16 key, Steinberg_int16 keyCode, Steinberg_int16 modifiers);
 static Steinberg_tresult editorView_getSize(void* thisInterface, Steinberg_ViewRect* size);
 static Steinberg_tresult editorView_onSize(void* thisInterface, Steinberg_ViewRect* size);
 static Steinberg_tresult editorView_onFocus(void* thisInterface, Steinberg_TBool state);
-static Steinberg_tresult editorView_setFrame(void* thisInterface, Steinberg_IPlugFrame* frame);
+static Steinberg_tresult editorView_setFrame(void* thisInterface, struct Steinberg_IPlugFrame* frame);
 static Steinberg_tresult editorView_canResize(void* thisInterface);
 static Steinberg_tresult editorView_checkSizeConstraint(void* thisInterface, Steinberg_ViewRect* rect);
-static Steinberg_tresult editorView_onSizeScaleFactorChanged(void* thisInterface, float factor);
 
 static HRESULT STDMETHODCALLTYPE editorEnvironmentHandler_QueryInterface(ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler* thisInterface, REFIID iid, void** object);
 static ULONG STDMETHODCALLTYPE editorEnvironmentHandler_AddRef(ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler* thisInterface);
@@ -119,8 +118,7 @@ static Steinberg_IPlugViewVtbl editorViewVtbl = {
     editorView_onFocus,
     editorView_setFrame,
     editorView_canResize,
-    editorView_checkSizeConstraint,
-    editorView_onSizeScaleFactorChanged
+    editorView_checkSizeConstraint
 };
 
 static VST3GoEditorView* editorViewFromInterface(void* thisInterface) {
@@ -352,7 +350,7 @@ static EditorMessageHandler* editorViewCreateMessageHandler(VST3GoEditorView* vi
     return handler;
 }
 
-void* VST3GoCreateEditorView(void* component) {
+void* VST3GoCreateEditorView(uintptr_t component) {
     VST3GoEditorView* view = (VST3GoEditorView*)calloc(1, sizeof(VST3GoEditorView));
     if (!view) {
         return NULL;
@@ -383,14 +381,19 @@ void VST3GoEditorViewUpdateParameter(void* thisInterface, Steinberg_Vst_ParamID 
 }
 
 static Steinberg_tresult editorView_queryInterface(void* thisInterface, const Steinberg_TUID iid, void** obj) {
-    (void)iid;
     if (!obj) {
-        return Steinberg_kResultFalse;
+        return Steinberg_kInvalidArgument;
     }
 
-    *obj = thisInterface;
-    editorView_addRef(thisInterface);
-    return Steinberg_kResultOk;
+    if (memcmp(iid, Steinberg_FUnknown_iid, sizeof(Steinberg_TUID)) == 0 ||
+        memcmp(iid, Steinberg_IPlugView_iid, sizeof(Steinberg_TUID)) == 0) {
+        *obj = thisInterface;
+        editorView_addRef(thisInterface);
+        return Steinberg_kResultOk;
+    }
+
+    *obj = NULL;
+    return Steinberg_kNoInterface;
 }
 
 static Steinberg_uint32 editorView_addRef(void* thisInterface) {
@@ -468,7 +471,7 @@ static Steinberg_tresult editorView_onWheel(void* thisInterface, float distance)
     return Steinberg_kResultFalse;
 }
 
-static Steinberg_tresult editorView_onKeyDown(void* thisInterface, Steinberg_Vst_TChar key, Steinberg_int32 keyCode, Steinberg_int16 modifiers) {
+static Steinberg_tresult editorView_onKeyDown(void* thisInterface, Steinberg_char16 key, Steinberg_int16 keyCode, Steinberg_int16 modifiers) {
     (void)thisInterface;
     (void)key;
     (void)keyCode;
@@ -476,7 +479,7 @@ static Steinberg_tresult editorView_onKeyDown(void* thisInterface, Steinberg_Vst
     return Steinberg_kResultFalse;
 }
 
-static Steinberg_tresult editorView_onKeyUp(void* thisInterface, Steinberg_Vst_TChar key, Steinberg_int32 keyCode, Steinberg_int16 modifiers) {
+static Steinberg_tresult editorView_onKeyUp(void* thisInterface, Steinberg_char16 key, Steinberg_int16 keyCode, Steinberg_int16 modifiers) {
     (void)thisInterface;
     (void)key;
     (void)keyCode;
@@ -515,7 +518,7 @@ static Steinberg_tresult editorView_onFocus(void* thisInterface, Steinberg_TBool
     return Steinberg_kResultOk;
 }
 
-static Steinberg_tresult editorView_setFrame(void* thisInterface, Steinberg_IPlugFrame* frame) {
+static Steinberg_tresult editorView_setFrame(void* thisInterface, struct Steinberg_IPlugFrame* frame) {
     VST3GoEditorView* view = editorViewFromInterface(thisInterface);
     if (!view) {
         return Steinberg_kResultFalse;
@@ -539,11 +542,6 @@ static Steinberg_tresult editorView_checkSizeConstraint(void* thisInterface, Ste
     return Steinberg_kResultOk;
 }
 
-static Steinberg_tresult editorView_onSizeScaleFactorChanged(void* thisInterface, float factor) {
-    (void)thisInterface;
-    (void)factor;
-    return Steinberg_kResultOk;
-}
 
 static HRESULT STDMETHODCALLTYPE editorEnvironmentHandler_QueryInterface(ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler* thisInterface, REFIID iid, void** object) {
     (void)iid;

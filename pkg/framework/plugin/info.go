@@ -18,11 +18,53 @@ const (
 // This type lives in framework/plugin because it is shared metadata rather than
 // a runtime wrapper concern. pkg/plugin.Plugin.GetInfo returns this type.
 type Info struct {
-	ID       string // Unique plugin identifier (e.g., "com.example.myplugin")
-	Name     string // Display name
-	Version  string // Semantic version (e.g., "1.0.0")
-	Vendor   string // Company/developer name
-	Category string // Plugin category (e.g., "Fx", "Instrument")
+	ID      string // Unique plugin identifier (e.g., "com.example.myplugin")
+	Name    string // Display name
+	Version string // Semantic version (e.g., "1.0.0")
+	Vendor  string // Company/developer name
+	// Category is the VST3 sub-category string hosts use to file the plugin,
+	// for example CategoryFxEQ or CategoryInstrumentSynth. Several categories
+	// are joined with '|'. Empty means CategoryFx.
+	Category string
+}
+
+// VST3 sub-categories (Steinberg::Vst::PlugType).
+const (
+	CategoryFx                 = "Fx"
+	CategoryFxAnalyzer         = "Fx|Analyzer"
+	CategoryFxDelay            = "Fx|Delay"
+	CategoryFxDistortion       = "Fx|Distortion"
+	CategoryFxDynamics         = "Fx|Dynamics"
+	CategoryFxEQ               = "Fx|EQ"
+	CategoryFxFilter           = "Fx|Filter"
+	CategoryFxGenerator        = "Fx|Generator"
+	CategoryFxMastering        = "Fx|Mastering"
+	CategoryFxModulation       = "Fx|Modulation"
+	CategoryFxPitchShift       = "Fx|Pitch Shift"
+	CategoryFxRestoration      = "Fx|Restoration"
+	CategoryFxReverb           = "Fx|Reverb"
+	CategoryFxSpatial          = "Fx|Spatial"
+	CategoryFxSurround         = "Fx|Surround"
+	CategoryFxTools            = "Fx|Tools"
+	CategoryFxVocals           = "Fx|Vocals"
+	CategoryFxInstrument       = "Fx|Instrument" // MIDI-driven effect
+	CategoryInstrument         = "Instrument"
+	CategoryInstrumentDrum     = "Instrument|Drum"
+	CategoryInstrumentPiano    = "Instrument|Piano"
+	CategoryInstrumentSampler  = "Instrument|Sampler"
+	CategoryInstrumentSynth    = "Instrument|Synth"
+	CategoryAnalyzer           = "Analyzer"
+	CategoryOnlyRealTime       = "OnlyRT"
+	CategoryOnlyOfflineProcess = "OnlyOfflineProcess"
+	CategoryNoOfflineProcess   = "NoOfflineProcess"
+)
+
+// SubCategories returns the category string reported to the host.
+func (i *Info) SubCategories() string {
+	if i.Category == "" {
+		return CategoryFx
+	}
+	return i.Category
 }
 
 // UID converts the string ID to a deterministic 16-byte array for VST3.

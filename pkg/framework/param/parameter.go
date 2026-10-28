@@ -3,7 +3,9 @@ package param
 
 import (
 	"fmt"
+	"math"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"unsafe"
 )
@@ -16,7 +18,7 @@ type Parameter struct {
 	Unit         string
 	Min          float64
 	Max          float64
-	DefaultValue float64
+	DefaultValue float64 // normalized (0-1)
 	StepCount    int32
 	Flags        uint32
 	UnitID       int32
@@ -126,12 +128,40 @@ func (p *Parameter) ParseValue(str string) (float64, error) {
 		}
 		return p.Normalize(plain), nil
 	}
-	// Default parsing
-	plain, err := strconv.ParseFloat(str, 64)
+	plain, err := parseLeadingNumber(str)
 	if err != nil {
 		return 0, err
 	}
 	return p.Normalize(plain), nil
+}
+
+// parseLeadingNumber parses the first number in a display string, so the
+// default parser accepts formatted values such as "Q: 0.71" or "12.0 dB".
+// Infinity signs map to ±Inf, which Normalize clamps to the range.
+func parseLeadingNumber(str string) (float64, error) {
+	str = strings.TrimSpace(str)
+	if strings.Contains(str, "∞") || strings.Contains(strings.ToLower(str), "inf") {
+		if strings.HasPrefix(str, "-") {
+			return math.Inf(-1), nil
+		}
+		return math.Inf(1), nil
+	}
+	for start := 0; start < len(str); start++ {
+		if strings.IndexByte("+-.0123456789", str[start]) < 0 {
+			continue
+		}
+		end := start + 1
+		for end < len(str) && strings.IndexByte("0123456789.eE+-", str[end]) >= 0 {
+			end++
+		}
+		// Back off trailing characters that do not form a number ("1e", "5-").
+		for ; end > start; end-- {
+			if value, err := strconv.ParseFloat(str[start:end], 64); err == nil {
+				return value, nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("parse %q: no number", str)
 }
 
 // Normalize converts plain value to normalized (0-1)
@@ -149,8 +179,14 @@ func (p *Parameter) Normalize(plain float64) float64 {
 	return normalized
 }
 
-// Denormalize converts normalized (0-1) to plain value
+// Denormalize converts normalized (0-1) to plain value. Stepped parameters
+// snap to their steps using the VST3 rule min(steps, floor(n*(steps+1))).
 func (p *Parameter) Denormalize(normalized float64) float64 {
+	if p.StepCount > 0 {
+		steps := float64(p.StepCount)
+		step := math.Min(steps, math.Floor(math.Max(normalized, 0)*(steps+1)))
+		return p.Min + step*(p.Max-p.Min)/steps
+	}
 	return p.Min + normalized*(p.Max-p.Min)
 }
 

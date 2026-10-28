@@ -4,16 +4,16 @@ import "testing"
 
 func TestTransportInfoCalculations(t *testing.T) {
 	info := &TransportInfo{
-		HasMusicalTime:      true,
-		HasTimeSignature:    true,
-		TimeSigNumerator:    4,
-		TimeSigDenominator:  4,
-		ProjectTimeMusic:    5.5,
-		BarPositionMusic:    4.0,
-		HasTempo:            true,
-		Tempo:               120,
-		HasBarPosition:      true,
-		ProjectTimeSamples:  24000,
+		HasMusicalTime:        true,
+		HasTimeSignature:      true,
+		TimeSigNumerator:      4,
+		TimeSigDenominator:    4,
+		ProjectTimeMusic:      5.5,
+		BarPositionMusic:      4.0,
+		HasTempo:              true,
+		Tempo:                 120,
+		HasBarPosition:        true,
+		ProjectTimeSamples:    24000,
 		ContinuousTimeSamples: 24000,
 	}
 
@@ -32,9 +32,9 @@ func TestTransportInfoCalculations(t *testing.T) {
 
 	boundary := &TransportInfo{
 		HasMusicalTime:   true,
-		HasBarPosition:    true,
-		ProjectTimeMusic:  4.03,
-		BarPositionMusic:  4.0,
+		HasBarPosition:   true,
+		ProjectTimeMusic: 4.03,
+		BarPositionMusic: 4.0,
 	}
 	if !boundary.IsOnBeat(0.05) {
 		t.Fatal("IsOnBeat(0.05) should be true near the beat boundary")

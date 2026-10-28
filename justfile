@@ -24,6 +24,15 @@ test-go:
 
 test: fmt-check test-go
 
+# Build a macOS/Linux VST3 bundle from a main package, e.g. `just vst3 ./myplugin MyPlugin`.
+vst3 package name out='dist':
+  bash scripts/build_vst3.sh "{{package}}" "{{name}}" "{{out}}"
+
+# Build the validation plugins and run the Steinberg validator on each.
+# validator: path to the VST3 SDK `validator` binary.
+validate-vst3 validator out='dist/validation':
+  bash scripts/validate_vst3.sh "{{validator}}" "{{out}}"
+
 windows-package plugin_dll bundle_root='dist/windows' plugin_name='vst3go':
   bash scripts/package_windows_vst3.sh "{{plugin_dll}}" "{{bundle_root}}" "{{plugin_name}}"
 

@@ -1,8 +1,8 @@
-//go:build !darwin
+//go:build !darwin && !(windows && amd64)
 
-#include "../../bridge/editor_view.h"
+#include "editor_view.h"
 
-void* VST3GoCreateEditorView(void* component) {
+void* VST3GoCreateEditorView(uintptr_t component) {
     (void)component;
     return NULL;
 }

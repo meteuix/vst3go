@@ -63,11 +63,15 @@ func Choice(id uint32, name string, options []ChoiceOption) *Builder {
 		maxVal = options[len(options)-1].Value
 	}
 
-	return New(id, name).
+	// VST3 step counts are intervals: N options have N-1 steps. List
+	// parameters show their option names in host menus.
+	b := New(id, name).
 		Range(minVal, maxVal).
-		Steps(int32(len(options))).
+		Steps(int32(len(options)-1)).
 		Default(options[0].Value).
 		Formatter(formatter, parser)
+	b.param.Flags |= IsList
+	return b
 }
 
 // Common parameter helpers
@@ -283,8 +287,8 @@ func OutputLevelMeter(id uint32, name string) *Builder {
 		Range(-60, 0).
 		Default(-60).
 		Unit("dB").
-		Formatter(DecibelFormatter, nil). // No parser for read-only
-		Flags(IsReadOnly)
+		Formatter(DecibelFormatter, DecibelParser).
+		ReadOnly()
 }
 
 // ThresholdParameter creates a threshold parameter (typically for dynamics)
@@ -334,7 +338,7 @@ func BypassParameter(id uint32, name string) *Builder {
 	return Choice(id, name, []ChoiceOption{
 		{Value: 0, Name: "Active"},
 		{Value: 1, Name: "Bypassed"},
-	})
+	}).Bypass()
 }
 
 // Helper function to parse float with error handling

@@ -118,8 +118,9 @@ func TestSetBusActive(t *testing.T) {
 func TestGetActiveChannelCounts(t *testing.T) {
 	config := NewBuilder().
 		WithStereoInput("Main").
-		WithMonoInput("Aux").
+		WithAuxInput("Aux", 1).
 		WithStereoOutput("Out").
+		SetBusActive(MediaTypeAudio, DirectionInput, 1, true).
 		MustBuild()
 
 	if got := config.GetActiveInputChannelCount(); got != 3 {

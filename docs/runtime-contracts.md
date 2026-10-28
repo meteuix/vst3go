@@ -15,7 +15,7 @@ Downstream projects should treat these packages as the supported API surface:
 - `pkg/framework/process`
 - `pkg/framework/state`
 
-Packages under `bridge/`, embedded editor assets, and platform-specific editor shims support that API surface but are not intended to become a higher-level product framework.
+The C bridge sources in `pkg/plugin`, embedded editor assets, and platform-specific editor shims support that API surface but are not intended to become a higher-level product framework.
 
 ## Lifecycle Expectations
 
@@ -25,12 +25,16 @@ Packages under `bridge/`, embedded editor assets, and platform-specific editor s
 - `plugin.Processor.ProcessAudio` is the steady-state audio callback and should avoid avoidable allocations and blocking work.
 - `plugin.Processor.SetActive(false)` is the reset boundary for transport state, pending events, smoothing state, and other runtime-only caches.
 - `plugin.StatefulProcessor` is optional and should only be implemented when parameter values alone are not enough to restore processor behavior.
+- `Initialize` runs once when the host initializes the component and again from every `setupProcessing` call with the host sample rate and block size. Bus arrangements are final when `SetActive(true)` is called.
+- Optional host features (`BusArrangementProcessor`, `MIDIControllerProcessor`, `MIDIMappingProcessor`, `HostAwareProcessor`) are described in `docs/plugin-capabilities.md`.
 
 ## Thread-Safety Expectations
 
 - `pkg/framework/param.Registry` uses internal locking for parameter lookup and registration helpers.
 - Individual parameter reads and writes are intended to be safe for the runtime paths used by this repo, but callers should still avoid long critical sections or external lock ordering around registry access.
 - `pkg/framework/process.Context` is owned by one processing pass at a time and should not be shared concurrently across worker goroutines.
+- `ProcessAudio` runs on the host audio thread; every other `Processor` method and all `Host` calls run on host/UI threads. The runtime serializes host-thread lifecycle calls per instance.
+- The runtime splits each host block at parameter change offsets and calls `ProcessAudio` once per segment, so a processor can rely on parameter values being constant inside one call.
 - `pkg/framework/state.Manager` is a serialization helper and should be driven from host state callbacks, not from concurrent realtime audio paths.
 - Platform editor bridges should treat the Go-side parameter model as the source of truth and route UI changes back through the normal parameter update flow instead of mutating parallel state.
 
@@ -46,7 +50,7 @@ Packages under `bridge/`, embedded editor assets, and platform-specific editor s
 
 When a downstream repo consumes this fork:
 
-- import `github.com/cwbudde/vst3go`
+- import `github.com/th-release/vst3go`
 - build plugin/runtime logic on top of the supported packages above
 - keep DSP/product code outside this repo
 - validate host-specific behavior, installer layout, signing, and DAW compatibility in the downstream repo

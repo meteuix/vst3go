@@ -192,19 +192,17 @@ func NewMultiChannelEffect(numChannels int32) *Configuration {
 		MustBuild()
 }
 
-// NewCrossover creates a crossover/band splitter configuration
-// Stereo in, multiple band outputs
+// NewCrossover creates a crossover/band splitter configuration:
+// stereo in, a main stereo output carrying the summed result, then one
+// auxiliary stereo output per band.
 func NewCrossover(numBands int) *Configuration {
 	b := NewBuilder().
-		WithStereoInput("Stereo In")
+		WithStereoInput("Stereo In").
+		WithStereoOutput("Main Out")
 
-	// Add band outputs
 	for i := 0; i < numBands; i++ {
 		b = b.WithAuxOutput(fmt.Sprintf("Band %d", i+1), 2)
 	}
-
-	// Also add a main stereo output for the summed result
-	b = b.WithStereoOutput("Main Out")
 
 	return b.MustBuild()
 }

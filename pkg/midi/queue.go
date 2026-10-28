@@ -182,6 +182,12 @@ func (q *EventQueue) OffsetEvents(offset int32) {
 		case ContinueEvent:
 			e.Offset += offset
 			q.events[i] = e
+		case NoteExpressionEvent:
+			e.Offset += offset
+			q.events[i] = e
+		case SysExEvent:
+			e.Offset += offset
+			q.events[i] = e
 		}
 	}
 }

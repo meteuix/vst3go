@@ -39,7 +39,7 @@ Use this template when publishing a new `vst3go` tag.
 
 ## Compatibility Notes
 
-- module path: `github.com/cwbudde/vst3go`
+- module path: `github.com/th-release/vst3go`
 - supported public API surface: `pkg/plugin`, `pkg/vst3`, `pkg/midi`, `pkg/framework/{bus,param,plugin,process,state}`
 - any breaking changes:
 

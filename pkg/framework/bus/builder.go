@@ -28,6 +28,7 @@ func (b *Builder) WithAudioInput(name string, channels int32) *Builder {
 		MediaType:    MediaTypeAudio,
 		Direction:    DirectionInput,
 		ChannelCount: channels,
+		Arrangement:  ArrangementForChannels(channels),
 		Name:         name,
 		BusType:      TypeMain,
 		IsActive:     true,
@@ -41,6 +42,7 @@ func (b *Builder) WithAudioOutput(name string, channels int32) *Builder {
 		MediaType:    MediaTypeAudio,
 		Direction:    DirectionOutput,
 		ChannelCount: channels,
+		Arrangement:  ArrangementForChannels(channels),
 		Name:         name,
 		BusType:      TypeMain,
 		IsActive:     true,
@@ -54,6 +56,7 @@ func (b *Builder) WithAuxInput(name string, channels int32) *Builder {
 		MediaType:    MediaTypeAudio,
 		Direction:    DirectionInput,
 		ChannelCount: channels,
+		Arrangement:  ArrangementForChannels(channels),
 		Name:         name,
 		BusType:      TypeAux,
 		IsActive:     false, // Aux buses start inactive by default
@@ -67,10 +70,25 @@ func (b *Builder) WithAuxOutput(name string, channels int32) *Builder {
 		MediaType:    MediaTypeAudio,
 		Direction:    DirectionOutput,
 		ChannelCount: channels,
+		Arrangement:  ArrangementForChannels(channels),
 		Name:         name,
 		BusType:      TypeAux,
 		IsActive:     false, // Aux buses start inactive by default
 	})
+	return b
+}
+
+// WithAudioInputArrangement adds a main audio input bus with an explicit speaker arrangement.
+func (b *Builder) WithAudioInputArrangement(name string, arrangement SpeakerArrangement) *Builder {
+	b.WithAudioInput(name, arrangement.ChannelCount())
+	b.config.audioBuses[len(b.config.audioBuses)-1].Arrangement = arrangement
+	return b
+}
+
+// WithAudioOutputArrangement adds a main audio output bus with an explicit speaker arrangement.
+func (b *Builder) WithAudioOutputArrangement(name string, arrangement SpeakerArrangement) *Builder {
+	b.WithAudioOutput(name, arrangement.ChannelCount())
+	b.config.audioBuses[len(b.config.audioBuses)-1].Arrangement = arrangement
 	return b
 }
 
@@ -137,22 +155,22 @@ func (b *Builder) WithQuadOutput(name string) *Builder {
 
 // With5_1Input adds a 5.1 surround input
 func (b *Builder) With5_1Input(name string) *Builder {
-	return b.WithAudioInput(name, 6)
+	return b.WithAudioInputArrangement(name, Arrangement51)
 }
 
 // With5_1Output adds a 5.1 surround output
 func (b *Builder) With5_1Output(name string) *Builder {
-	return b.WithAudioOutput(name, 6)
+	return b.WithAudioOutputArrangement(name, Arrangement51)
 }
 
 // With7_1Input adds a 7.1 surround input
 func (b *Builder) With7_1Input(name string) *Builder {
-	return b.WithAudioInput(name, 8)
+	return b.WithAudioInputArrangement(name, Arrangement71Cine)
 }
 
 // With7_1Output adds a 7.1 surround output
 func (b *Builder) With7_1Output(name string) *Builder {
-	return b.WithAudioOutput(name, 8)
+	return b.WithAudioOutputArrangement(name, Arrangement71Cine)
 }
 
 // SetBusActive sets a specific bus as active/inactive
@@ -207,6 +225,24 @@ func (b *Builder) Validate() error {
 		return fmt.Errorf("configuration must have at least one main output bus (audio or event)")
 	}
 
+	// Hosts treat bus 0 of a direction as the main bus whenever one exists,
+	// so main buses must precede auxiliary buses.
+	for _, direction := range []Direction{DirectionInput, DirectionOutput} {
+		seenAux := false
+		for _, bus := range b.config.audioBuses {
+			if bus.Direction != direction {
+				continue
+			}
+			if bus.BusType == TypeAux {
+				seenAux = true
+				continue
+			}
+			if seenAux {
+				return fmt.Errorf("main audio bus %q of direction %d must precede auxiliary buses", bus.Name, direction)
+			}
+		}
+	}
+
 	// Validate channel counts
 	for _, bus := range b.config.audioBuses {
 		if bus.ChannelCount <= 0 {
@@ -214,6 +250,9 @@ func (b *Builder) Validate() error {
 		}
 		if bus.ChannelCount > 32 {
 			return fmt.Errorf("channel count %d exceeds maximum of 32 for bus %s", bus.ChannelCount, bus.Name)
+		}
+		if bus.SpeakerArrangement().ChannelCount() != bus.ChannelCount {
+			return fmt.Errorf("speaker arrangement of bus %s has %d channels, want %d", bus.Name, bus.SpeakerArrangement().ChannelCount(), bus.ChannelCount)
 		}
 	}
 

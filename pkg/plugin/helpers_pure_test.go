@@ -2,8 +2,6 @@ package plugin
 
 import (
 	"testing"
-
-	_ "github.com/th-release/vst3go/pkg/plugin/cbridge"
 )
 
 func TestUTF16StringRoundTrip(t *testing.T) {

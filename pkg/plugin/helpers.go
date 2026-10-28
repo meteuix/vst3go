@@ -1,38 +1,41 @@
 package plugin
 
-// #cgo CFLAGS: -I../../include
 // #include "../../include/vst3/vst3_c_api.h"
-//
-// // Helper to access channelBuffers32 from the union
-// static inline float** getChannelBuffers32(struct Steinberg_Vst_AudioBusBuffers* bus) {
-//     return bus->Steinberg_Vst_AudioBusBuffers_channelBuffers32;
-// }
 import "C"
-import "unsafe"
 
-// getChannelBuffers32 extracts the 32-bit channel buffers from an audio bus
-func getChannelBuffers32(bus *C.struct_Steinberg_Vst_AudioBusBuffers) **C.float {
-	return C.getChannelBuffers32(bus)
-}
+import (
+	"unicode/utf16"
+	"unsafe"
+)
 
+// copyStringToUTF16 writes src as NUL-terminated UTF-16 into dst, truncating
+// on a code-point boundary so surrogate pairs are never split.
 func copyStringToUTF16(src string, dst []uint16, maxLen int) {
-	if maxLen <= 0 || len(dst) == 0 {
+	if maxLen > len(dst) {
+		maxLen = len(dst)
+	}
+	if maxLen <= 0 {
 		return
 	}
 
-	runes := []rune(src)
-	limit := len(runes)
-	if limit > maxLen-1 {
-		limit = maxLen - 1
+	n := 0
+	for _, r := range src {
+		size := utf16.RuneLen(r)
+		if size < 0 {
+			r, size = '\uFFFD', 1
+		}
+		if n+size > maxLen-1 {
+			break
+		}
+		if size == 2 {
+			hi, lo := utf16.EncodeRune(r)
+			dst[n], dst[n+1] = uint16(hi), uint16(lo)
+		} else {
+			dst[n] = uint16(r)
+		}
+		n += size
 	}
-	if limit > len(dst)-1 {
-		limit = len(dst) - 1
-	}
-
-	for i := 0; i < limit; i++ {
-		dst[i] = uint16(runes[i])
-	}
-	dst[limit] = 0
+	dst[n] = 0
 }
 
 func stringFromUTF16(src []uint16) string {
@@ -40,41 +43,39 @@ func stringFromUTF16(src []uint16) string {
 	for length < len(src) && src[length] != 0 {
 		length++
 	}
-
-	runes := make([]rune, length)
-	for i := 0; i < length; i++ {
-		runes[i] = rune(src[i])
-	}
-	return string(runes)
+	return string(utf16.Decode(src[:length]))
 }
 
-// copyStringToTChar copies a Go string to a VST3 TChar (UTF16) buffer
+// copyStringToTChar copies a Go string to a VST3 TChar (UTF-16) buffer.
 func copyStringToTChar(src string, dst *C.Steinberg_Vst_TChar, maxLen int) {
 	if dst == nil || maxLen <= 0 {
 		return
 	}
-
-	buffer := unsafe.Slice((*uint16)(unsafe.Pointer(dst)), maxLen)
-	copyStringToUTF16(src, buffer, maxLen)
+	copyStringToUTF16(src, unsafe.Slice((*uint16)(unsafe.Pointer(dst)), maxLen), maxLen)
 }
 
-// stringFromTChar converts a VST3 TChar (UTF16) buffer to a Go string
-func stringFromTChar(src *C.Steinberg_Vst_TChar) string {
+// stringFromTChar converts a NUL-terminated VST3 TChar (UTF-16) string.
+func stringFromTChar(src *C.Steinberg_Vst_TChar, maxLen int) string {
 	if src == nil {
 		return ""
 	}
-
-	// Count length
 	length := 0
-	for {
-		ch := *(*C.Steinberg_char16)(unsafe.Pointer(
-			uintptr(unsafe.Pointer(src)) + uintptr(length*2)))
-		if ch == 0 {
-			break
-		}
+	for length < maxLen && *(*uint16)(unsafe.Add(unsafe.Pointer(src), length*2)) != 0 {
 		length++
 	}
+	return stringFromUTF16(unsafe.Slice((*uint16)(unsafe.Pointer(src)), length))
+}
 
-	buffer := unsafe.Slice((*uint16)(unsafe.Pointer(src)), length)
-	return stringFromUTF16(buffer)
+// copyCString writes src as a NUL-terminated byte string into a fixed C array.
+func copyCString(dst *C.char, size int, src string) {
+	if dst == nil || size <= 0 {
+		return
+	}
+	buf := unsafe.Slice((*byte)(unsafe.Pointer(dst)), size)
+	n := copy(buf[:size-1], src)
+	// Do not cut a UTF-8 sequence in half.
+	for n > 0 && n < len(src) && src[n]&0xC0 == 0x80 {
+		n--
+	}
+	buf[n] = 0
 }

@@ -23,7 +23,7 @@
 
 ## Current Baseline
 
-- [x] Plugin implementations can import `pkg/plugin/cbridge` instead of including bridge code directly.
+- [x] Plugin implementations only import `pkg/plugin`; the C bridge is compiled as part of that package.
 - [x] Core runtime packages exist for buses, parameters, process context, state, MIDI/events, plugin runtime, and VST3 bindings.
 - [x] Sample-accurate parameter automation is implemented.
 - [x] MIDI/event handling is implemented.

@@ -166,18 +166,18 @@ func TestSpecialTemplates(t *testing.T) {
 			t.Error("Expected 4 outputs for 3-band crossover")
 		}
 
-		// Check band outputs are aux
-		for i := 0; i < 3; i++ {
-			band := config.GetBusInfo(MediaTypeAudio, DirectionOutput, int32(i))
-			if band.BusType != TypeAux {
-				t.Errorf("Expected band %d to be auxiliary", i+1)
-			}
+		// Main output must come first
+		main := config.GetBusInfo(MediaTypeAudio, DirectionOutput, 0)
+		if main.Name != "Main Out" || main.BusType != TypeMain {
+			t.Error("Expected first output to be main")
 		}
 
-		// Main output should be last
-		main := config.GetBusInfo(MediaTypeAudio, DirectionOutput, 3)
-		if main.Name != "Main Out" {
-			t.Error("Expected last output to be main")
+		// Band outputs follow as aux buses
+		for i := 1; i <= 3; i++ {
+			band := config.GetBusInfo(MediaTypeAudio, DirectionOutput, int32(i))
+			if band.BusType != TypeAux {
+				t.Errorf("Expected band %d to be auxiliary", i)
+			}
 		}
 	})
 

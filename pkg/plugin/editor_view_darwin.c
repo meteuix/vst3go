@@ -3,7 +3,7 @@
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
 
-#include "../../bridge/editor_view.h"
+#include "editor_view.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -11,19 +11,27 @@
 @property(nonatomic, assign) struct VST3GoEditorView *owner;
 @end
 
-typedef struct VST3GoEditorView {
+typedef struct VST3GoEditorView VST3GoEditorView;
+
+typedef struct VST3GoEditorScaleSupport {
+    Steinberg_IPlugViewContentScaleSupportVtbl* lpVtbl;
+    VST3GoEditorView* owner;
+} VST3GoEditorScaleSupport;
+
+struct VST3GoEditorView {
     Steinberg_IPlugView view;
+    VST3GoEditorScaleSupport scaleSupport;
     Steinberg_uint32 refCount;
-    void* component;
+    uintptr_t component;
     NSView* parentView;
     NSView* containerView;
     WKWebView* webView;
     VST3GoEditorMessageHandler* messageHandler;
-    Steinberg_IPlugFrame* frame;
+    struct Steinberg_IPlugFrame* frame;
     Steinberg_ViewRect size;
     float scaleFactor;
     Steinberg_TBool attached;
-} VST3GoEditorView;
+};
 
 static Steinberg_tresult editorView_queryInterface(void* thisInterface, const Steinberg_TUID iid, void** obj);
 static Steinberg_uint32 editorView_addRef(void* thisInterface);
@@ -32,15 +40,25 @@ static Steinberg_tresult editorView_isPlatformTypeSupported(void* thisInterface,
 static Steinberg_tresult editorView_attached(void* thisInterface, void* parent, Steinberg_FIDString type);
 static Steinberg_tresult editorView_removed(void* thisInterface);
 static Steinberg_tresult editorView_onWheel(void* thisInterface, float distance);
-static Steinberg_tresult editorView_onKeyDown(void* thisInterface, Steinberg_Vst_TChar key, Steinberg_int32 keyCode, Steinberg_int16 modifiers);
-static Steinberg_tresult editorView_onKeyUp(void* thisInterface, Steinberg_Vst_TChar key, Steinberg_int32 keyCode, Steinberg_int16 modifiers);
+static Steinberg_tresult editorView_onKeyDown(void* thisInterface, Steinberg_char16 key, Steinberg_int16 keyCode, Steinberg_int16 modifiers);
+static Steinberg_tresult editorView_onKeyUp(void* thisInterface, Steinberg_char16 key, Steinberg_int16 keyCode, Steinberg_int16 modifiers);
 static Steinberg_tresult editorView_getSize(void* thisInterface, Steinberg_ViewRect* size);
 static Steinberg_tresult editorView_onSize(void* thisInterface, Steinberg_ViewRect* size);
 static Steinberg_tresult editorView_onFocus(void* thisInterface, Steinberg_TBool state);
-static Steinberg_tresult editorView_setFrame(void* thisInterface, Steinberg_IPlugFrame* frame);
+static Steinberg_tresult editorView_setFrame(void* thisInterface, struct Steinberg_IPlugFrame* frame);
 static Steinberg_tresult editorView_canResize(void* thisInterface);
 static Steinberg_tresult editorView_checkSizeConstraint(void* thisInterface, Steinberg_ViewRect* rect);
-static Steinberg_tresult editorView_onSizeScaleFactorChanged(void* thisInterface, float factor);
+static Steinberg_tresult editorScale_queryInterface(void* thisInterface, const Steinberg_TUID iid, void** obj);
+static Steinberg_uint32 editorScale_addRef(void* thisInterface);
+static Steinberg_uint32 editorScale_release(void* thisInterface);
+static Steinberg_tresult editorScale_setContentScaleFactor(void* thisInterface, Steinberg_IPlugViewContentScaleSupport_ScaleFactor factor);
+
+static Steinberg_IPlugViewContentScaleSupportVtbl editorScaleVtbl = {
+    editorScale_queryInterface,
+    editorScale_addRef,
+    editorScale_release,
+    editorScale_setContentScaleFactor
+};
 
 static Steinberg_IPlugViewVtbl editorViewVtbl = {
     editorView_queryInterface,
@@ -57,8 +75,7 @@ static Steinberg_IPlugViewVtbl editorViewVtbl = {
     editorView_onFocus,
     editorView_setFrame,
     editorView_canResize,
-    editorView_checkSizeConstraint,
-    editorView_onSizeScaleFactorChanged
+    editorView_checkSizeConstraint
 };
 
 @implementation VST3GoEditorMessageHandler
@@ -120,7 +137,7 @@ static void editorViewSetFrameFromParent(VST3GoEditorView* view) {
     view->webView.frame = view->containerView.bounds;
 }
 
-void* VST3GoCreateEditorView(void* component) {
+void* VST3GoCreateEditorView(uintptr_t component) {
     @autoreleasepool {
         VST3GoEditorView* view = (VST3GoEditorView*)calloc(1, sizeof(VST3GoEditorView));
         if (!view) {
@@ -128,6 +145,8 @@ void* VST3GoCreateEditorView(void* component) {
         }
 
         view->view.lpVtbl = &editorViewVtbl;
+        view->scaleSupport.lpVtbl = &editorScaleVtbl;
+        view->scaleSupport.owner = view;
         view->refCount = 1;
         view->component = component;
         view->size.left = 0;
@@ -152,12 +171,47 @@ void VST3GoEditorViewUpdateParameter(void* thisInterface, Steinberg_Vst_ParamID 
 }
 
 static Steinberg_tresult editorView_queryInterface(void* thisInterface, const Steinberg_TUID iid, void** obj) {
-    (void)iid;
     if (!obj) {
+        return Steinberg_kInvalidArgument;
+    }
+
+    VST3GoEditorView* view = editorViewFromInterface(thisInterface);
+    if (memcmp(iid, Steinberg_FUnknown_iid, sizeof(Steinberg_TUID)) == 0 ||
+        memcmp(iid, Steinberg_IPlugView_iid, sizeof(Steinberg_TUID)) == 0) {
+        *obj = &view->view;
+        editorView_addRef(view);
+        return Steinberg_kResultOk;
+    }
+
+    if (memcmp(iid, Steinberg_IPlugViewContentScaleSupport_iid, sizeof(Steinberg_TUID)) == 0) {
+        *obj = &view->scaleSupport;
+        editorView_addRef(view);
+        return Steinberg_kResultOk;
+    }
+
+    *obj = NULL;
+    return Steinberg_kNoInterface;
+}
+
+static Steinberg_tresult editorScale_queryInterface(void* thisInterface, const Steinberg_TUID iid, void** obj) {
+    return editorView_queryInterface(((VST3GoEditorScaleSupport*)thisInterface)->owner, iid, obj);
+}
+
+static Steinberg_uint32 editorScale_addRef(void* thisInterface) {
+    return editorView_addRef(((VST3GoEditorScaleSupport*)thisInterface)->owner);
+}
+
+static Steinberg_uint32 editorScale_release(void* thisInterface) {
+    return editorView_release(((VST3GoEditorScaleSupport*)thisInterface)->owner);
+}
+
+static Steinberg_tresult editorScale_setContentScaleFactor(void* thisInterface, Steinberg_IPlugViewContentScaleSupport_ScaleFactor factor) {
+    VST3GoEditorView* view = ((VST3GoEditorScaleSupport*)thisInterface)->owner;
+    if (!view || factor <= 0) {
         return Steinberg_kResultFalse;
     }
-    *obj = thisInterface;
-    editorView_addRef(thisInterface);
+
+    view->scaleFactor = factor;
     return Steinberg_kResultOk;
 }
 
@@ -291,7 +345,7 @@ static Steinberg_tresult editorView_onWheel(void* thisInterface, float distance)
     return Steinberg_kResultFalse;
 }
 
-static Steinberg_tresult editorView_onKeyDown(void* thisInterface, Steinberg_Vst_TChar key, Steinberg_int32 keyCode, Steinberg_int16 modifiers) {
+static Steinberg_tresult editorView_onKeyDown(void* thisInterface, Steinberg_char16 key, Steinberg_int16 keyCode, Steinberg_int16 modifiers) {
     (void)thisInterface;
     (void)key;
     (void)keyCode;
@@ -299,7 +353,7 @@ static Steinberg_tresult editorView_onKeyDown(void* thisInterface, Steinberg_Vst
     return Steinberg_kResultFalse;
 }
 
-static Steinberg_tresult editorView_onKeyUp(void* thisInterface, Steinberg_Vst_TChar key, Steinberg_int32 keyCode, Steinberg_int16 modifiers) {
+static Steinberg_tresult editorView_onKeyUp(void* thisInterface, Steinberg_char16 key, Steinberg_int16 keyCode, Steinberg_int16 modifiers) {
     (void)thisInterface;
     (void)key;
     (void)keyCode;
@@ -339,7 +393,7 @@ static Steinberg_tresult editorView_onFocus(void* thisInterface, Steinberg_TBool
     return Steinberg_kResultOk;
 }
 
-static Steinberg_tresult editorView_setFrame(void* thisInterface, Steinberg_IPlugFrame* frame) {
+static Steinberg_tresult editorView_setFrame(void* thisInterface, struct Steinberg_IPlugFrame* frame) {
     VST3GoEditorView* view = editorViewFromInterface(thisInterface);
     if (!view) {
         return Steinberg_kResultFalse;
@@ -360,12 +414,3 @@ static Steinberg_tresult editorView_checkSizeConstraint(void* thisInterface, Ste
     return Steinberg_kResultOk;
 }
 
-static Steinberg_tresult editorView_onSizeScaleFactorChanged(void* thisInterface, float factor) {
-    VST3GoEditorView* view = editorViewFromInterface(thisInterface);
-    if (!view) {
-        return Steinberg_kResultFalse;
-    }
-
-    view->scaleFactor = factor;
-    return Steinberg_kResultOk;
-}

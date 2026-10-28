@@ -41,7 +41,7 @@ func NewStreamWrapper(streamPtr unsafe.Pointer) *StreamWrapper {
 	}
 }
 
-// Read reads data from the stream
+// Read reads up to len(buffer) bytes from the stream.
 func (s *StreamWrapper) Read(buffer []byte) (int32, error) {
 	if len(buffer) == 0 {
 		return 0, nil
@@ -49,24 +49,28 @@ func (s *StreamWrapper) Read(buffer []byte) (int32, error) {
 
 	var numBytesRead C.Steinberg_int32
 	result := C.stream_read(s.stream, unsafe.Pointer(&buffer[0]), C.Steinberg_int32(len(buffer)), &numBytesRead)
-	if result != 0 {
+	if result != C.Steinberg_kResultOk {
 		return 0, ErrNotImplemented
 	}
 	return int32(numBytesRead), nil
 }
 
-// Write writes data to the stream
+// Write writes the whole buffer, retrying partial writes. It fails with
+// ErrShortTransfer when the stream stops accepting data.
 func (s *StreamWrapper) Write(buffer []byte) (int32, error) {
-	if len(buffer) == 0 {
-		return 0, nil
+	written := 0
+	for written < len(buffer) {
+		var n C.Steinberg_int32
+		result := C.stream_write(s.stream, unsafe.Pointer(&buffer[written]), C.Steinberg_int32(len(buffer)-written), &n)
+		if result != C.Steinberg_kResultOk {
+			return int32(written), ErrNotImplemented
+		}
+		if n <= 0 {
+			return int32(written), ErrShortTransfer
+		}
+		written += int(n)
 	}
-
-	var numBytesWritten C.Steinberg_int32
-	result := C.stream_write(s.stream, unsafe.Pointer(&buffer[0]), C.Steinberg_int32(len(buffer)), &numBytesWritten)
-	if result != 0 {
-		return 0, ErrNotImplemented
-	}
-	return int32(numBytesWritten), nil
+	return int32(written), nil
 }
 
 // WriteInt32 writes an int32 to the stream
@@ -182,14 +186,20 @@ func (s *StreamWrapper) ReadAll() ([]byte, error) {
 		return s.readAllChunked()
 	}
 
-	// Read all remaining data
+	// Read all remaining data; streams may return it in pieces.
 	buffer := make([]byte, remaining)
-	n, err := s.Read(buffer)
-	if err != nil {
-		return nil, err
+	total := int32(0)
+	for total < remaining {
+		n, err := s.Read(buffer[total:])
+		if err != nil {
+			return nil, err
+		}
+		if n <= 0 {
+			break
+		}
+		total += n
 	}
-
-	return buffer[:n], nil
+	return buffer[:total], nil
 }
 
 // readAllChunked reads data in chunks when seeking is not supported
@@ -207,9 +217,6 @@ func (s *StreamWrapper) readAllChunked() ([]byte, error) {
 			break
 		}
 		result = append(result, chunk[:n]...)
-		if n < chunkSize {
-			break // End of stream
-		}
 	}
 
 	return result, nil

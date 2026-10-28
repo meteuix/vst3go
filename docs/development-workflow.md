@@ -32,7 +32,7 @@ When implementing a non-trivial change, follow this order:
 - `pkg/plugin`: keep wrapper, editor model, and platform bridge integration centered on runtime contracts
 - `pkg/framework/*`: keep reusable runtime primitives generic and safe for downstream plugin authors
 - `pkg/midi`: keep event and transport helpers lightweight and runtime-focused
-- `bridge/`: keep the C layer minimal and mechanical
+- `pkg/plugin/*.c`, `*.h`: keep the C layer minimal and mechanical
 
 ## Web Editor Guidelines
 
