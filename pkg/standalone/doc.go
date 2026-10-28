@@ -14,6 +14,6 @@
 // The application hosts the plugin through the plugin's own CLAP entry, so
 // it runs the same runtime a CLAP host does. Audio goes through miniaudio
 // (github.com/gen2brain/malgo: Core Audio, WASAPI, ALSA, PulseAudio, JACK),
-// MIDI through RtMidi (gitlab.com/gomidi/midi/v2). See
+// MIDI through internal/midiport (Core MIDI, the ALSA sequencer, WinMM). See
 // docs/plugin-capabilities.md for the flags and the platforms.
 package standalone
