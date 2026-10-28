@@ -9,10 +9,10 @@ import "C"
 
 import (
 	"encoding/binary"
-	"encoding/json"
 	"math"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/th-release/vst3go/pkg/framework/bus"
@@ -32,10 +32,10 @@ type componentWrapper struct {
 	kind      int32 // kindSingle, kindProcessor or kindController
 	scratch   processScratch
 
-	handlerMu        sync.RWMutex   // protects componentHandler, editorView and presetName
+	handlerMu        sync.RWMutex   // protects componentHandler
 	componentHandler unsafe.Pointer // IComponentHandler (one reference held)
-	editorView       unsafe.Pointer
-	presetName       string // preset last saved or loaded from the editor
+
+	editorSession
 }
 
 // components maps C handles to wrappers. Writes happen only on instance
@@ -44,7 +44,6 @@ type componentWrapper struct {
 var (
 	components   = make(map[uintptr]*componentWrapper)
 	componentsMu sync.RWMutex
-	nextID       uintptr
 )
 
 // Object kinds (vst3_component.h).
@@ -136,13 +135,18 @@ func recoverPanic(result *C.Steinberg_tresult) {
 }
 
 func registerComponent(wrapper *componentWrapper) uintptr {
+	wrapper.id = nextInstanceID()
 	componentsMu.Lock()
-	defer componentsMu.Unlock()
-	nextID++
-	wrapper.id = nextID
-	components[nextID] = wrapper
-	return nextID
+	components[wrapper.id] = wrapper
+	componentsMu.Unlock()
+	return wrapper.id
 }
+
+// instanceIDs numbers VST3 components and CLAP instances in one space, so an
+// editor view handle identifies either.
+var instanceIDs atomic.Uintptr
+
+func nextInstanceID() uintptr { return instanceIDs.Add(1) }
 
 func unregisterComponent(id uintptr) *componentWrapper {
 	componentsMu.Lock()
@@ -204,49 +208,6 @@ func (w *componentWrapper) notifyParamEndEdit(id uint32) {
 	if h := w.handler(); h != nil {
 		C.vst3go_handler_end_edit(h, C.Steinberg_Vst_ParamID(id))
 	}
-}
-
-func (w *componentWrapper) setEditorView(view unsafe.Pointer) {
-	w.handlerMu.Lock()
-	w.editorView = view
-	w.handlerMu.Unlock()
-}
-
-func (w *componentWrapper) clearEditorView(view unsafe.Pointer) {
-	w.handlerMu.Lock()
-	if w.editorView == view {
-		w.editorView = nil
-	}
-	w.handlerMu.Unlock()
-}
-
-// editorParamMessage tells the page that a parameter changed.
-type editorParamMessage struct {
-	Type       string  `json:"type"` // "param-change"
-	ID         uint32  `json:"id"`
-	Normalized float64 `json:"normalized"`
-	Plain      float64 `json:"plain"`
-}
-
-func (w *componentWrapper) notifyEditorParameterChanged(id uint32, normalized, plain float64) {
-	w.postToEditor(editorParamMessage{Type: "param-change", ID: id, Normalized: normalized, Plain: plain})
-}
-
-// postToEditor sends a JSON message to the open editor page, if any.
-func (w *componentWrapper) postToEditor(message any) {
-	w.handlerMu.RLock()
-	view := w.editorView
-	w.handlerMu.RUnlock()
-	if view == nil {
-		return
-	}
-	data, err := json.Marshal(message)
-	if err != nil {
-		return
-	}
-	cjson := C.CString(string(data))
-	defer C.free(unsafe.Pointer(cjson))
-	C.VST3GoEditorViewPost(view, cjson)
 }
 
 // Internal messages between the two sides of a distributed plugin.
@@ -677,7 +638,5 @@ func GoComponentGetState(componentID C.uintptr_t, state unsafe.Pointer) (result 
 // refreshEditorParameters pushes every parameter value to an open editor,
 // e.g. after a preset load.
 func (w *componentWrapper) refreshEditorParameters() {
-	for _, p := range w.component.params.All() {
-		w.notifyEditorParameterChanged(p.ID, p.GetNormalized(), p.GetPlain())
-	}
+	w.refreshEditor(w.component.params)
 }

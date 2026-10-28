@@ -9,6 +9,10 @@ extern "C" {
 
 typedef struct Steinberg_ViewRect Steinberg_ViewRect;
 
+// VST3GoEditorPlatformType is the IPlugView platform type of the editor
+// view on this platform (kPlatformTypeNSView, ...), NULL without one.
+extern const char* const VST3GoEditorPlatformType;
+
 void* VST3GoCreateEditorView(uintptr_t component);
 // VST3GoEditorViewPost delivers a UTF-8 JSON message to the page's
 // window.__vst3goReceive.

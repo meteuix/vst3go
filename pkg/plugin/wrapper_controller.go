@@ -162,44 +162,17 @@ func GoEditControllerSetParamNormalized(componentID C.uintptr_t, id C.uint32_t, 
 	return resultOK
 }
 
-// editorMessage is a message posted by the editor page.
-type editorMessage struct {
-	Type  string  `json:"type"`
-	ID    uint32  `json:"id"`
-	Value float64 `json:"value"`
-	Name  string  `json:"name"`
-}
-
 // GoEditorMessage is called by the platform editor views with each JSON
-// message the page posts: parameter gestures ("begin-edit", "param-change",
-// "end-edit") and preset browsing ("preset-list", "preset-save",
-// "preset-load").
+// message the page posts (editorSession.handleEditorMessage).
 //
 //export GoEditorMessage
 func GoEditorMessage(componentID C.uintptr_t, data *C.char, size C.int) {
 	defer recoverPanic(nil)
-	wrapper := getComponent(componentID)
-	if wrapper == nil || data == nil || size <= 0 {
+	c, session, host := editorTarget(componentID)
+	if c == nil || data == nil || size <= 0 {
 		return
 	}
-	wrapper.handleEditorMessage(C.GoBytes(unsafe.Pointer(data), size))
-}
-
-func (w *componentWrapper) handleEditorMessage(data []byte) {
-	var msg editorMessage
-	if json.Unmarshal(data, &msg) != nil {
-		return
-	}
-	switch msg.Type {
-	case "begin-edit":
-		_ = w.component.BeginEdit(msg.ID)
-	case "param-change":
-		_ = w.component.EditParameter(msg.ID, msg.Value)
-	case "end-edit":
-		_ = w.component.EndEdit(msg.ID)
-	case "preset-list", "preset-save", "preset-load":
-		w.handlePresetMessage(msg.Type, msg.Name)
-	}
+	session.handleEditorMessage(c, host, C.GoBytes(unsafe.Pointer(data), size))
 }
 
 //export GoEditControllerSetComponentHandler
@@ -231,19 +204,19 @@ func GoEditControllerCreateView(componentID C.uintptr_t, name *C.char) unsafe.Po
 
 //export GoEditControllerClearEditorView
 func GoEditControllerClearEditorView(componentID C.uintptr_t, view unsafe.Pointer) {
-	if wrapper := getComponent(componentID); wrapper != nil {
-		wrapper.clearEditorView(view)
-		wrapper.component.endGestures()
+	if c, session, _ := editorTarget(componentID); c != nil {
+		session.clearEditorView(view)
+		c.endGestures()
 	}
 }
 
 //export GoEditControllerGetEditorHTML
 func GoEditControllerGetEditorHTML(componentID C.uintptr_t) *C.char {
-	wrapper := getComponent(componentID)
-	if wrapper == nil {
+	c, _, _ := editorTarget(componentID)
+	if c == nil {
 		return nil
 	}
-	snapshot, err := wrapper.component.EditorSnapshot()
+	snapshot, err := c.EditorSnapshot()
 	if err != nil {
 		return nil
 	}

@@ -55,20 +55,20 @@ func TestEditGestures(t *testing.T) {
 func TestEditorMessages(t *testing.T) {
 	c := gestureComponent(t)
 	w := &componentWrapper{component: c}
-	w.handleEditorMessage([]byte(`{"type":"begin-edit","id":1}`))
+	w.handleEditorMessage(w.component, hostHandle{w}, []byte(`{"type":"begin-edit","id":1}`))
 	if !c.inGesture(1) {
 		t.Fatal("begin-edit must open a gesture")
 	}
-	w.handleEditorMessage([]byte(`{"type":"param-change","id":1,"value":0.25}`))
+	w.handleEditorMessage(w.component, hostHandle{w}, []byte(`{"type":"param-change","id":1,"value":0.25}`))
 	if got := c.params.Get(1).GetNormalized(); got != 0.25 {
 		t.Fatalf("param-change value = %v", got)
 	}
-	w.handleEditorMessage([]byte(`{"type":"end-edit","id":1}`))
+	w.handleEditorMessage(w.component, hostHandle{w}, []byte(`{"type":"end-edit","id":1}`))
 	if c.inGesture(1) {
 		t.Fatal("end-edit must close the gesture")
 	}
-	w.handleEditorMessage([]byte(`not json`))
-	w.handleEditorMessage([]byte(`{"type":"param-change","id":42,"value":1}`))
+	w.handleEditorMessage(w.component, hostHandle{w}, []byte(`not json`))
+	w.handleEditorMessage(w.component, hostHandle{w}, []byte(`{"type":"param-change","id":42,"value":1}`))
 }
 
 func TestForwardedEditOps(t *testing.T) {

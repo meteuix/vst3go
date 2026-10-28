@@ -274,6 +274,11 @@ GOFLAGS=-tags=webkitgtk scripts/build_vst3.sh ./myplugin MyPlugin
 It pumps GTK from the host's `IRunLoop` timer. Without the tag Linux builds
 have no editor view.
 
+The same views serve VST3 (`IPlugView`) and CLAP (the `gui` extension, see
+[CLAP](#clap)). `scripts/check_macos_editor.sh` and
+`scripts/docker_check_linux_editor.sh` open the gain editor in a real
+window in both formats and check the page <-> Go bridge both ways.
+
 ## Parameters and state
 
 - `param.Choice` creates list parameters (`IsList`, `N-1` steps); stepped
@@ -313,6 +318,11 @@ processors need no CLAP-specific code.
   parameter rescans, latency changes and restart requests. Track name and
   color reach `ChannelInfoProcessor`; program pitch names are CLAP note names.
 - Output constant flags come from `ctx.SetOutputSilenceFlags`.
+- The editor is the `gui` extension, embedded only, with the platform's
+  window API (`cocoa`, `win32`, `x11` in `webkitgtk` builds); builds without
+  an editor view do not offer it. On Linux the view's timer runs on the host's
+  `timer-support`. Host automation reaches the open page from the main thread
+  (`request_callback`), as do state loads, preset loads and program changes.
 
 `scripts/validate_clap.sh <clap-validator> [out]` builds every validation
 plugin as `.clap`, runs clap-validator and then
@@ -331,6 +341,6 @@ raw MIDI, MIDI effect output, programs, note names, latency and state.
   `IProgramListData` updates the processor side only.
 - Chord and scale events are input-only; the Linux editor needs an X11 host
   (no Wayland embedding exists in VST3).
-- CLAP instances have no editor yet, and CLAP hosts have no MIDI learn mode,
+- CLAP editors cannot float in a plugin-owned window, and CLAP hosts have no MIDI learn mode,
   keyswitch or note expression metadata queries; distributed plugins run as
   one CLAP object, so `Host.SendMessage` returns an error there.

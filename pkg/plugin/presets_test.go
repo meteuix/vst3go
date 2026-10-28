@@ -73,7 +73,7 @@ func TestEditorPresetMessages(t *testing.T) {
 	cutoff := w.component.params.Get(1)
 
 	cutoff.SetPlain(300)
-	w.handleEditorMessage([]byte(`{"type":"preset-save","name":"Bass/Deep"}`))
+	w.handleEditorMessage(w.component, hostHandle{w}, []byte(`{"type":"preset-save","name":"Bass/Deep"}`))
 	dir, _ := preset.UserDir("Acme", "Test Synth")
 	if _, err := os.Stat(filepath.Join(dir, "Bass", "Deep"+preset.Extension)); err != nil {
 		t.Fatalf("preset not saved in the user folder: %v", err)
@@ -83,16 +83,22 @@ func TestEditorPresetMessages(t *testing.T) {
 	}
 
 	cutoff.SetPlain(9000)
-	w.handleEditorMessage([]byte(`{"type":"preset-load","name":"Bass/Deep"}`))
+	w.handleEditorMessage(w.component, hostHandle{w}, []byte(`{"type":"preset-load","name":"Bass/Deep"}`))
 	if got := cutoff.GetPlain(); got < 299.9 || got > 300.1 {
 		t.Fatalf("cutoff after editor load = %v", got)
 	}
 
-	w.handleEditorMessage([]byte(`{"type":"preset-save","name":"../escape"}`))
+	w.handleEditorMessage(w.component, hostHandle{w}, []byte(`{"type":"preset-save","name":"../escape"}`))
 	if _, err := os.Stat(filepath.Join(filepath.Dir(dir), "escape"+preset.Extension)); err == nil {
 		t.Fatal("preset name escaped the preset folder")
 	}
 	if w.currentPreset() != "Bass/Deep" {
 		t.Fatal("a failed save must not change the current preset")
 	}
+}
+
+func (s *editorSession) currentPreset() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.presetName
 }

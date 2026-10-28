@@ -88,6 +88,7 @@ just clap ./path/to/plugin MyPlugin          # build a macOS/Linux .clap plugin
 just validate-clap /path/to/clap-validator   # clap-validator + clapcheck on internal/validation
 just docker-validate-linux /path/to/vst3sdk   # VST3 and CLAP validation on Linux in Docker
 just docker-check-linux-editor                # Linux WebKitGTK editor under Xvfb
+just check-macos-editor                       # macOS editor in a real window, VST3 and CLAP
 just docker-build-windows                     # mingw-w64 Windows cross build
 ```
 

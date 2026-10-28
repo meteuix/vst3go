@@ -362,6 +362,8 @@ static Steinberg_uint32 SMTG_STDMETHODCALLTYPE editorView_release(void* thisInte
     return 0;
 }
 
+const char* const VST3GoEditorPlatformType = "X11EmbedWindowID";
+
 void* VST3GoCreateEditorView(uintptr_t component) {
     VST3GoEditorView* view = (VST3GoEditorView*)calloc(1, sizeof(VST3GoEditorView));
     if (!view) {

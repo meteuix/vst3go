@@ -11,6 +11,8 @@ it and exchanges JSON messages with the plugin.
 3. The platform view loads the HTML: `editor_view_darwin.c` into `WKWebView` on macOS, `editor_view_windows.c` into WebView2 on Windows, and `editor_view_linux.c` into WebKitGTK on Linux (build tag `webkitgtk`, embedded into the host's X11 window).
 4. User input flows back as JSON messages; plugin-side changes reach the page as JSON messages too.
 
+The views are VST3 `IPlugView` objects. CLAP instances use them too: `pkg/plugin/clap_gui.c` drives a view from the CLAP `gui` extension, and `editor_session.go` holds the per-instance page state (view, messages, preset browser) for both formats.
+
 ## Messages
 
 Page to plugin: JSON objects posted to `window.webkit.messageHandlers.vst3go`

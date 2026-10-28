@@ -154,7 +154,8 @@ work, without taking on DSP (that stays in `synthkit`).
 - [x] Offline runner and `pkg/plugintest` for testing plugins without a host.
 - [x] CLAP plugin format from the same binary (`clap_entry`), validated with
       clap-validator and `hostcheck/clapcheck.c` on macOS and Linux.
-  - [ ] CLAP editor (`gui` extension) on the existing web views.
+  - [x] CLAP editor (`gui` extension) on the existing web views, checked in
+        real windows on macOS and Linux (`editorcheck_darwin.m`, `editorcheck.c`).
   - [ ] CLAP preset discovery for the user `.vstpreset` folder.
 - [ ] JavaScript SDK for web editors (typed parameter bindings, gestures).
 - [ ] Standalone application wrapper (audio/MIDI device I/O).

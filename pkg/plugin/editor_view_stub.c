@@ -3,6 +3,8 @@
 #include "editor_view.h"
 #include <stddef.h>
 
+const char* const VST3GoEditorPlatformType = NULL;
+
 void* VST3GoCreateEditorView(uintptr_t component) {
     (void)component;
     return NULL;

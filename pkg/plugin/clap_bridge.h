@@ -12,6 +12,8 @@
 
 #define VST3GO_CLAP_SYSEX_SCRATCH 65536
 
+struct VST3GoClapGui;
+
 typedef struct {
     clap_plugin_t plugin;
     const clap_host_t* host;
@@ -21,10 +23,17 @@ typedef struct {
     const clap_host_state_t* hostState;
     const clap_host_track_info_t* hostTrackInfo;
     const clap_host_note_name_t* hostNoteName;
+    const clap_host_gui_t* hostGui;
+    const clap_host_timer_support_t* hostTimer;
+    struct VST3GoClapGui* gui; // open editor (clap_gui.c)
     uintptr_t id;
     uint32_t sysexUsed;
     uint8_t sysex[VST3GO_CLAP_SYSEX_SCRATCH];
 } VST3GoClapPlugin;
+
+// gui and timer-support extensions (clap_gui.c); NULL without a platform editor.
+const void* vst3go_clap_gui_extension(const char* id);
+void vst3go_clap_gui_destroy(VST3GoClapPlugin* p);
 
 // Host extension calls (no-ops when the host lacks the extension).
 void vst3go_clap_request_flush(VST3GoClapPlugin* p);

@@ -316,6 +316,8 @@ static EditorMessageHandler* editorViewCreateMessageHandler(VST3GoEditorView* vi
     return handler;
 }
 
+const char* const VST3GoEditorPlatformType = "HWND";
+
 void* VST3GoCreateEditorView(uintptr_t component) {
     VST3GoEditorView* view = (VST3GoEditorView*)calloc(1, sizeof(VST3GoEditorView));
     if (!view) {

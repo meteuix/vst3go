@@ -130,6 +130,8 @@ static void editorViewSetFrameFromParent(VST3GoEditorView* view) {
     view->webView.frame = view->containerView.bounds;
 }
 
+const char* const VST3GoEditorPlatformType = "NSView";
+
 void* VST3GoCreateEditorView(uintptr_t component) {
     @autoreleasepool {
         VST3GoEditorView* view = (VST3GoEditorView*)calloc(1, sizeof(VST3GoEditorView));

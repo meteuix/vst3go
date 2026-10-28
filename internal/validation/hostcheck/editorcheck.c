@@ -3,10 +3,13 @@
 // does: IPlugFrame with an IRunLoop whose timers the host drives. It checks
 // that the view embeds into the host window, that keyboard input in the page
 // changes a parameter through the JS -> Go bridge (XTest), that it survives
-// host parameter updates and resizing, and that it detaches cleanly. Run it under an X server (e.g. xvfb-run).
+// host parameter updates and resizing, and that it detaches cleanly. With
+// --clap it does the same through the CLAP gui and timer-support extensions
+// of the plugin's .clap binary. Run it under an X server (e.g. xvfb-run).
 //
-// usage: editorcheck <plugin-binary>
+// usage: editorcheck [--clap] <plugin-binary>
 #include "vst3/vst3_c_api.h"
+#include "clap/clap.h"
 #include <X11/Xlib.h>
 #include <X11/extensions/XTest.h>
 #include <X11/keysym.h>
@@ -81,15 +84,8 @@ static unsigned int child_count(Display* display, Window window) {
     return count;
 }
 
-int main(int argc, char** argv) {
-    CHECK(argc == 2, "usage: editorcheck <plugin-binary>");
-    Display* display = XOpenDisplay(NULL);
-    CHECK(display, "no X display (run under xvfb-run)");
-    Window parent = XCreateSimpleWindow(display, DefaultRootWindow(display), 0, 0, 900, 640, 0, 0, 0);
-    XMapWindow(display, parent);
-    XSync(display, False);
-
-    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
+static int check_vst3(Display* display, Window parent, const char* path) {
+    void* lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     CHECK(lib, "dlopen: %s", dlerror());
     typedef struct Steinberg_IPluginFactory* (*GetFactory)(void);
     struct Steinberg_IPluginFactory* f = ((GetFactory)dlsym(lib, "GetPluginFactory"))();
@@ -157,4 +153,193 @@ int main(int argc, char** argv) {
     view->lpVtbl->release(view);
     printf("editor ok\n");
     return 0;
+}
+
+// ---- CLAP host: gui, timer-support and params ----
+#define MAX_TIMERS 8
+static struct {
+    struct { clap_id id; bool used; } timers[MAX_TIMERS];
+    int timerRegistrations, resizeRequests, callbacks;
+} clapHost;
+
+static bool h_register_timer(const clap_host_t* h, uint32_t ms, clap_id* id) {
+    (void)h; (void)ms;
+    for (int i = 0; i < MAX_TIMERS; i++) {
+        if (!clapHost.timers[i].used) {
+            clapHost.timers[i].used = true;
+            clapHost.timers[i].id = *id = (clap_id)(100 + clapHost.timerRegistrations++);
+            return true;
+        }
+    }
+    return false;
+}
+static bool h_unregister_timer(const clap_host_t* h, clap_id id) {
+    (void)h;
+    for (int i = 0; i < MAX_TIMERS; i++) {
+        if (clapHost.timers[i].used && clapHost.timers[i].id == id) { clapHost.timers[i].used = false; return true; }
+    }
+    return false;
+}
+static int active_timers(void) {
+    int n = 0;
+    for (int i = 0; i < MAX_TIMERS; i++) n += clapHost.timers[i].used;
+    return n;
+}
+static const clap_host_timer_support_t hostTimer = { h_register_timer, h_unregister_timer };
+static void h_resize_hints_changed(const clap_host_t* h) { (void)h; }
+static bool h_request_resize(const clap_host_t* h, uint32_t w, uint32_t hh) { (void)h; (void)w; (void)hh; clapHost.resizeRequests++; return true; }
+static bool h_request_show(const clap_host_t* h) { (void)h; return true; }
+static bool h_request_hide(const clap_host_t* h) { (void)h; return true; }
+static void h_closed(const clap_host_t* h, bool destroyed) { (void)h; (void)destroyed; }
+static const clap_host_gui_t hostGui = { h_resize_hints_changed, h_request_resize, h_request_show, h_request_hide, h_closed };
+static void h_rescan(const clap_host_t* h, clap_param_rescan_flags f) { (void)h; (void)f; }
+static void h_clear(const clap_host_t* h, clap_id id, clap_param_clear_flags f) { (void)h; (void)id; (void)f; }
+static void h_request_flush(const clap_host_t* h) { (void)h; }
+static const clap_host_params_t hostParams = { h_rescan, h_clear, h_request_flush };
+static const void* h_get_extension(const clap_host_t* h, const char* id) {
+    (void)h;
+    if (!strcmp(id, CLAP_EXT_GUI)) return &hostGui;
+    if (!strcmp(id, CLAP_EXT_TIMER_SUPPORT)) return &hostTimer;
+    if (!strcmp(id, CLAP_EXT_PARAMS)) return &hostParams;
+    return NULL;
+}
+static void h_request_restart(const clap_host_t* h) { (void)h; }
+static void h_request_process(const clap_host_t* h) { (void)h; }
+static void h_request_callback(const clap_host_t* h) { (void)h; clapHost.callbacks++; }
+static const clap_host_t host = {
+    CLAP_VERSION_INIT, NULL, "editorcheck", "vst3go", "", "1.0",
+    h_get_extension, h_request_restart, h_request_process, h_request_callback,
+};
+
+typedef struct { clap_input_events_t list; clap_event_param_value_t events[1]; uint32_t count; } InEvents;
+typedef struct { clap_output_events_t list; uint32_t values, gestures; } OutEvents;
+static uint32_t in_size(const clap_input_events_t* l) { return ((const InEvents*)l->ctx)->count; }
+static const clap_event_header_t* in_get(const clap_input_events_t* l, uint32_t i) { return &((const InEvents*)l->ctx)->events[i].header; }
+static bool out_push(const clap_output_events_t* l, const clap_event_header_t* ev) {
+    OutEvents* out = (OutEvents*)l->ctx;
+    if (ev->type == CLAP_EVENT_PARAM_VALUE) out->values++;
+    if (ev->type == CLAP_EVENT_PARAM_GESTURE_BEGIN || ev->type == CLAP_EVENT_PARAM_GESTURE_END) out->gestures++;
+    return true;
+}
+
+// clap_run drives the plugin's timers and main-thread callbacks like a host
+// event loop would.
+static void clap_run(Display* display, const clap_plugin_t* plugin, const clap_plugin_timer_support_t* timer, int ms) {
+    struct timespec tick = { 0, 16 * 1000 * 1000 };
+    for (int elapsed = 0; elapsed < ms; elapsed += 16) {
+        for (int i = 0; i < MAX_TIMERS; i++) {
+            if (clapHost.timers[i].used) timer->on_timer(plugin, clapHost.timers[i].id);
+        }
+        if (clapHost.callbacks > 0) { clapHost.callbacks = 0; plugin->on_main_thread(plugin); }
+        while (XPending(display)) { XEvent e; XNextEvent(display, &e); }
+        nanosleep(&tick, NULL);
+    }
+}
+
+static void clap_flush(const clap_plugin_t* plugin, const clap_plugin_params_t* params, InEvents* in, OutEvents* out) {
+    in->list.ctx = in; in->list.size = in_size; in->list.get = in_get;
+    memset(out, 0, sizeof(*out));
+    out->list.ctx = out; out->list.try_push = out_push;
+    params->flush(plugin, &in->list, &out->list);
+}
+
+static int check_clap(Display* display, Window parent, const char* path) {
+    void* lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    CHECK(lib, "dlopen: %s", dlerror());
+    const clap_plugin_entry_t* entry = (const clap_plugin_entry_t*)dlsym(lib, "clap_entry");
+    CHECK(entry && entry->init(path), "clap_entry");
+    const clap_plugin_factory_t* factory = (const clap_plugin_factory_t*)entry->get_factory(CLAP_PLUGIN_FACTORY_ID);
+    const clap_plugin_descriptor_t* desc = factory->get_plugin_descriptor(factory, 0);
+    const clap_plugin_t* plugin = factory->create_plugin(factory, &host, desc->id);
+    CHECK(plugin && plugin->init(plugin), "create and init");
+    const clap_plugin_gui_t* gui = (const clap_plugin_gui_t*)plugin->get_extension(plugin, CLAP_EXT_GUI);
+    const clap_plugin_timer_support_t* timer = (const clap_plugin_timer_support_t*)plugin->get_extension(plugin, CLAP_EXT_TIMER_SUPPORT);
+    const clap_plugin_params_t* params = (const clap_plugin_params_t*)plugin->get_extension(plugin, CLAP_EXT_PARAMS);
+    CHECK(gui && timer && params, "gui, timer-support and params extensions");
+
+    const char* api = NULL;
+    bool floating = true;
+    CHECK(gui->get_preferred_api(plugin, &api, &floating) && api && !strcmp(api, CLAP_WINDOW_API_X11) && !floating, "preferred api x11 embedded");
+    CHECK(gui->is_api_supported(plugin, CLAP_WINDOW_API_X11, false), "x11 supported");
+    CHECK(!gui->is_api_supported(plugin, CLAP_WINDOW_API_X11, true), "floating unsupported");
+    CHECK(!gui->is_api_supported(plugin, CLAP_WINDOW_API_WIN32, false), "win32 unsupported");
+    CHECK(gui->create(plugin, CLAP_WINDOW_API_X11, false), "gui create");
+    CHECK(!gui->create(plugin, CLAP_WINDOW_API_X11, false), "second gui create refused");
+    uint32_t width = 0, height = 0;
+    CHECK(gui->get_size(plugin, &width, &height) && width > 0 && height > 0, "get_size %ux%u", width, height);
+    gui->set_scale(plugin, 1.0);
+    clap_window_t window = { CLAP_WINDOW_API_X11, { .x11 = parent } };
+    CHECK(gui->set_parent(plugin, &window), "set_parent");
+    CHECK(gui->show(plugin), "show");
+    CHECK(active_timers() == 1, "editor registers a host timer (%d)", active_timers());
+    clap_run(display, plugin, timer, 1500);
+    CHECK(child_count(display, parent) >= 1, "editor window embedded into the host window");
+
+    // Keyboard input in the page reaches the parameters, and the edit goes
+    // out to the host with its gestures on the next flush.
+    uint32_t count = params->count(plugin);
+    CHECK(count > 0 && count <= 64, "parameter count %u", count);
+    double before[64];
+    clap_id ids[64];
+    for (uint32_t i = 0; i < count; i++) {
+        clap_param_info_t info;
+        CHECK(params->get_info(plugin, i, &info), "param info %u", i);
+        ids[i] = info.id;
+        CHECK(params->get_value(plugin, info.id, &before[i]), "param value %u", i);
+    }
+    XSetInputFocus(display, first_child(display, parent), RevertToParent, CurrentTime);
+    clap_run(display, plugin, timer, 100);
+    int changed = -1;
+    for (int tab = 0; tab < 8 && changed < 0; tab++) {
+        press(display, XK_Tab);
+        clap_run(display, plugin, timer, 50);
+        press(display, XK_End);
+        clap_run(display, plugin, timer, 150);
+        for (uint32_t i = 0; i < count && changed < 0; i++) {
+            double v;
+            if (params->get_value(plugin, ids[i], &v) && v != before[i]) changed = (int)i;
+        }
+    }
+    CHECK(changed >= 0, "editor input reached no parameter (JS -> Go bridge)");
+    InEvents in = { .count = 0 };
+    OutEvents out;
+    clap_flush(plugin, params, &in, &out);
+    CHECK(out.values >= 1 && out.gestures >= 2, "editor edit sent to the host (%u values, %u gestures)", out.values, out.gestures);
+    printf("clap editor input changed param %u\n", (unsigned)ids[changed]);
+
+    // Host automation is shown from the main thread, then resizing.
+    for (int i = 0; i < 10; i++) {
+        memset(&in.events[0], 0, sizeof(in.events[0]));
+        in.events[0].header = (clap_event_header_t){ sizeof(clap_event_param_value_t), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, 0 };
+        in.events[0].param_id = ids[0];
+        in.events[0].note_id = -1; in.events[0].port_index = -1; in.events[0].channel = -1; in.events[0].key = -1;
+        in.events[0].value = before[0];
+        in.count = 1;
+        clap_flush(plugin, params, &in, &out);
+        CHECK(clapHost.callbacks >= 1, "host automation requests an editor refresh");
+        clap_run(display, plugin, timer, 32);
+    }
+    CHECK(gui->set_size(plugin, 640, 480), "set_size");
+    clap_run(display, plugin, timer, 200);
+    CHECK(gui->hide(plugin), "hide");
+
+    gui->destroy(plugin);
+    CHECK(active_timers() == 0, "timer unregistered on destroy");
+    XSync(display, False);
+    CHECK(child_count(display, parent) == 0, "editor window destroyed on destroy");
+    plugin->destroy(plugin);
+    entry->deinit();
+    printf("clap editor ok\n");
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    bool clap = argc == 3 && !strcmp(argv[1], "--clap");
+    CHECK(argc == 2 || clap, "usage: editorcheck [--clap] <plugin-binary>");
+    Display* display = XOpenDisplay(NULL);
+    CHECK(display, "no X display (run under xvfb-run)");
+    Window parent = XCreateSimpleWindow(display, DefaultRootWindow(display), 0, 0, 900, 640, 0, 0, 0);
+    XMapWindow(display, parent);
+    XSync(display, False);
+    return clap ? check_clap(display, parent, argv[2]) : check_vst3(display, parent, argv[1]);
 }

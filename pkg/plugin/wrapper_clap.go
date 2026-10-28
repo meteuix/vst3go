@@ -2,6 +2,7 @@ package plugin
 
 // #cgo CFLAGS: -I../../include
 // #include "clap_bridge.h"
+// #include "editor_view.h"
 // #include <stdlib.h>
 import "C"
 
@@ -39,12 +40,15 @@ type clapInstance struct {
 	notes          clapNotes // audio thread
 	seenProgram    int32     // audio thread: last program applied by process
 	edits          chan clapEdit
+	editorPending  atomic.Bool // host automation changed values the editor shows
+	hostChanged    bool        // audio thread: the block had host parameter changes
+
+	editorSession
 }
 
 var (
 	clapInstances   = make(map[uintptr]*clapInstance)
 	clapInstancesMu sync.RWMutex
-	clapNextID      uintptr
 
 	clapDescriptorsOnce sync.Once
 	clapDescriptors     []*C.clap_plugin_descriptor_t
@@ -140,9 +144,8 @@ func GoClapCreate(index C.uint32_t, plugin *C.VST3GoClapPlugin) (id C.uintptr_t)
 		inst.seenProgram = component.programs.audioProgram.Load()
 	}
 	component.wrapper = inst
+	inst.id = nextInstanceID()
 	clapInstancesMu.Lock()
-	clapNextID++
-	inst.id = clapNextID
 	clapInstances[inst.id] = inst
 	clapInstancesMu.Unlock()
 	return C.uintptr_t(inst.id)
@@ -248,8 +251,15 @@ func GoClapReset(id C.uintptr_t) {
 //export GoClapOnMainThread
 func GoClapOnMainThread(id C.uintptr_t) {
 	inst := getClap(id)
-	if inst != nil && inst.rescanPending.Swap(false) {
+	if inst == nil {
+		return
+	}
+	if inst.rescanPending.Swap(false) {
 		inst.restart(RestartParamValuesChanged)
+		inst.editorPending.Store(true)
+	}
+	if inst.editorPending.Swap(false) {
+		inst.refreshEditorParameters()
 	}
 }
 
@@ -289,9 +299,14 @@ func GoClapProcess(id C.uintptr_t, proc *C.clap_process_t) C.clap_process_status
 
 	out := proc.out_events
 	inst.drainEdits(out)
+	inst.hostChanged = false
 	inst.collectEvents(ctx, proc.in_events, true)
 
 	ctx.Dispatch(c.processor.ProcessAudio)
+	if inst.hostChanged && inst.open.Load() && !inst.editorPending.Swap(true) {
+		// Show host automation in the editor, from the main thread.
+		C.vst3go_clap_request_callback(inst.plugin)
+	}
 
 	for b := range outputs {
 		outputs[b].constant_mask = C.uint64_t(ctx.OutputSilenceFlags(b))
@@ -470,6 +485,7 @@ func (inst *clapInstance) paramValue(ctx *process.Context, id uint32, plain floa
 		return
 	}
 	normalized := clapNormalized(p, plain)
+	inst.hostChanged = true
 	if processing {
 		c.queueParameterChange(ctx, id, normalized, offset)
 		return
@@ -645,10 +661,25 @@ func (inst *clapInstance) notifyParamEndEdit(id uint32) {
 	}
 }
 
-// CLAP instances have no editor (yet): there is nothing to update.
-func (inst *clapInstance) notifyEditorParameterChanged(uint32, float64, float64) {}
+func (inst *clapInstance) refreshEditorParameters() {
+	inst.refreshEditor(inst.c.params)
+}
 
-func (inst *clapInstance) refreshEditorParameters() {}
+// GoClapGuiCreateView creates the platform editor view of an instance for
+// the CLAP gui extension (clap_gui.c).
+//
+//export GoClapGuiCreateView
+func GoClapGuiCreateView(id C.uintptr_t) unsafe.Pointer {
+	inst := getClap(id)
+	if inst == nil {
+		return nil
+	}
+	view := C.VST3GoCreateEditorView(id)
+	if view != nil {
+		inst.setEditorView(view)
+	}
+	return view
+}
 
 // restart maps VST3 restart flags to CLAP host notifications. Main thread.
 func (inst *clapInstance) restart(flags RestartFlags) {
@@ -708,6 +739,7 @@ func (h clapHost) LoadPreset(path string) error {
 		return err
 	}
 	h.inst.restart(RestartParamValuesChanged)
+	h.inst.refreshEditorParameters()
 	C.vst3go_clap_state_mark_dirty(h.inst.plugin)
 	return nil
 }
@@ -785,10 +817,14 @@ func GoClapParamsTextToValue(id C.uintptr_t, paramID C.clap_id, text *C.char, va
 //export GoClapParamsFlush
 func GoClapParamsFlush(id C.uintptr_t, in *C.clap_input_events_t, out *C.clap_output_events_t) {
 	inst := getClap(id)
+	inst.hostChanged = false
 	if in != nil {
 		inst.collectEvents(nil, in, false)
 	}
 	inst.drainEdits(out)
+	if inst.hostChanged && inst.open.Load() && !inst.editorPending.Swap(true) {
+		C.vst3go_clap_request_callback(inst.plugin)
+	}
 }
 
 //export GoClapStateSave
@@ -833,6 +869,7 @@ func GoClapStateLoad(id C.uintptr_t, stream *C.clap_istream_t) (ok C.bool) {
 		return false
 	}
 	inst.restart(RestartParamValuesChanged)
+	inst.refreshEditorParameters()
 	return true
 }
 

@@ -111,12 +111,15 @@ static bool plugin_init(const clap_plugin_t* plugin) {
         p->hostState = (const clap_host_state_t*)host->get_extension(host, CLAP_EXT_STATE);
         p->hostTrackInfo = (const clap_host_track_info_t*)host->get_extension(host, CLAP_EXT_TRACK_INFO);
         p->hostNoteName = (const clap_host_note_name_t*)host->get_extension(host, CLAP_EXT_NOTE_NAME);
+        p->hostGui = (const clap_host_gui_t*)host->get_extension(host, CLAP_EXT_GUI);
+        p->hostTimer = (const clap_host_timer_support_t*)host->get_extension(host, CLAP_EXT_TIMER_SUPPORT);
     }
     return GoClapInit(p->id);
 }
 
 static void plugin_destroy(const clap_plugin_t* plugin) {
     VST3GoClapPlugin* p = (VST3GoClapPlugin*)plugin->plugin_data;
+    vst3go_clap_gui_destroy(p);
     GoClapDestroy(p->id);
     free(p);
 }
@@ -147,7 +150,7 @@ static const void* plugin_get_extension(const clap_plugin_t* plugin, const char*
     if (!strcmp(id, CLAP_EXT_RENDER)) return &extRender;
     if (!strcmp(id, CLAP_EXT_TRACK_INFO)) return &extTrackInfo;
     if (!strcmp(id, CLAP_EXT_NOTE_NAME)) return &extNoteName;
-    return NULL;
+    return vst3go_clap_gui_extension(id);
 }
 
 static void plugin_on_main_thread(const clap_plugin_t* plugin) { GoClapOnMainThread(idOf(plugin)); }

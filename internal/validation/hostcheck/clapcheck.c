@@ -196,6 +196,26 @@ static void test_gain(const char* path) {
     double parsed;
     CHECK(p.params->text_to_value(p.plugin, info.id, text, &parsed) && fabs(parsed + 6) < 0.01, "text %s parses to %g", text, parsed);
 
+    // The editor is offered for the platform's window API only (on Linux
+    // only in a webkitgtk build); editorcheck opens it.
+    const clap_plugin_gui_t* gui = (const clap_plugin_gui_t*)p.plugin->get_extension(p.plugin, CLAP_EXT_GUI);
+#if defined(__APPLE__)
+    CHECK(gui, "gui extension");
+    const char* platformAPI = CLAP_WINDOW_API_COCOA;
+#else
+    const char* platformAPI = CLAP_WINDOW_API_X11;
+#endif
+    if (gui) {
+        const char* api = NULL;
+        bool floating = true;
+        CHECK(gui->get_preferred_api(p.plugin, &api, &floating) && api && !strcmp(api, platformAPI) && !floating, "preferred gui api");
+        CHECK(gui->is_api_supported(p.plugin, platformAPI, false) && !gui->is_api_supported(p.plugin, platformAPI, true), "embedded gui only");
+        CHECK(!gui->is_api_supported(p.plugin, CLAP_WINDOW_API_WIN32, false) || !strcmp(platformAPI, CLAP_WINDOW_API_WIN32), "foreign gui api");
+        CHECK(p.plugin->get_extension(p.plugin, CLAP_EXT_TIMER_SUPPORT), "timer-support with the gui");
+    } else {
+        CHECK(!p.plugin->get_extension(p.plugin, CLAP_EXT_TIMER_SUPPORT), "timer-support without a gui");
+    }
+
     clap_audio_port_info_t port;
     CHECK(p.audio->count(p.plugin, true) == 1 && p.audio->get(p.plugin, 0, false, &port), "audio ports");
     CHECK(port.channel_count == 2 && port.flags & CLAP_AUDIO_PORT_IS_MAIN && port.flags & CLAP_AUDIO_PORT_SUPPORTS_64BITS && !strcmp(port.port_type, CLAP_PORT_STEREO), "main stereo 64-bit port");
