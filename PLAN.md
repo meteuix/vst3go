@@ -156,7 +156,8 @@ work, without taking on DSP (that stays in `synthkit`).
       clap-validator and `hostcheck/clapcheck.c` on macOS and Linux.
   - [x] CLAP editor (`gui` extension) on the existing web views, checked in
         real windows on macOS and Linux (`editorcheck_darwin.m`, `editorcheck.c`).
-  - [ ] CLAP preset discovery for the user `.vstpreset` folder.
+  - [x] CLAP preset discovery for the user `.vstpreset` folder, with
+        `preset-load` (clap-validator `preset-discovery-*`, clapcheck).
 - [ ] JavaScript SDK for web editors (typed parameter bindings, gestures).
 - [ ] Standalone application wrapper (audio/MIDI device I/O).
 - [ ] AUv2 wrapper, validated with `auval`.

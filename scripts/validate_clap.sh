@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Builds every plugin under internal/validation as a CLAP plugin, runs
-# clap-validator (https://github.com/free-audio/clap-validator) on it, then
-# checks its processing behavior with internal/validation/hostcheck/clapcheck.c.
+# Builds every plugin under internal/validation as a CLAP plugin, checks its
+# processing behavior and preset discovery with
+# internal/validation/hostcheck/clapcheck.c, then runs clap-validator
+# (https://github.com/free-audio/clap-validator) on it. Both run with HOME
+# set to a scratch folder: clapcheck writes a preset into the plugin's user
+# preset folder there, which clap-validator then crawls and loads.
 #
 # usage: scripts/validate_clap.sh <path-to-clap-validator> [output-dir]
 set -euo pipefail
@@ -27,18 +30,22 @@ case "$(go env GOOS)" in
   *) echo "unsupported host" >&2; exit 1 ;;
 esac
 
+scratch_home="${output_root}/clapcheck-home"
+rm -rf "$scratch_home"
+mkdir -p "$scratch_home"
+
 failed=0
 for main in "${repo_root}"/internal/validation/*/main.go; do
   name="$(basename "$(dirname "$main")")"
   bash "${script_dir}/build_clap.sh" "internal/validation/${name}" "$name" "$output_root" >/dev/null
   log="${output_root}/${name}.log"
-  if ! "$validator" validate "${output_root}/${name}.clap" >"$log" 2>&1; then
-    echo "FAIL ${name}: clap-validator, see ${log}"
+  if ! HOME="$scratch_home" "$clapcheck" "$name" "$(binary_path "$name")" >"$log" 2>&1; then
+    echo "FAIL ${name}: clapcheck, see ${log}"
     failed=1
     continue
   fi
-  if ! "$clapcheck" "$name" "$(binary_path "$name")" >>"$log" 2>&1; then
-    echo "FAIL ${name}: clapcheck, see ${log}"
+  if ! HOME="$scratch_home" "$validator" validate "${output_root}/${name}.clap" >>"$log" 2>&1; then
+    echo "FAIL ${name}: clap-validator, see ${log}"
     failed=1
     continue
   fi

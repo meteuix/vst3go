@@ -323,12 +323,23 @@ processors need no CLAP-specific code.
   an editor view do not offer it. On Linux the view's timer runs on the host's
   `timer-support`. Host automation reaches the open page from the main thread
   (`request_callback`), as do state loads, preset loads and program changes.
+- Presets: the preset discovery factory has one provider per plugin that
+  declares the `.vstpreset` file type and, once it exists, the plugin's user
+  preset folder (the one the editor's preset browser and VST3 hosts use).
+  Presets are reported with their CLAP and VST3 plugin IDs, modification
+  time, musical instrument/style/character tags as features and the other
+  meta info attributes as extra info. The `preset-load` extension loads a
+  file and reports `loaded` or `on_error` to the host; a loaded preset of
+  the user folder becomes the editor's current preset.
 
 `scripts/validate_clap.sh <clap-validator> [out]` builds every validation
 plugin as `.clap`, runs clap-validator and then
 `internal/validation/hostcheck/clapcheck.c`, which checks sample-accurate
 automation, 64-bit audio, notes without IDs, wildcards, note expressions,
-raw MIDI, MIDI effect output, programs, note names, latency and state.
+raw MIDI, MIDI effect output, programs, note names, latency, state and
+preset discovery. Both run with `HOME` in a scratch folder: clapcheck saves
+a preset into the user preset folder there, which clap-validator's
+`preset-discovery-*` tests then crawl and load.
 
 ## Known limits
 

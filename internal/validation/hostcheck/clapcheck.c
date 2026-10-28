@@ -1,21 +1,27 @@
 // clapcheck loads a validation plugin through its CLAP entry point and
 // checks behavior clap-validator does not: sample-accurate automation in the
 // plain parameter domain, note and note-expression routing, raw MIDI, output
-// events, programs, latency, 64-bit audio and state with host rescans.
-// scripts/validate_clap.sh builds and runs it.
+// events, programs, latency, 64-bit audio and state with host rescans, and
+// preset discovery of the user preset folder with preset-load. The preset
+// check writes into $HOME, which scripts/validate_clap.sh points at a scratch
+// folder (clap-validator then crawls and loads the same presets).
 #include "clap/clap.h"
+#include "vst3/vst3_c_api.h"
 #include <dlfcn.h>
+#include <errno.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define CHECK(cond, ...) do { if (!(cond)) { fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); exit(1); } } while (0)
 #define N 128
 
 // ---- host ----
 static struct {
-    int rescanValues, flushRequests, callbacks, restarts, latencyChanged, dirty, noteNames;
+    int rescanValues, flushRequests, callbacks, restarts, latencyChanged, dirty, noteNames, presetsLoaded, presetErrors;
 } hostLog;
 
 static void params_rescan(const clap_host_t* h, clap_param_rescan_flags flags) { (void)h; if (flags & CLAP_PARAM_RESCAN_VALUES) hostLog.rescanValues++; }
@@ -28,6 +34,11 @@ static void state_mark_dirty(const clap_host_t* h) { (void)h; hostLog.dirty++; }
 static const clap_host_state_t hostState = { state_mark_dirty };
 static void note_name_changed(const clap_host_t* h) { (void)h; hostLog.noteNames++; }
 static const clap_host_note_name_t hostNoteName = { note_name_changed };
+static void preset_on_error(const clap_host_t* h, uint32_t kind, const char* location, const char* key, int32_t os, const char* msg) {
+    (void)h; (void)kind; (void)location; (void)key; (void)os; CHECK(msg && msg[0], "preset error message"); hostLog.presetErrors++;
+}
+static void preset_loaded(const clap_host_t* h, uint32_t kind, const char* location, const char* key) { (void)h; (void)kind; (void)location; (void)key; hostLog.presetsLoaded++; }
+static const clap_host_preset_load_t hostPresetLoad = { preset_on_error, preset_loaded };
 
 static const void* host_get_extension(const clap_host_t* h, const char* id) {
     (void)h;
@@ -35,6 +46,7 @@ static const void* host_get_extension(const clap_host_t* h, const char* id) {
     if (!strcmp(id, CLAP_EXT_LATENCY)) return &hostLatency;
     if (!strcmp(id, CLAP_EXT_STATE)) return &hostState;
     if (!strcmp(id, CLAP_EXT_NOTE_NAME)) return &hostNoteName;
+    if (!strcmp(id, CLAP_EXT_PRESET_LOAD)) return &hostPresetLoad;
     return NULL;
 }
 static void host_request_restart(const clap_host_t* h) { (void)h; hostLog.restarts++; }
@@ -395,6 +407,177 @@ static void test_ducker(const char* path) {
     printf("ducker ok\n");
 }
 
+// ---- preset discovery ----
+typedef struct {
+    clap_preset_discovery_indexer_t indexer;
+    int filetypes, locations;
+    char extension[32], location[1024];
+    uint32_t locationFlags;
+} Indexer;
+static bool ix_filetype(const clap_preset_discovery_indexer_t* i, const clap_preset_discovery_filetype_t* f) {
+    Indexer* ix = (Indexer*)i->indexer_data;
+    ix->filetypes++;
+    snprintf(ix->extension, sizeof(ix->extension), "%s", f->file_extension);
+    return true;
+}
+static bool ix_location(const clap_preset_discovery_indexer_t* i, const clap_preset_discovery_location_t* l) {
+    Indexer* ix = (Indexer*)i->indexer_data;
+    CHECK(l->kind == CLAP_PRESET_DISCOVERY_LOCATION_FILE && l->name && l->location, "file location");
+    ix->locations++;
+    ix->locationFlags = l->flags;
+    snprintf(ix->location, sizeof(ix->location), "%s", l->location);
+    return true;
+}
+static bool ix_soundpack(const clap_preset_discovery_indexer_t* i, const clap_preset_discovery_soundpack_t* s) { (void)i; (void)s; return true; }
+static const void* ix_extension(const clap_preset_discovery_indexer_t* i, const char* id) { (void)i; (void)id; return NULL; }
+
+typedef struct {
+    clap_preset_discovery_metadata_receiver_t receiver;
+    int presets, errors, clapIDs, vst3IDs;
+    uint32_t flags;
+    char name[256], clapID[256];
+} Receiver;
+static void rc_error(const clap_preset_discovery_metadata_receiver_t* r, int32_t os, const char* msg) { (void)os; (void)msg; ((Receiver*)r->receiver_data)->errors++; }
+static bool rc_begin(const clap_preset_discovery_metadata_receiver_t* r, const char* name, const char* key) {
+    Receiver* rc = (Receiver*)r->receiver_data;
+    CHECK(key == NULL, "single-preset files have no load key");
+    rc->presets++;
+    snprintf(rc->name, sizeof(rc->name), "%s", name ? name : "");
+    return true;
+}
+static void rc_plugin_id(const clap_preset_discovery_metadata_receiver_t* r, const clap_universal_plugin_id_t* id) {
+    Receiver* rc = (Receiver*)r->receiver_data;
+    if (!strcmp(id->abi, "clap")) { rc->clapIDs++; snprintf(rc->clapID, sizeof(rc->clapID), "%s", id->id); }
+    if (!strcmp(id->abi, "vst3")) { rc->vst3IDs++; CHECK(strlen(id->id) == 36, "vst3 uuid %s", id->id); }
+}
+static void rc_soundpack(const clap_preset_discovery_metadata_receiver_t* r, const char* id) { (void)r; (void)id; }
+static void rc_flags(const clap_preset_discovery_metadata_receiver_t* r, uint32_t flags) { ((Receiver*)r->receiver_data)->flags = flags; }
+static void rc_creator(const clap_preset_discovery_metadata_receiver_t* r, const char* c) { (void)r; (void)c; }
+static void rc_description(const clap_preset_discovery_metadata_receiver_t* r, const char* d) { (void)r; (void)d; }
+static void rc_timestamps(const clap_preset_discovery_metadata_receiver_t* r, clap_timestamp c, clap_timestamp m) { (void)r; (void)c; CHECK(m > 0, "modification time"); }
+static void rc_feature(const clap_preset_discovery_metadata_receiver_t* r, const char* f) { (void)r; (void)f; }
+static void rc_extra(const clap_preset_discovery_metadata_receiver_t* r, const char* k, const char* v) { (void)r; CHECK(k && v, "extra info"); }
+
+static Indexer scan(const clap_preset_discovery_factory_t* factory, const char* providerID, const clap_preset_discovery_provider_t** out) {
+    Indexer ix;
+    memset(&ix, 0, sizeof(ix));
+    ix.indexer = (clap_preset_discovery_indexer_t){ CLAP_VERSION_INIT, "clapcheck", "vst3go", "", "1.0", &ix, ix_filetype, ix_location, ix_soundpack, ix_extension };
+    const clap_preset_discovery_provider_t* provider = factory->create(factory, &ix.indexer, providerID);
+    CHECK(provider && provider->desc && !strcmp(provider->desc->id, providerID), "create provider %s", providerID);
+    CHECK(provider->init(provider), "provider init");
+    *out = provider;
+    return ix;
+}
+
+static Receiver metadata(const clap_preset_discovery_provider_t* provider, const char* path) {
+    Receiver rc;
+    memset(&rc, 0, sizeof(rc));
+    rc.receiver = (clap_preset_discovery_metadata_receiver_t){ &rc, rc_error, rc_begin, rc_plugin_id, rc_soundpack, rc_flags, rc_creator, rc_description, rc_timestamps, rc_feature, rc_extra };
+    CHECK(provider->get_metadata(provider, CLAP_PRESET_DISCOVERY_LOCATION_FILE, path, &rc.receiver), "get_metadata %s", path);
+    return rc;
+}
+
+static void mkdirs(const char* path) {
+    char buf[1024];
+    snprintf(buf, sizeof(buf), "%s", path);
+    for (char* p = buf + 1; *p; p++) {
+        if (*p == '/') { *p = 0; CHECK(mkdir(buf, 0755) == 0 || errno == EEXIST, "mkdir %s", buf); *p = '/'; }
+    }
+    CHECK(mkdir(buf, 0755) == 0 || errno == EEXIST, "mkdir %s", buf);
+}
+
+// write_vstpreset writes a .vstpreset with one component state chunk
+// (Steinberg::Vst::PresetFile layout).
+static void write_vstpreset(const char* path, const Steinberg_TUID cid, const uint8_t* state, size_t size) {
+    FILE* f = fopen(path, "wb");
+    CHECK(f, "create %s", path);
+    char hex[33];
+    for (int i = 0; i < 16; i++) snprintf(hex + 2 * i, 3, "%02X", (unsigned char)cid[i]);
+    int32_t version = 1, count = 1;
+    int64_t dataOffset = 48, dataSize = (int64_t)size, listOffset = 48 + (int64_t)size;
+    fwrite("VST3", 1, 4, f); fwrite(&version, 4, 1, f); fwrite(hex, 1, 32, f); fwrite(&listOffset, 8, 1, f);
+    fwrite(state, 1, size, f);
+    fwrite("List", 1, 4, f); fwrite(&count, 4, 1, f);
+    fwrite("Comp", 1, 4, f); fwrite(&dataOffset, 8, 1, f); fwrite(&dataSize, 8, 1, f);
+    CHECK(fclose(f) == 0, "write %s", path);
+}
+
+static void test_presets(const char* path) {
+    const char* home = getenv("HOME");
+    CHECK(home && strstr(home, "clapcheck"), "HOME must be a scratch folder for the preset check, got %s", home ? home : "(unset)");
+    Plugin p = load(path);
+    void* lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    const clap_plugin_entry_t* entry = (const clap_plugin_entry_t*)dlsym(lib, "clap_entry");
+    const clap_plugin_factory_t* plugins = (const clap_plugin_factory_t*)entry->get_factory(CLAP_PLUGIN_FACTORY_ID);
+    const clap_preset_discovery_factory_t* factory = (const clap_preset_discovery_factory_t*)entry->get_factory(CLAP_PRESET_DISCOVERY_FACTORY_ID);
+    CHECK(factory && factory->count(factory) == 1, "one preset provider");
+    const clap_plugin_descriptor_t* desc = plugins->get_plugin_descriptor(plugins, 0);
+    const clap_preset_discovery_provider_descriptor_t* pdesc = factory->get_descriptor(factory, 0);
+    CHECK(pdesc && pdesc->id && pdesc->name, "provider descriptor");
+    char dir[1024];
+#if defined(__APPLE__)
+    snprintf(dir, sizeof(dir), "%s/Library/Audio/Presets/%s/%s", home, desc->vendor, desc->name);
+#else
+    snprintf(dir, sizeof(dir), "%s/.vst3/presets/%s/%s", home, desc->vendor, desc->name);
+#endif
+
+    // Without a preset folder only the file type is declared.
+    const clap_preset_discovery_provider_t* provider;
+    Indexer ix = scan(factory, pdesc->id, &provider);
+    CHECK(ix.filetypes == 1 && !strcmp(ix.extension, "vstpreset") && ix.locations == 0, "file type without a location");
+    provider->destroy(provider);
+
+    // A preset of a non-default value, from the plugin's own state.
+    clap_param_info_t info;
+    CHECK(p.params->get_info(p.plugin, 0, &info), "param info");
+    double target = info.default_value == info.max_value ? info.min_value : info.max_value;
+    InEvents in; OutEvents out;
+    in_init(&in); out_init(&out);
+    add_param(&in, 0, info.id, target);
+    p.params->flush(p.plugin, &in.list, &out.list);
+    Stream st = { .chunk = 4096 };
+    clap_ostream_t os = { &st, ostream_write };
+    CHECK(p.state->save(p.plugin, &os), "state save");
+    in_init(&in); out_init(&out);
+    add_param(&in, 0, info.id, info.default_value);
+    p.params->flush(p.plugin, &in.list, &out.list);
+
+    typedef struct Steinberg_IPluginFactory* (*GetFactory)(void);
+    struct Steinberg_IPluginFactory* vst3 = ((GetFactory)dlsym(lib, "GetPluginFactory"))();
+    struct Steinberg_PClassInfo ci;
+    CHECK(vst3->lpVtbl->getClassInfo(vst3, 0, &ci) == Steinberg_kResultOk, "vst3 class info");
+    mkdirs(dir);
+    char file[1200], foreign[1200], missing[1200];
+    snprintf(file, sizeof(file), "%s/Check.vstpreset", dir);
+    snprintf(foreign, sizeof(foreign), "%s/Foreign.vstpreset", dir);
+    snprintf(missing, sizeof(missing), "%s/Missing.vstpreset", dir);
+    write_vstpreset(file, ci.cid, st.data, st.size);
+    Steinberg_TUID other;
+    memcpy(other, ci.cid, sizeof(other));
+    other[0] ^= 0xFF;
+    write_vstpreset(foreign, other, st.data, st.size);
+
+    ix = scan(factory, pdesc->id, &provider);
+    CHECK(ix.locations == 1 && !strcmp(ix.location, dir) && ix.locationFlags == CLAP_PRESET_DISCOVERY_IS_USER_CONTENT, "user preset folder declared: %s", ix.location);
+    Receiver rc = metadata(provider, file);
+    CHECK(rc.presets == 1 && !strcmp(rc.name, "Check") && rc.errors == 0, "preset metadata %s", rc.name);
+    CHECK(rc.clapIDs == 1 && !strcmp(rc.clapID, desc->id) && rc.vst3IDs == 1 && rc.flags == CLAP_PRESET_DISCOVERY_IS_USER_CONTENT, "preset plugin IDs and flags");
+    rc = metadata(provider, foreign);
+    CHECK(rc.presets == 0 && rc.errors == 0, "another plugin's preset is skipped");
+    provider->destroy(provider);
+
+    const clap_plugin_preset_load_t* presetLoad = (const clap_plugin_preset_load_t*)p.plugin->get_extension(p.plugin, CLAP_EXT_PRESET_LOAD);
+    CHECK(presetLoad, "preset-load extension");
+    int rescans = hostLog.rescanValues;
+    CHECK(presetLoad->from_location(p.plugin, CLAP_PRESET_DISCOVERY_LOCATION_FILE, file, NULL), "load preset");
+    CHECK(hostLog.presetsLoaded == 1 && hostLog.rescanValues > rescans, "loaded reported and values rescanned");
+    CHECK(fabs(param_value(&p, info.id) - target) < 1e-9, "preset value %g, want %g", param_value(&p, info.id), target);
+    CHECK(!presetLoad->from_location(p.plugin, CLAP_PRESET_DISCOVERY_LOCATION_FILE, missing, NULL) && hostLog.presetErrors == 1, "missing preset reports an error");
+    CHECK(!presetLoad->from_location(p.plugin, CLAP_PRESET_DISCOVERY_LOCATION_FILE, foreign, NULL) && hostLog.presetErrors == 2, "foreign preset reports an error");
+    p.plugin->destroy(p.plugin);
+    printf("presets ok\n");
+}
+
 int main(int argc, char** argv) {
     CHECK(argc == 3, "usage: clapcheck gain|synth|midifx|ducker <binary>");
     if (!strcmp(argv[1], "gain")) test_gain(argv[2]);
@@ -402,5 +585,6 @@ int main(int argc, char** argv) {
     else if (!strcmp(argv[1], "midifx")) test_midifx(argv[2]);
     else if (!strcmp(argv[1], "ducker")) test_ducker(argv[2]);
     else CHECK(0, "unknown test %s", argv[1]);
+    test_presets(argv[2]);
     return 0;
 }

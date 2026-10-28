@@ -25,6 +25,7 @@ typedef struct {
     const clap_host_note_name_t* hostNoteName;
     const clap_host_gui_t* hostGui;
     const clap_host_timer_support_t* hostTimer;
+    const clap_host_preset_load_t* hostPresetLoad;
     struct VST3GoClapGui* gui; // open editor (clap_gui.c)
     uintptr_t id;
     uint32_t sysexUsed;
@@ -34,6 +35,21 @@ typedef struct {
 // gui and timer-support extensions (clap_gui.c); NULL without a platform editor.
 const void* vst3go_clap_gui_extension(const char* id);
 void vst3go_clap_gui_destroy(VST3GoClapPlugin* p);
+
+// Preset discovery factory and preset-load extension (clap_presets.c).
+const void* vst3go_clap_preset_discovery_factory(void);
+const void* vst3go_clap_preset_load_extension(void);
+void vst3go_clap_preset_loaded(VST3GoClapPlugin* p, uint32_t kind, const char* location, const char* loadKey);
+void vst3go_clap_preset_error(VST3GoClapPlugin* p, uint32_t kind, const char* location, const char* loadKey, const char* message);
+bool vst3go_clap_declare_filetype(clap_preset_discovery_indexer_t* indexer, const char* name, const char* extension);
+bool vst3go_clap_declare_location(clap_preset_discovery_indexer_t* indexer, uint32_t flags, const char* name, const char* location);
+void vst3go_clap_metadata_error(clap_preset_discovery_metadata_receiver_t* r, const char* message);
+bool vst3go_clap_metadata_begin(clap_preset_discovery_metadata_receiver_t* r, const char* name);
+void vst3go_clap_metadata_plugin_id(clap_preset_discovery_metadata_receiver_t* r, const char* abi, const char* id);
+void vst3go_clap_metadata_flags(clap_preset_discovery_metadata_receiver_t* r, uint32_t flags);
+void vst3go_clap_metadata_timestamps(clap_preset_discovery_metadata_receiver_t* r, uint64_t modified);
+void vst3go_clap_metadata_feature(clap_preset_discovery_metadata_receiver_t* r, const char* feature);
+void vst3go_clap_metadata_extra(clap_preset_discovery_metadata_receiver_t* r, const char* key, const char* value);
 
 // Host extension calls (no-ops when the host lacks the extension).
 void vst3go_clap_request_flush(VST3GoClapPlugin* p);

@@ -113,6 +113,10 @@ static bool plugin_init(const clap_plugin_t* plugin) {
         p->hostNoteName = (const clap_host_note_name_t*)host->get_extension(host, CLAP_EXT_NOTE_NAME);
         p->hostGui = (const clap_host_gui_t*)host->get_extension(host, CLAP_EXT_GUI);
         p->hostTimer = (const clap_host_timer_support_t*)host->get_extension(host, CLAP_EXT_TIMER_SUPPORT);
+        p->hostPresetLoad = (const clap_host_preset_load_t*)host->get_extension(host, CLAP_EXT_PRESET_LOAD);
+        if (!p->hostPresetLoad) {
+            p->hostPresetLoad = (const clap_host_preset_load_t*)host->get_extension(host, CLAP_EXT_PRESET_LOAD_COMPAT);
+        }
     }
     return GoClapInit(p->id);
 }
@@ -150,6 +154,7 @@ static const void* plugin_get_extension(const clap_plugin_t* plugin, const char*
     if (!strcmp(id, CLAP_EXT_RENDER)) return &extRender;
     if (!strcmp(id, CLAP_EXT_TRACK_INFO)) return &extTrackInfo;
     if (!strcmp(id, CLAP_EXT_NOTE_NAME)) return &extNoteName;
+    if (!strcmp(id, CLAP_EXT_PRESET_LOAD) || !strcmp(id, CLAP_EXT_PRESET_LOAD_COMPAT)) return vst3go_clap_preset_load_extension();
     return vst3go_clap_gui_extension(id);
 }
 
@@ -219,7 +224,12 @@ static bool entry_init(const char* path) {
 static void entry_deinit(void) {}
 
 static const void* entry_get_factory(const char* factoryID) {
-    return (factoryID && !strcmp(factoryID, CLAP_PLUGIN_FACTORY_ID)) ? &pluginFactory : NULL;
+    if (!factoryID) return NULL;
+    if (!strcmp(factoryID, CLAP_PLUGIN_FACTORY_ID)) return &pluginFactory;
+    if (!strcmp(factoryID, CLAP_PRESET_DISCOVERY_FACTORY_ID) || !strcmp(factoryID, CLAP_PRESET_DISCOVERY_FACTORY_ID_COMPAT)) {
+        return vst3go_clap_preset_discovery_factory();
+    }
+    return NULL;
 }
 
 CLAP_EXPORT const clap_plugin_entry_t clap_entry = {
