@@ -11,8 +11,9 @@
 요약하면 다음과 같습니다:
 
 - `vst3go`는 런타임이자 VST3 셸입니다.
-- 실제 이펙트/악기 동작은 다운스트림 저장소가 소유합니다.
-- DSP 로직은 가능하면 Go로 작성하되, 제품 전용이라면 이 저장소 밖에 두세요.
+- `pkg/dsp`는 신호 처리 빌딩 블록(필터, 다이내믹스, 딜레이, 모듈레이션, 리버브, 디스토션, 오실레이터, 엔벨로프)을 제공합니다.
+- 실제 이펙트/악기 동작과 그 블록들을 조합하는 방식은 다운스트림 저장소가 소유합니다.
+- `examples/`에는 이렇게 만든 완성된 플러그인이 있습니다. 가장 비슷한 것에서 시작하세요.
 
 멘탈 모델이 필요하다면 `vst3go`를 다음 질문에 답하는 계층으로 생각하세요:
 
@@ -332,7 +333,7 @@ func (p *Processor) ProcessAudio(ctx *process.Context) {
 }
 ```
 
-위의 필터 함수들은 다운스트림 DSP 코드입니다. `vst3go`는 셸과 블록 배관을 제공할 뿐, 내장 EQ 엔진을 제공하지는 않습니다.
+`processEQChain`과 `applyGain`은 플러그인 코드입니다. 아래와 같이 `pkg/dsp/filter`와 `pkg/dsp/gain`으로 만듭니다.
 
 ## 7. `Eight EQ` 스타일 플러그인 만들기
 
@@ -854,34 +855,31 @@ EQ를 세련되게 느껴지게 하려면 다음 레이블을 사용하세요:
 
 ### 7.3 필터 토폴로지 정하기
 
-다운스트림 저장소에서는 다음을 구현합니다:
+각 밴드는 `pkg/dsp/filter.Biquad`입니다(밴드당 인스턴스 하나가 모든 채널의 상태를 보관):
 
-- 로우 셸프 biquad
-- 피킹 미드 밴드 biquad
-- 하이 셸프 biquad
-
-채널마다 다음과 같은 계수/상태 구조체를 유지합니다:
+- 로우 셜프 밴드에는 `SetLowShelf`
+- 벨 밴드에는 `SetPeakingEQ`
+- 하이 셜프 밴드에는 `SetHighShelf`
+- 컷 밴드에는 `SetHighpass` / `SetLowpass`
 
 ```go
-type biquad struct {
-	b0, b1, b2 float64
-	a1, a2     float64
-	z1, z2     float64
+bands := make([]*filter.Biquad, 8)
+for i := range bands {
+	bands[i] = filter.NewBiquad(2)
+}
+bands[0].SetLowShelf(sampleRate, 120, 0.707, 3)
+bands[1].SetPeakingEQ(sampleRate, 1000, 1.0, -2)
+```
+
+그런 다음, 채널 버퍼마다:
+
+```go
+for _, band := range bands {
+	band.Process(output, ch)
 }
 ```
 
-그런 다음:
-
-```go
-func (b *biquad) Process(x float64) float64 {
-	y := b.b0*x + b.z1
-	b.z1 = b.b1*x - b.a1*y + b.z2
-	b.z2 = b.b2*x - b.a2*y
-	return y
-}
-```
-
-그 계산은 다운스트림에 따라 다르지만, `vst3go` 관점에서 중요한 것은 그것을 어디에 저장하느냐입니다:
+`vst3go` 관점에서 중요한 것은 필터를 어디에 저장하느냐입니다:
 
 - 프로세서 필드에 저장
 - `Initialize`에서 재구성
@@ -1133,7 +1131,7 @@ my-plugin/
 - `plugin/processor.go`는 런타임 프로세서를 소유합니다
 - `plugin/plugin.go`는 `Plugin` 엔트리포인트와 메타데이터를 소유합니다
 - `plugin/state.go`는 파라미터 값으로 충분하지 않을 때의 커스텀 상태를 소유합니다
-- `internal/dsp/`는 필터/수학 코드를 소유합니다
+- `internal/dsp/`는 `pkg/dsp` 블록으로 만든 플러그인 전용 신호 흐름을 소유합니다
 - `web/editor/`는 브라우저로 렌더링되는 UI를 만든다면 그 UI를 소유합니다
 
 `vst3go` 자체는 제품 작업 공간이 아니라 런타임 의존성으로 유지하세요.
@@ -1186,7 +1184,7 @@ my-plugin/
 
 ## 15. 피해야 할 것
 
-- 제품 전용 DSP를 `vst3go`에 넣지 마세요
+- 제품 전용 로직(라이선스, 브랜딩, 인스톨러)을 `vst3go`에 넣지 마세요. 범용 DSP는 `pkg/dsp`에 둡니다
 - 브라우저 에디터를 별도의 앱으로 취급하지 마세요
 - 추가 상태를 보관하려고 파라미터 레지스트리를 우회하지 마세요
 - 측정하고 그 트레이드오프를 받아들인 경우가 아니라면 `ProcessAudio`에서 메모리를 할당하지 마세요

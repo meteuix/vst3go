@@ -6,8 +6,8 @@ This document describes how development work in `vst3go` should be approached so
 
 ## Repository Intent
 
-- keep `vst3go` limited to the VST3 binding and runtime layer
-- keep product DSP, showcase plugins, and higher-level audio behavior in downstream repos such as `synthkit`
+- keep the VST3 binding and runtime layer, the DSP library (`pkg/dsp`) and the showcase plugins (`examples/`) in this repo
+- keep product-specific behavior (licensing, installers, branding) in downstream repos
 - keep platform glue thin and keep behavior in Go whenever possible
 
 ## Working Style
@@ -34,6 +34,8 @@ When implementing a non-trivial change, follow this order:
 - `pkg/plugin`: keep wrapper, editor model, and platform bridge integration centered on runtime contracts
 - `pkg/framework/*`: keep reusable runtime primitives generic and safe for downstream plugin authors
 - `pkg/midi`: keep event and transport helpers lightweight and runtime-focused
+- `pkg/dsp/*`: keep processors allocation-free after construction/`Initialize`, deterministic, and unit-tested against known signal behavior
+- `examples/*`: keep each showcase plugin on the current runtime conventions with an offline `pkg/plugintest` test
 - `pkg/plugin/*.c`, `*.h`: keep the C layer minimal and mechanical
 
 ## Web Editor Guidelines

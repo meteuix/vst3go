@@ -11,8 +11,9 @@ If you follow the full guide in order, you end up with one working plugin: one m
 The short version is:
 
 - `vst3go` is the runtime and VST3 shell.
-- Your downstream repo owns the actual effect/instrument behavior.
-- Keep DSP logic in Go where possible, but keep it outside this repository if it is product-specific.
+- `pkg/dsp` provides the signal processing building blocks (filters, dynamics, delay, modulation, reverb, distortion, oscillators, envelopes).
+- Your downstream repo owns the actual effect/instrument behavior and how those blocks are combined.
+- `examples/` holds complete plugins built this way; start from the closest one.
 
 If you want a mental model, think of `vst3go` as the layer that answers:
 
@@ -332,7 +333,7 @@ func (p *Processor) ProcessAudio(ctx *process.Context) {
 }
 ```
 
-The filter functions above are your downstream DSP code. `vst3go` gives you the shell and the block plumbing, not a built-in EQ engine.
+`processEQChain` and `applyGain` are your plugin's code; build them from `pkg/dsp/filter` and `pkg/dsp/gain` as shown below.
 
 ## 7. How To Build An `Eight EQ`-Style Plugin
 
@@ -854,34 +855,31 @@ The copy makes the control obvious without forcing the user to decode the UI.
 
 ### 7.3 Decide The Filter Topology
 
-In a downstream repo, you implement:
+Each band is a `pkg/dsp/filter.Biquad` (one instance per band, holding the state of every channel):
 
-- a low shelf biquad
-- a peaking mid band biquad
-- a high shelf biquad
-
-For each channel, keep coefficient/state structs like:
+- `SetLowShelf` for a low shelf band
+- `SetPeakingEQ` for a bell band
+- `SetHighShelf` for a high shelf band
+- `SetHighpass` / `SetLowpass` for cut bands
 
 ```go
-type biquad struct {
-	b0, b1, b2 float64
-	a1, a2     float64
-	z1, z2     float64
+bands := make([]*filter.Biquad, 8)
+for i := range bands {
+	bands[i] = filter.NewBiquad(2)
+}
+bands[0].SetLowShelf(sampleRate, 120, 0.707, 3)
+bands[1].SetPeakingEQ(sampleRate, 1000, 1.0, -2)
+```
+
+And then, per channel buffer:
+
+```go
+for _, band := range bands {
+	band.Process(output, ch)
 }
 ```
 
-And then:
-
-```go
-func (b *biquad) Process(x float64) float64 {
-	y := b.b0*x + b.z1
-	b.z1 = b.b1*x - b.a1*y + b.z2
-	b.z2 = b.b2*x - b.a2*y
-	return y
-}
-```
-
-That math is downstream-specific, but the important part for `vst3go` is where you store it:
+The important part for `vst3go` is where you store the filters:
 
 - processor fields
 - reconfigured in `Initialize`
@@ -1134,7 +1132,7 @@ Suggested division:
 - `plugin/processor.go` owns the runtime processor
 - `plugin/plugin.go` owns the `Plugin` entrypoint and metadata
 - `plugin/state.go` owns custom state when parameter values are not enough
-- `internal/dsp/` owns the filter/math code
+- `internal/dsp/` owns plugin-specific signal flow built from `pkg/dsp` blocks
 - `web/editor/` owns the browser-rendered UI if you generate one
 
 Keep `vst3go` itself as the runtime dependency, not the product workspace.
@@ -1187,7 +1185,7 @@ That sequence produces one coherent plugin instead of a collection of unrelated 
 
 ## 15. What To Avoid
 
-- do not put product-specific DSP into `vst3go`
+- do not put product-specific logic (licensing, branding, installers) into `vst3go`; generic DSP goes into `pkg/dsp`
 - do not treat the browser editor as a separate app
 - do not bypass the parameter registry to keep extra state
 - do not allocate in `ProcessAudio` unless you have measured and accepted the tradeoff

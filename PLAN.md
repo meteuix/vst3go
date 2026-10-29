@@ -4,8 +4,7 @@ English | [한국어](PLAN.ko.md)
 
 ## Repo Boundary
 
-- [x] Keep `vst3go` scoped as the VST3 binding/runtime layer.
-- [x] Move DSP packages, showcase plugins, and synth-product planning out to `synthkit`.
+- [x] Keep the VST3 binding/runtime layer, the DSP library and the showcase plugins in this repo.
 - [x] Rename the module to `github.com/th-release/vst3go`.
 - [x] Update the README to state that this fork intentionally differs from the original project.
 - [x] Review the retained package boundary once more.
@@ -13,14 +12,16 @@ English | [한국어](PLAN.ko.md)
   - [x] `pkg/plugin`
   - [x] `pkg/midi`
   - [x] `pkg/framework/{bus,param,plugin,process,state}`
-  - [x] Confirm no higher-level audio/product concerns have drifted back in.
+  - [x] `pkg/dsp/...`, `pkg/framework/{dsp,voice,debug}`
+  - [x] Confirm product-specific code (installers, licensing, branding) stays in consumer projects.
 
 ## Rules
 
 - [x] Keep the C bridge minimal and direct.
 - [x] Keep business logic in Go rather than in C.
-- [x] Keep DSP and product-specific logic out of this repo.
-- [x] Keep example/showcase plugin ownership out of this repo.
+- [x] Keep DSP allocation-free and safe to call from `ProcessAudio`.
+- [x] Keep showcase plugins in `examples/`, each with offline tests (`pkg/plugintest`).
+- [x] Keep product-specific logic out of this repo.
 - [x] Keep these rules reflected in docs and future planning updates.
 
 ## Current Baseline
@@ -83,13 +84,12 @@ English | [한국어](PLAN.ko.md)
   - [x] Revisit fixed-size internal buffers where limits may be too rigid.
 - [x] Keep validation expectations explicit.
   - [x] Define minimal validation expectations for the runtime layer itself.
-  - [x] Document what downstream repos such as `synthkit` must validate on their own.
+  - [x] Document what downstream repos must validate on their own.
 
 ## Phase 4: Documentation And Consumer Experience
 
 - [x] Document retained scope clearly.
   - [x] State the split boundary in README and PLAN.
-  - [x] Add a concise “what belongs here vs. in `synthkit`” section if the README still needs tightening.
 - [x] Improve API documentation.
   - [x] package-level docs
   - [x] lifecycle expectations
@@ -143,13 +143,13 @@ English | [한국어](PLAN.ko.md)
 - [x] Confirm the public API boundary is stable enough for downstream repos.
 - [x] Decide supported release scope explicitly.
   - [x] Linux/macOS only, or include Windows.
-  - [x] Runtime-only, with higher-level features delegated to companion repos.
+  - [x] Runtime plus the DSP library and showcase plugins.
 - [x] Capture a repeatable pre-tag release checklist.
 
 ## Phase 8: Framework Parity
 
 Grow the runtime into a plugin framework that can replace JUCE for plugin
-work, without taking on DSP (that stays in `synthkit`).
+work, DSP included.
 
 - [x] Parameter smoothing (`param.Ramp`, `ctx.Smoothed`) and host edit gestures.
 - [x] `.vstpreset` files and a preset browser in the web editor (`pkg/preset`).
@@ -188,9 +188,16 @@ work, without taking on DSP (that stays in `synthkit`).
       decoding with streaming, seeking, loops and root notes; WAV, AIFF and
       FLAC encoding; `plugintest.LoadAudio`/`SaveAudio`. Checked against
       files from afconvert, flac, oggenc and lame and with their decoders.
+- [x] DSP library (`pkg/dsp`: filters, dynamics, delay, modulation,
+      reverb, distortion, oscillators, envelopes, pan, mix, interpolation,
+      analysis), processor chains (`pkg/framework/dsp`), voice allocation
+      (`pkg/framework/voice`) and debug/profiling helpers
+      (`pkg/framework/debug`), with unit tests.
+- [x] Showcase plugins in `examples/` on the current runtime
+      (`standalone.Main`, allocation-free processing, read-only meters via
+      `ctx.SetOutputParameter`), each with offline `pkg/plugintest` tests.
 
 ## Ongoing Rules
 
-- [ ] If work belongs in `synthkit`, remove it from this file instead of duplicating it here.
 - [ ] Avoid standalone roadmap documents; merge planning back here.
-- [ ] Before adding a new abstraction, check whether it belongs in `vst3go` or in a higher-level companion repo.
+- [ ] Before adding a new abstraction, check whether it belongs in `vst3go` or in the consumer project.

@@ -141,6 +141,29 @@ w, err := audiofile.Create("take.flac", 48000, 2, audiofile.PCM24) // Write bloc
 (`pkg/audiofile/testdata/generate.sh`)를 디코딩하고, 기록한 파일을 macOS에서는
 afconvert로, Linux에서는 `flac -t`와 sox로 검사합니다.
 
+## DSP 라이브러리
+
+`pkg/dsp`에는 `examples/`의 쇼케이스 플러그인을 구성하는 신호 처리 블록이
+있습니다. 프로세서는 생성자나 `Initialize`에서 만들고 크기를 정하며, 처리
+메서드는 메모리를 할당하지 않습니다([런타임 계약](runtime-contracts.ko.md) 참고).
+
+| 패키지 | 내용 | 사용하는 예제 |
+| --- | --- | --- |
+| `filter` | `Biquad`(로우패스, 하이패스, 밴드패스, 노치, 피킹, 셸프), `SVF`, `MultiModeSVF` | `filter`, `auto_params`, `mastercompressor`, `drumbus`, `surround`, `vocalstrip` |
+| `dynamics` | `Compressor`(소프트/하드 니, 룩어헤드, 사이드체인), `Limiter`(트루 피크 룩어헤드 브릭월), `Gate`(히스테리시스, 홀드, 키 필터), `Expander`, `TransientShaper` | `mastercompressor`, `masterlimiter`, `studiogate`, `sidechain`, `transientshaper`, `drumbus`, `vocalstrip`, `auto_params`, `chain_fx` |
+| `envelope` | ADSR/AR 엔벨로프, 피크/RMS `Detector`, `Follower` | `pkg/dsp/dynamics` |
+| `delay` | `Line`, `MultiTap`, `Comb`, `Allpass`, `Modulated` | `delay` |
+| `modulation` | `LFO`, `Chorus`, `Flanger`, `Phaser`, `Tremolo`, `RingModulator` | `vintagechorus`, `jetflanger` |
+| `distortion` | `Waveshaper`, `TubeSaturation`, `TapeSaturation`, `Bitcrusher` | `multidistortion` |
+| `reverb` | `Schroeder`, `Freeverb`, `FDN` | |
+| `oscillator`, `utility`, `gain`, `pan`, `mix`, `interpolation` | 오실레이터, 노이즈, DC 블로커, dB/팬 법칙, 믹싱, 보간 | `gain`, `delay`, `filter`, `chain_fx` |
+| `analysis` | FFT, 스펙트럼, 피크/RMS/LUFS(BS.1770-4, EBU R 128 LRA) 미터, 상관도, 위상 스코프 | |
+
+`pkg/framework/dsp`는 프로세서를 체인으로 묶고(`NewChain`, `NewParallelChain`,
+빌더와 어댑터, `examples/chain_fx` 참고), `pkg/framework/voice`는 폴리포닉 보이스를
+할당하며(`examples/simplesynth`), `pkg/framework/debug`에는 로거, 할당 없는
+오디오 프로파일러, 버퍼 분석기가 있습니다(`examples/debug_example`).
+
 ## 처리 모델
 
 `ProcessAudio(ctx)`는 오디오 스레드에서 실행됩니다. 락, 블로킹, I/O를 해서는 안 됩니다.

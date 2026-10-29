@@ -6,7 +6,7 @@
 
 ## 요약
 
-`vst3go` `<version>`은 VST3 런타임 계층, 웹 렌더링 에디터 셸, Windows 빌드/검증 흐름에 대한 업데이트를 제공합니다.
+`vst3go` `<version>`은 VST3 런타임 계층, DSP 라이브러리, 쇼케이스 플러그인, 웹 렌더링 에디터 셸, Windows 빌드/검증 흐름에 대한 업데이트를 제공합니다.
 
 ## 주요 변경 사항
 
@@ -19,6 +19,11 @@
 - 런타임 관련 개선 사항을 요약합니다
 - 파라미터, 상태, 처리, 래퍼 동작의 변경 사항을 기록합니다
 - 호환성에 영향을 주는 API 조정 사항을 명시합니다
+
+## DSP와 예제
+
+- 새로 추가되거나 바뀐 `pkg/dsp` 프로세서와 그 동작 변경을 요약합니다
+- `examples/`에서 새로 추가, 변경, 제거된 쇼케이스 플러그인을 기록합니다
 
 ## 웹 에디터
 
@@ -42,7 +47,7 @@
 ## 호환성 참고 사항
 
 - 모듈 경로: `github.com/th-release/vst3go`
-- 지원하는 공개 API 범위: `pkg/plugin`, `pkg/vst3`, `pkg/midi`, `pkg/framework/{bus,param,plugin,process,state}`
+- 지원하는 공개 API 범위: `pkg/plugin`, `pkg/vst3`, `pkg/midi`, `pkg/framework/{bus,param,plugin,process,state,dsp,voice,debug}`, `pkg/dsp/...`
 - 호환성을 깨는 변경 사항:
 
 ## 업그레이드 참고 사항

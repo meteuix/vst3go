@@ -6,7 +6,7 @@ Use this template when publishing a new `vst3go` tag.
 
 ## Summary
 
-`vst3go` `<version>` delivers updates to the VST3 runtime layer, web-rendered editor shell, and Windows build/validation flow.
+`vst3go` `<version>` delivers updates to the VST3 runtime layer, DSP library, showcase plugins, web-rendered editor shell, and Windows build/validation flow.
 
 ## Highlights
 
@@ -19,6 +19,11 @@ Use this template when publishing a new `vst3go` tag.
 - summarize runtime-facing improvements
 - note any parameter, state, process, or wrapper behavior changes
 - call out any compatibility-sensitive API adjustments
+
+## DSP And Examples
+
+- summarize new or changed `pkg/dsp` processors and their behavior changes
+- note new, changed or removed showcase plugins in `examples/`
 
 ## Web Editor
 
@@ -42,7 +47,7 @@ Use this template when publishing a new `vst3go` tag.
 ## Compatibility Notes
 
 - module path: `github.com/th-release/vst3go`
-- supported public API surface: `pkg/plugin`, `pkg/vst3`, `pkg/midi`, `pkg/framework/{bus,param,plugin,process,state}`
+- supported public API surface: `pkg/plugin`, `pkg/vst3`, `pkg/midi`, `pkg/framework/{bus,param,plugin,process,state,dsp,voice,debug}`, `pkg/dsp/...`
 - any breaking changes:
 
 ## Upgrade Notes

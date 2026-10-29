@@ -142,6 +142,31 @@ The tests decode fixtures made by afconvert, flac, oggenc and lame
 (`pkg/audiofile/testdata/generate.sh`) and check the written files with
 afconvert on macOS and with `flac -t` and sox on Linux.
 
+## DSP library
+
+`pkg/dsp` holds the signal processing blocks the showcase plugins in
+`examples/` are built from. Create and size processors in the constructor or
+`Initialize`; their processing methods do not allocate (see
+[Runtime contracts](runtime-contracts.md)).
+
+| Package | Contents | Used by |
+| --- | --- | --- |
+| `filter` | `Biquad` (lowpass, highpass, bandpass, notch, peaking, shelves), `SVF`, `MultiModeSVF` | `filter`, `auto_params`, `mastercompressor`, `drumbus`, `surround`, `vocalstrip` |
+| `dynamics` | `Compressor` (soft/hard knee, lookahead, sidechain), `Limiter` (true-peak lookahead brick wall), `Gate` (hysteresis, hold, key filter), `Expander`, `TransientShaper` | `mastercompressor`, `masterlimiter`, `studiogate`, `sidechain`, `transientshaper`, `drumbus`, `vocalstrip`, `auto_params`, `chain_fx` |
+| `envelope` | ADSR/AR envelopes, peak/RMS `Detector`, `Follower` | `pkg/dsp/dynamics` |
+| `delay` | `Line`, `MultiTap`, `Comb`, `Allpass`, `Modulated` | `delay` |
+| `modulation` | `LFO`, `Chorus`, `Flanger`, `Phaser`, `Tremolo`, `RingModulator` | `vintagechorus`, `jetflanger` |
+| `distortion` | `Waveshaper`, `TubeSaturation`, `TapeSaturation`, `Bitcrusher` | `multidistortion` |
+| `reverb` | `Schroeder`, `Freeverb`, `FDN` | |
+| `oscillator`, `utility`, `gain`, `pan`, `mix`, `interpolation` | oscillators, noise, DC blockers, dB/pan laws, mixing, interpolation | `gain`, `delay`, `filter`, `chain_fx` |
+| `analysis` | FFT, spectrum, peak/RMS/LUFS (BS.1770-4, EBU R 128 LRA) meters, correlation, phase scopes | |
+
+`pkg/framework/dsp` chains processors (`NewChain`, `NewParallelChain`,
+builders and adapters; see `examples/chain_fx`), `pkg/framework/voice`
+allocates polyphonic voices (`examples/simplesynth`), and
+`pkg/framework/debug` has a logger, an allocation-free audio profiler and a
+buffer analyzer (`examples/debug_example`).
+
 ## Processing model
 
 `ProcessAudio(ctx)` runs on the audio thread. It must not lock, block or do I/O.

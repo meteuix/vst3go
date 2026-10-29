@@ -2,7 +2,7 @@ English | [한국어](runtime-contracts.ko.md)
 
 # Runtime Contracts
 
-This repository is intentionally narrow: it ships the reusable VST3 binding and runtime layer, not product-specific DSP or host-validation logic.
+This repository ships the reusable VST3 binding and runtime layer, a DSP library for use inside `ProcessAudio`, and showcase plugins built on both. Product-specific logic (licensing, installers, branding) stays in consumer projects.
 
 ## Package Surface
 
@@ -20,8 +20,14 @@ Downstream projects should treat these packages as the supported API surface:
 - `pkg/plugintest`
 - `pkg/audiofile`
 - `pkg/standalone`
+- `pkg/dsp/...`
+- `pkg/framework/dsp`
+- `pkg/framework/voice`
+- `pkg/framework/debug`
 
-The C bridge sources in `pkg/plugin`, embedded editor assets, and platform-specific editor shims support that API surface but are not intended to become a higher-level product framework.
+The C bridge sources in `pkg/plugin`, embedded editor assets, and platform-specific editor shims support that API surface and are not called directly.
+
+The DSP processors in `pkg/dsp` are created and sized outside the audio thread (constructor or `Initialize`) and their per-sample/per-buffer methods do not allocate, so they are safe to call from `ProcessAudio`. Each instance is owned by one processor and is not safe for concurrent use. The exception is `pkg/dsp/analysis`: its meters and scopes guard their state with a mutex so another thread can read them, so `Process` takes a lock. Read them from the audio thread and publish readings through read-only output parameters, or accept that a reader can briefly block the audio thread.
 
 ## Lifecycle Expectations
 
@@ -66,7 +72,8 @@ When a downstream repo consumes this fork:
 
 - import `github.com/th-release/vst3go`
 - build plugin/runtime logic on top of the supported packages above
-- keep DSP/product code outside this repo
+- use `pkg/dsp` for signal processing and `examples/` as reference plugins
+- keep product-specific code (licensing, installers, branding) in the downstream repo
 - validate host-specific behavior, installer layout, signing, and DAW compatibility in the downstream repo
 
 Once tags are published, downstream repos should pin a tagged version instead of a moving branch so runtime and bridge changes can be upgraded deliberately.

@@ -4,7 +4,7 @@ English | [한국어](README.ko.md)
 
 `vst3go` is the low-level Go interface and runtime layer for VST3.
 
-This fork is intentionally different from the original `justyntemme/vst3go` project. It is being kept deliberately narrow as a clean VST3 binding/runtime layer, while the higher-level DSP and synth-oriented functionality lives in the companion `synthkit` repository.
+This fork is maintained separately from the original `justyntemme/vst3go` project. It ships the plugin runtime together with a DSP library and showcase plugins built on it.
 
 It contains:
 
@@ -13,9 +13,10 @@ It contains:
 - The plugin wrapper/runtime used to expose Go processors as VST3, CLAP, (on macOS) AUv2 and (on Linux) LV2 plugins (one binary serves every format), and the same package as a standalone application with audio/MIDI devices and its editor in a window (`pkg/standalone`)
 - A web editor SDK (`window.vst3go`, custom pages, typed TypeScript parameter bindings)
 - Generic plugin authoring primitives such as buses, parameters, process context, state, and MIDI/event transport
+- A DSP library (`pkg/dsp`): filters, dynamics (compressor, limiter, gate, expander, transient shaper), delay lines, modulation (LFOs, chorus, flanger, phaser, tremolo, ring modulation), reverbs (Schroeder, Freeverb, FDN), distortion (waveshaper, tube, tape, bitcrusher), oscillators, envelopes, panning, mixing, interpolation and analysis (FFT, spectrum, peak/RMS/LUFS metering, phase correlation)
+- Processor chains (`pkg/framework/dsp`), polyphonic voice allocation (`pkg/framework/voice`) and debug/profiling helpers (`pkg/framework/debug`)
+- Showcase plugins (`examples/`): compressors, limiter, gate, transient shaper, drum bus, vocal strip, distortion, chorus, flanger, delay, filter, sidechain ducking, surround, a polyphonic synth, a debug-logging example and more
 - Host features for effects, instruments and MIDI plugins: sample-accurate automation, 32/64-bit processing, sidechains and surround, MIDI CC/learn/MIDI 2.0 mapping, note expression and MPE, keyswitches, factory programs, `.vstpreset` presets, units, SysEx, parameter smoothing, edit gestures, distributed processor/controller, several plugins per binary, host-free plugin tests (`pkg/plugintest`), and audio file reading and writing (`pkg/audiofile`: WAV, AIFF, FLAC, Ogg Vorbis, MP3)
-
-The higher-level audio and synth layer now lives in the companion `synthkit` repository.
 
 For what kinds of plugins you can build and how to use each host feature, see [`docs/plugin-capabilities.md`](docs/plugin-capabilities.md).
 For the web-rendered plugin editor flow, see [`docs/web-editor-bridge.md`](docs/web-editor-bridge.md).
@@ -49,7 +50,7 @@ MIDI transposer. The new module lists `vst3go` as a `tool` dependency, so
 
 ## Scope
 
-`vst3go` keeps the VST3-facing pieces:
+`vst3go` contains:
 
 - `include/vst3/`
 - `include/clap/`
@@ -65,37 +66,25 @@ MIDI transposer. The new module lists `vst3go` as a `tool` dependency, so
 - `pkg/framework/plugin`
 - `pkg/framework/process`
 - `pkg/framework/state`
+- `pkg/dsp/` (the DSP library)
+- `pkg/framework/dsp` (processor chains and DSP adapters)
+- `pkg/framework/voice` (polyphonic voice allocation)
+- `pkg/framework/debug` (logging, profiling and audio analysis helpers)
 - `cmd/vst3go` (the `new`/`build` command)
-
-The companion `synthkit` repo owns:
-
-- `pkg/dsp/`
-- `pkg/framework/dsp`
-- `pkg/framework/debug`
-- `pkg/framework/voice`
-- showcase plugins (`internal/validation/` only holds runtime validation plugins)
+- `examples/` (showcase plugins)
+- `internal/validation/` (runtime validation plugins and host checks)
 
 ## Public API Boundary
 
-- Downstream code should treat `pkg/plugin`, `pkg/vst3`, `pkg/midi`, `pkg/preset`, `pkg/plugintest`, `pkg/audiofile`, `pkg/standalone`, and the retained `pkg/framework/*` packages as the supported API surface.
-- The C bridge (`pkg/plugin/*.c`) and the editor assets exist to support that API surface, but product-specific DSP and showcase logic stay out of this repo.
-- If a feature needs higher-level audio product behavior, it belongs in `synthkit` or the consumer project instead of this runtime layer.
+- Downstream code should treat `pkg/plugin`, `pkg/vst3`, `pkg/midi`, `pkg/preset`, `pkg/plugintest`, `pkg/audiofile`, `pkg/standalone`, `pkg/dsp/...`, and the `pkg/framework/*` packages as the supported API surface.
+- The C bridge (`pkg/plugin/*.c`) and the editor assets exist to support that API surface and are not called directly.
+- `examples/` shows how the DSP library and the runtime fit together; copy from it rather than importing it.
 
 ## Consumption
 
 - Downstream repos should import `github.com/th-release/vst3go` and build on the supported package surface rather than reaching into bridge internals.
 - Once versions are tagged, consumers should pin a tag instead of a moving branch so bridge/runtime changes can be upgraded intentionally.
-- DAW validation, signing, installers, and product-specific DSP behavior remain downstream responsibilities.
-
-## Companion Repo
-
-Recommended name: `synthkit`
-
-Purpose:
-
-- DSP building blocks
-- instrument/effect showcase plugins
-- higher-level audio helpers built on top of `vst3go`
+- DAW validation, signing, installers, and product-specific behavior remain downstream responsibilities.
 
 ## Development
 
@@ -127,14 +116,14 @@ just docker-build-windows                     # mingw-w64 Windows cross build
 ## Validation
 
 - This repo validates the shared runtime layer with `just test`, the VST3 contract with `just validate-vst3` (Steinberg validator in extensive mode plus `internal/validation/hostcheck` for sample-accurate processing), the CLAP contract with `just validate-clap` (clap-validator plus `hostcheck/clapcheck.c`), the Audio Unit contract with `just validate-au` (Apple's auval in strict mode plus `hostcheck/aucheck_darwin.m`), the LV2 contract with `just validate-lv2` (lv2_validate, lv2lint and `hostcheck/lv2check.c` on lilv), and the Windows build path with `just windows-smoke` when the host shell is available.
-- Platform-specific integration checks, host app behavior, and downstream DSP/plugin wiring belong in the companion `synthkit` repository or the consumer project.
+- The DSP library and the showcase plugins are covered by `just test` (`pkg/dsp/...`, `pkg/framework/...` and offline plugin tests in `examples/...`).
+- Host app behavior and product-specific plugin wiring belong in the consumer project.
 - Windows packaging and bundle layout checks in this repo stay focused on the generated DLL, header sidecar, and layout contract.
 - Real Windows signoff should follow `docs/windows-validation.md` so toolchain, bundle, host, and WebView2 behavior are captured consistently.
 
 ## Release Scope
 
-- This repo ships the VST3 binding/runtime layer, the web-rendered editor shell, and the Windows bundle/build harness that supports that shell.
-- This repo does not ship the higher-level DSP, showcase, or product-specific synth logic; those remain in `synthkit`.
+- This repo ships the VST3 binding/runtime layer, the DSP library, the showcase plugins, the web-rendered editor shell, and the Windows bundle/build harness that supports that shell.
 - Release validation for this repo is centered on `just test`, `just windows-smoke`, and the documented bundle/layout checks.
 - Final pre-tag review should follow `docs/release-checklist.md`.
 

@@ -7,8 +7,8 @@ Use this checklist before tagging a new `vst3go` release.
 ## Scope Decision
 
 - confirm the release still matches the repo boundary in `README.md`
-- confirm higher-level DSP, showcase, or product logic has not drifted back into this repo
-- confirm the intended release scope is still the VST3 binding/runtime layer, web-rendered editor shell, and Windows build harness
+- confirm product-specific logic (licensing, installers, branding) has not drifted into this repo
+- confirm the intended release scope is still the VST3 binding/runtime layer, the DSP library, the showcase plugins, the web-rendered editor shell, and the Windows build harness
 
 ## Runtime Validation
 
