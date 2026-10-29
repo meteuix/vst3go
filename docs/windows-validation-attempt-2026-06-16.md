@@ -1,3 +1,5 @@
+English | [한국어](windows-validation-attempt-2026-06-16.ko.md)
+
 # Windows Validation Attempt - 2026-06-16
 
 ## Summary

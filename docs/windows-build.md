@@ -1,3 +1,5 @@
+English | [한국어](windows-build.ko.md)
+
 # Windows Build Notes
 
 This repo now has a Windows editor-view scaffold and a `GetPluginFactory` export path, but Windows packaging still needs the host toolchain and bundle layout to be wired by the consumer build.

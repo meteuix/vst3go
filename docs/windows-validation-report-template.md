@@ -1,3 +1,5 @@
+English | [한국어](windows-validation-report-template.ko.md)
+
 # Windows Validation Report Template
 
 Use this template when running the real Windows validation flow from `docs/windows-validation.md`.

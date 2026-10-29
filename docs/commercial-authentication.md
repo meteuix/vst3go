@@ -1,3 +1,5 @@
+English | [한국어](commercial-authentication.ko.md)
+
 # Commercial Authentication And Licensing
 
 This guide explains how to add login, license-key activation, and entitlement checks to a commercial plugin built on top of `vst3go`.

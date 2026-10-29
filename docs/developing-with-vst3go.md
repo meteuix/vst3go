@@ -1,3 +1,5 @@
+English | [한국어](developing-with-vst3go.ko.md)
+
 # Developing With `vst3go`
 
 This guide shows how to build a plugin on top of `vst3go`, from the first `Plugin`/`Processor` pair all the way to editor metadata, state restore, and release validation.

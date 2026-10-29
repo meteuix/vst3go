@@ -1,3 +1,5 @@
+English | [한국어](windows-validation-quickstart.ko.md)
+
 # Windows Validation Quickstart
 
 Use this page when you are on a real Windows `amd64` machine and want the shortest path to validation.

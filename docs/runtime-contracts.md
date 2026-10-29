@@ -1,3 +1,5 @@
+English | [한국어](runtime-contracts.ko.md)
+
 # Runtime Contracts
 
 This repository is intentionally narrow: it ships the reusable VST3 binding and runtime layer, not product-specific DSP or host-validation logic.

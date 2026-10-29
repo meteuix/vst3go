@@ -1,3 +1,5 @@
+English | [한국어](release-checklist.ko.md)
+
 # Release Checklist
 
 Use this checklist before tagging a new `vst3go` release.

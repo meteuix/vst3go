@@ -1,3 +1,5 @@
+English | [한국어](release-notes-template.ko.md)
+
 # Release Notes Template
 
 Use this template when publishing a new `vst3go` tag.

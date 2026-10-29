@@ -1,3 +1,5 @@
+English | [한국어](README.ko.md)
+
 # VST3Go
 
 `vst3go` is the low-level Go interface and runtime layer for VST3.

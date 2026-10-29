@@ -1,3 +1,5 @@
+English | [한국어](web-editor-bridge.ko.md)
+
 # Web Editor Bridge
 
 The plugin editor is a web page rendered by the platform web view and embedded

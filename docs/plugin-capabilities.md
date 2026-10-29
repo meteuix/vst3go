@@ -1,3 +1,5 @@
+English | [한국어](plugin-capabilities.ko.md)
+
 # Plugin Capabilities
 
 What the runtime supports, and how a processor opts into each feature. The

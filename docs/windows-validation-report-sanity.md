@@ -1,3 +1,5 @@
+English | [한국어](windows-validation-report-sanity.ko.md)
+
 # Windows Validation Report
 
 ## Summary

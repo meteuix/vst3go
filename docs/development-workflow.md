@@ -1,3 +1,5 @@
+English | [한국어](development-workflow.ko.md)
+
 # Development Workflow
 
 This document describes how development work in `vst3go` should be approached so the repository stays focused, testable, and release-ready.
