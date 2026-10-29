@@ -31,7 +31,7 @@ type Instance struct {
 }
 
 // New creates and activates an instance of p; it is closed when the test
-// ends. The optional setup defaults to 48 kHz, 512-sample blocks, 32-bit.
+// ends. The optional setup defaults to 48 kHz, 4096-sample blocks, 32-bit.
 func New(t testing.TB, p plugin.Plugin, setup ...plugin.OfflineSetup) *Instance {
 	t.Helper()
 	var s plugin.OfflineSetup
@@ -76,12 +76,46 @@ func (i *Instance) RenderSilence(n, inChannels, outChannels int) [][]float32 {
 	return out
 }
 
+// AllocsPerProcess returns the average number of heap allocations of one
+// Process(in, out) call over runs calls, after a warm-up call. The offline
+// runtime itself does not allocate, so a non-zero result means the
+// processor allocates on the audio thread. before, if not nil, runs ahead
+// of each call to queue events or automation (Note, SendEvent, Automate
+// reuse their queues).
+func (i *Instance) AllocsPerProcess(runs int, in, out [][]float32, before func()) float64 {
+	i.t.Helper()
+	var err error
+	allocs := testing.AllocsPerRun(runs, func() {
+		if before != nil {
+			before()
+		}
+		if e := i.Process(in, out); e != nil && err == nil {
+			err = e
+		}
+	})
+	if err != nil {
+		i.t.Fatalf("plugintest: process: %v", err)
+	}
+	return allocs
+}
+
 // Set sets a parameter to a plain value.
 func (i *Instance) Set(id uint32, plain float64) {
 	i.t.Helper()
 	if err := i.SetParameterPlain(id, plain); err != nil {
 		i.t.Fatalf("plugintest: set parameter %d: %v", id, err)
 	}
+}
+
+// Normalized converts a plain value of a parameter to its normalized value,
+// for Automate.
+func (i *Instance) Normalized(id uint32, plain float64) float64 {
+	i.t.Helper()
+	p, ok := i.Processor().GetParameters().GetOK(id)
+	if !ok {
+		i.t.Fatalf("plugintest: no parameter %d", id)
+	}
+	return p.Normalize(plain)
 }
 
 // Plain returns a parameter's plain value.
