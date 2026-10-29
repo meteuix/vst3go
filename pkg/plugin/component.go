@@ -122,14 +122,21 @@ func (c *componentImpl) rebuildProcessContext() {
 }
 
 func (c *componentImpl) audioChannelCounts(direction bus.Direction) []int {
+	return c.appendAudioChannelCounts(nil, direction)
+}
+
+// appendAudioChannelCounts appends the channel count of every audio bus in
+// direction to dst.
+func (c *componentImpl) appendAudioChannelCounts(dst []int, direction bus.Direction) []int {
 	count := c.buses.GetBusCount(bus.MediaTypeAudio, direction)
-	channels := make([]int, count)
-	for i := range channels {
-		if info := c.buses.GetBusInfo(bus.MediaTypeAudio, direction, int32(i)); info != nil {
-			channels[i] = int(info.ChannelCount)
+	for i := range count {
+		channels := 0
+		if info := c.buses.GetBusInfo(bus.MediaTypeAudio, direction, i); info != nil {
+			channels = int(info.ChannelCount)
 		}
+		dst = append(dst, channels)
 	}
-	return channels
+	return dst
 }
 
 func (c *componentImpl) sidechainIndex() int {

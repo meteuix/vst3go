@@ -16,7 +16,7 @@ import (
 type OfflineSetup struct {
 	SampleRate float64 // default 48000
 	// MaxBlockSize is the largest block passed to ProcessAudio; Process
-	// splits longer buffers. Default 512.
+	// splits longer buffers. Default 4096.
 	MaxBlockSize int
 	// DoublePrecision processes in 64-bit (Process64); the processor must
 	// implement DoublePrecisionProcessor.
@@ -43,6 +43,13 @@ type Offline struct {
 	restarts  RestartFlags
 	messages  []OfflineMessage
 	editorOut []OfflineEditorMessage
+
+	// Buffers reused by every Process call, so rendering a block does not
+	// allocate once they have grown: tests can measure the processor's own
+	// allocations.
+	channelCounts [2][]int
+	scratch32     offlineScratch[float32]
+	scratch64     offlineScratch[float64]
 
 	// Transport is reported to the processor in every block. While
 	// IsPlaying is set, Process advances ProjectTimeSamples and, with a
@@ -175,14 +182,7 @@ func (o *Offline) SendController(channel int16, controller int16, offset int, va
 // be longer than MaxBlockSize; it is processed in blocks, with queued
 // events and automation delivered at their offsets.
 func (o *Offline) Process(in, out [][]float32) error {
-	var ins, outs [][][]float32
-	if in != nil {
-		ins = [][][]float32{in}
-	}
-	if out != nil {
-		outs = [][][]float32{out}
-	}
-	return o.ProcessBuses(ins, outs)
+	return o.ProcessBuses(o.scratch32.single(0, in), o.scratch32.single(1, out))
 }
 
 // ProcessBuses is Process with the channels of every audio bus:
@@ -196,7 +196,7 @@ func (o *Offline) ProcessBuses(ins, outs [][][]float32) error {
 	if err != nil {
 		return err
 	}
-	return render(o, ins, outs, n, (*process.Context).BeginBlock, (*process.Context).AddInputChannel, (*process.Context).AddOutputChannel)
+	return render(o, &o.scratch32, ins, outs, n, (*process.Context).BeginBlock, (*process.Context).AddInputChannel, (*process.Context).AddOutputChannel)
 }
 
 // Process64 is Process in 64-bit; it needs OfflineSetup.DoublePrecision.
@@ -204,18 +204,12 @@ func (o *Offline) Process64(in, out [][]float64) error {
 	if !o.double {
 		return fmt.Errorf("offline: not set up for 64-bit: %w", errInvalidArgument)
 	}
-	var ins, outs [][][]float64
-	if in != nil {
-		ins = [][][]float64{in}
-	}
-	if out != nil {
-		outs = [][][]float64{out}
-	}
+	ins, outs := o.scratch64.single(0, in), o.scratch64.single(1, out)
 	n, err := bufferLength(ins, outs)
 	if err != nil {
 		return err
 	}
-	return render(o, ins, outs, n, (*process.Context).BeginBlock64, (*process.Context).AddInputChannel64, (*process.Context).AddOutputChannel64)
+	return render(o, &o.scratch64, ins, outs, n, (*process.Context).BeginBlock64, (*process.Context).AddInputChannel64, (*process.Context).AddOutputChannel64)
 }
 
 // ProcessEvents runs n samples with silent input, for instruments, MIDI
@@ -225,17 +219,88 @@ func (o *Offline) ProcessEvents(n int) error {
 		return errInvalidArgument
 	}
 	if o.double {
-		return render[float64](o, nil, nil, n, (*process.Context).BeginBlock64, (*process.Context).AddInputChannel64, (*process.Context).AddOutputChannel64)
+		return render(o, &o.scratch64, nil, nil, n, (*process.Context).BeginBlock64, (*process.Context).AddInputChannel64, (*process.Context).AddOutputChannel64)
 	}
-	return render[float32](o, nil, nil, n, (*process.Context).BeginBlock, (*process.Context).AddInputChannel, (*process.Context).AddOutputChannel)
+	return render(o, &o.scratch32, nil, nil, n, (*process.Context).BeginBlock, (*process.Context).AddInputChannel, (*process.Context).AddOutputChannel)
+}
+
+// offlineScratch holds the bus lists and silent buffers Offline completes
+// the caller's buffers with; index 0 is input, 1 output.
+type offlineScratch[T float32 | float64] struct {
+	wrapped  [2][1][][]T
+	buses    [2][][][]T
+	channels [2][][][]T
+	silence  [][]T
+	used     int
+}
+
+// single wraps one bus of channels as a bus list, or returns nil.
+func (s *offlineScratch[T]) single(dir int, channels [][]T) [][][]T {
+	if channels == nil {
+		return nil
+	}
+	s.wrapped[dir][0] = channels
+	return s.wrapped[dir][:]
+}
+
+// silent returns a zeroed buffer of n samples.
+func (s *offlineScratch[T]) silent(n int) []T {
+	if s.used == len(s.silence) {
+		s.silence = append(s.silence, nil)
+	}
+	buf := s.silence[s.used]
+	if cap(buf) < n {
+		buf = make([]T, n)
+		s.silence[s.used] = buf
+	}
+	s.used++
+	buf = buf[:n]
+	clear(buf)
+	return buf
+}
+
+// complete returns buses with at least counts[b] channels of n samples per
+// bus, adding silent buffers for the missing ones. The caller's slices are
+// never modified.
+func (s *offlineScratch[T]) complete(dir int, buses [][][]T, counts []int, n int) [][][]T {
+	nb := max(len(buses), len(counts))
+	out := s.buses[dir][:0]
+	for b := range nb {
+		var given [][]T
+		if b < len(buses) {
+			given = buses[b]
+		}
+		want := 0
+		if b < len(counts) {
+			want = counts[b]
+		}
+		if len(given) >= want {
+			out = append(out, given)
+			continue
+		}
+		for len(s.channels[dir]) <= b {
+			s.channels[dir] = append(s.channels[dir], nil)
+		}
+		chans := append(s.channels[dir][b][:0], given...)
+		for len(chans) < want {
+			chans = append(chans, s.silent(n))
+		}
+		s.channels[dir][b] = chans
+		out = append(out, chans)
+	}
+	s.buses[dir] = out
+	return out
 }
 
 // render processes n samples of the given buses (completed to the bus
 // layout) in blocks of at most maxBlock.
-func render[T float32 | float64](o *Offline, ins, outs [][][]T, n int,
+func render[T float32 | float64](o *Offline, s *offlineScratch[T], ins, outs [][][]T, n int,
 	begin func(*process.Context, int), addIn, addOut func(*process.Context, int, []T)) error {
-	ins = completeBuses(ins, o.c.audioChannelCounts(bus.DirectionInput), n)
-	outs = completeBuses(outs, o.c.audioChannelCounts(bus.DirectionOutput), n)
+	o.channelCounts[0] = o.c.appendAudioChannelCounts(o.channelCounts[0][:0], bus.DirectionInput)
+	o.channelCounts[1] = o.c.appendAudioChannelCounts(o.channelCounts[1][:0], bus.DirectionOutput)
+	s.used = 0
+	ins = s.complete(0, ins, o.channelCounts[0], n)
+	outs = s.complete(1, outs, o.channelCounts[1], n)
 	return o.render(n, func(ctx *process.Context, start, end int) {
 		begin(ctx, end-start)
 		for b, channels := range ins {
@@ -249,23 +314,6 @@ func render[T float32 | float64](o *Offline, ins, outs [][][]T, n int,
 			}
 		}
 	})
-}
-
-// completeBuses returns buses with at least channels[b] channels of n
-// samples per bus, adding zeroed buffers for the missing ones.
-func completeBuses[T float32 | float64](buses [][][]T, channels []int, n int) [][][]T {
-	out := make([][][]T, max(len(buses), len(channels)))
-	for b := range out {
-		if b < len(buses) {
-			out[b] = buses[b]
-		}
-		if b < len(channels) {
-			for len(out[b]) < channels[b] {
-				out[b] = append(out[b], make([]T, n))
-			}
-		}
-	}
-	return out
 }
 
 func bufferLength[T float32 | float64](ins, outs [][][]T) (int, error) {

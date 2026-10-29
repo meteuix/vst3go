@@ -12,7 +12,7 @@ import (
 func TestGainAutomationIsSampleAccurate(t *testing.T) {
 	p := plugintest.New(t, gainPlugin{})
 	p.Set(paramGain, 0)
-	// +6 dB from sample 1000, inside the second 512-sample block.
+	// +6 dB from sample 1000, in the middle of the block.
 	if err := p.Automate(paramGain, 1000, (6.0+80)/92); err != nil {
 		t.Fatal(err)
 	}

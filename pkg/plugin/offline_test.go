@@ -141,3 +141,69 @@ func TestOfflineFlushAndHost(t *testing.T) {
 		t.Fatalf("messages = %+v", m)
 	}
 }
+
+type passPlugin struct{}
+
+func (passPlugin) GetInfo() frameworkplugin.Info {
+	return frameworkplugin.Info{ID: "com.example.pass", Name: "Pass", Vendor: "Acme"}
+}
+
+func (passPlugin) CreateProcessor() Processor {
+	return frameworkplugin.NewSimpleProcessor(bus.NewEffectStereoSidechain(), func(ctx *process.Context) {
+		ctx.PassThrough()
+	})
+}
+
+func TestOfflineProcessDoesNotAllocate(t *testing.T) {
+	o, err := NewOffline(passPlugin{}, OfflineSetup{MaxBlockSize: 128})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer o.Close()
+	in := [][]float32{make([]float32, 1000), make([]float32, 1000)}
+	out := [][]float32{make([]float32, 1000), make([]float32, 1000)}
+	for name, run := range map[string]func(){
+		"full buffers":   func() { _ = o.Process(in, out) },
+		"missing input":  func() { _ = o.Process(nil, out) },
+		"missing output": func() { _ = o.Process(in[:1], nil) },
+		"events only":    func() { _ = o.ProcessEvents(1000) },
+		"with events": func() {
+			o.SendEvent(midi.NoteOn(0, 60, 1).At(300))
+			_ = o.Process(in, out)
+		},
+	} {
+		if allocs := testing.AllocsPerRun(20, run); allocs != 0 {
+			t.Errorf("%s: %v allocations per call", name, allocs)
+		}
+	}
+}
+
+func TestOfflineCompletesBusesWithoutTouchingCallerSlices(t *testing.T) {
+	o, err := NewOffline(passPlugin{}, OfflineSetup{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer o.Close()
+	left := []float32{1, 2, 3}
+	// Spare capacity: completing the bus must not append into it.
+	in := make([][]float32, 1, 4)
+	in[0] = left
+	out := [][]float32{make([]float32, 3), make([]float32, 3)}
+	if err := o.Process(in, out); err != nil {
+		t.Fatal(err)
+	}
+	if len(in) != 1 || in[:2][1] != nil {
+		t.Fatalf("caller input slice modified: %v", in[:2])
+	}
+	if out[0][2] != 3 || out[1][2] != 0 {
+		t.Fatalf("out = %v, want the left channel and a silent right channel", out)
+	}
+
+	// A previous call's audio must not leak into the silent buffers.
+	if err := o.Process([][]float32{{9, 9, 9}}, out); err != nil {
+		t.Fatal(err)
+	}
+	if out[1][0] != 0 {
+		t.Fatalf("silent channel carries old audio: %v", out[1])
+	}
+}
