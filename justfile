@@ -20,7 +20,7 @@ lint-fix:
   env GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache GOLANGCI_LINT_CACHE=/tmp/golangci-lint-cache golangci-lint run --fix ./pkg/...
 
 test-go:
-  env GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache go test ./pkg/... ./cmd/vst3go
+  env GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache go test ./pkg/... ./examples/... ./cmd/vst3go
 
 test: fmt-check test-go
 
