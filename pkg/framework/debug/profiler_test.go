@@ -136,16 +136,25 @@ func TestAudioProcessProfilerMeasuresRealTime(t *testing.T) {
 	bufferSize := 512
 	p := NewAudioProcessProfiler(sampleRate)
 
-	// Simulate 50% CPU load
+	// Simulate 50% CPU load. time.Sleep never returns early but can return
+	// late on a busy machine, so the expected load comes from the time the
+	// "work" actually took, measured independently.
 	bufferDuration := time.Duration(float64(bufferSize) / sampleRate * float64(time.Second))
+	var worked time.Duration
 	for i := 0; i < 10; i++ {
 		start := p.Begin()
+		t0 := time.Now()
 		time.Sleep(bufferDuration / 2)
+		worked += time.Since(t0)
 		p.End(start, bufferSize)
 	}
-	// time.Sleep never returns early, and rarely by much late.
-	if cpuLoad := p.CPULoad(); cpuLoad < 50 || cpuLoad > 70 {
-		t.Errorf("CPU load %.2f%%, want about 50%%", cpuLoad)
+	if worked < 10*(bufferDuration/2) {
+		t.Fatalf("slept %v in total, less than asked", worked)
+	}
+	want := float64(worked) / float64(10*bufferDuration) * 100
+	// The profiler's window encloses the work and adds only clock reads.
+	if cpuLoad := p.CPULoad(); cpuLoad < want || cpuLoad > want+1 {
+		t.Errorf("CPU load %.2f%%, want %.2f%%", cpuLoad, want)
 	}
 
 	report := NewAudioProcessProfiler(44100).AudioReport()
