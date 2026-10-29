@@ -24,6 +24,11 @@ test-go:
 
 test: fmt-check test-go
 
+# Measure per-block processing time from a native real-time thread while other goroutines keep the GC busy (macOS/Linux).
+# Fails when a block misses its real-time budget.
+rtcheck seconds='20' block='128' garbage='200':
+  go run ./internal/validation/rtcheck -seconds {{seconds}} -block {{block}} -garbage {{garbage}}
+
 # Build a macOS/Linux VST3 bundle from a main package, e.g. `just vst3 ./myplugin MyPlugin`.
 vst3 package name out='dist':
   bash scripts/build_vst3.sh "{{package}}" "{{name}}" "{{out}}"
