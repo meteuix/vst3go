@@ -27,7 +27,7 @@ Downstream projects should treat these packages as the supported API surface:
 
 The C bridge sources in `pkg/plugin`, embedded editor assets, and platform-specific editor shims support that API surface and are not called directly.
 
-The DSP processors in `pkg/dsp` are created and sized outside the audio thread (constructor or `Initialize`) and their per-sample/per-buffer methods do not allocate, so they are safe to call from `ProcessAudio`. Each instance is owned by one processor and is not safe for concurrent use. The exception is `pkg/dsp/analysis`: its meters and scopes guard their state with a mutex so another thread can read them, so `Process` takes a lock. Read them from the audio thread and publish readings through read-only output parameters, or accept that a reader can briefly block the audio thread.
+The DSP processors in `pkg/dsp` are created and sized outside the audio thread (constructor or `Initialize`) and their per-sample/per-buffer methods do not allocate, so they are safe to call from `ProcessAudio`. Each instance is owned by one processor and is not safe for concurrent use. `pkg/dsp/analysis` meters and scopes are also read from other threads: their `Get*` methods are safe from any goroutine and never make `Process` wait (readings are handed over by triple buffering), while `Process`, `Reset` and the setters stay on the audio thread.
 
 ## Lifecycle Expectations
 
@@ -48,13 +48,17 @@ The DSP processors in `pkg/dsp` are created and sized outside the audio thread (
 
 ## Thread-Safety Expectations
 
-- `pkg/framework/param.Registry` uses internal locking for parameter lookup and registration helpers.
-- Individual parameter reads and writes are intended to be safe for the runtime paths used by this repo, but callers should still avoid long critical sections or external lock ordering around registry access.
+- `pkg/framework/param.Registry` lookups take no lock: they read an immutable snapshot, and registration publishes a new one. Individual parameter values are atomics.
+- The audio path takes no lock the runtime holds elsewhere: the per-call instance lookup of every host entry point reads an immutable snapshot, and CLAP plugin-side edits reach `process` through a lock-free queue.
 - `pkg/framework/process.Context` is owned by one processing pass at a time and should not be shared concurrently across worker goroutines.
 - `ProcessAudio` runs on the host audio thread; every other `Processor` method (including MIDI learn, channel info and `ReceiveMessage`) and all `Host` calls run on host/UI threads. The runtime serializes host-thread lifecycle calls per instance. Under CLAP, `Host` edits are queued and reported to the host from the next `process` or `flush` call.
 - The runtime splits each host block at parameter change offsets and calls `ProcessAudio` once per segment, so a processor can rely on parameter values being constant inside one call.
 - `pkg/framework/state.Manager` is a serialization helper and should be driven from host state callbacks, not from concurrent realtime audio paths.
 - Platform editor bridges should treat the Go-side parameter model as the source of truth and route UI changes back through the normal parameter update flow instead of mutating parallel state.
+
+## Real-Time Behavior
+
+Processing is allocation-free and lock-free on the runtime side, but it runs on the Go runtime, which does not give hard real-time guarantees: a call that enters Go during a garbage collector stop-the-world pause waits for it. The pauses are short (sub-millisecond) and do not grow with the heap, so keep the rest of the plugin's allocation rate moderate and measure with `just rtcheck`. It calls a typical effect chain from a native real-time thread (as a host does) while other goroutines allocate, and fails when a block misses its budget. On an Apple M4 with 128-sample blocks at 48 kHz (2.67 ms budget), the longest call went from 0.87 ms with no garbage to 1.11 ms at 1 GB/s of allocation (56 GC cycles in 20 s), with no block over budget.
 
 ## State And Persistence
 

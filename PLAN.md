@@ -193,6 +193,12 @@ work, DSP included.
       analysis), processor chains (`pkg/framework/dsp`), voice allocation
       (`pkg/framework/voice`) and debug/profiling helpers
       (`pkg/framework/debug`), with unit tests.
+- [x] Advanced DSP: FFT/STFT, oversampling and sample-rate conversion,
+      partitioned convolution, pitch shifting, time stretching and pitch
+      detection, wavetable and FM oscillators, granular synthesis and
+      sample playback, each with showcase plugins (`saturator`,
+      `convreverb`, `pitchshifter`, `tuner`, `wavetablesynth`, `fmsynth`,
+      `granulator`, `sampler`).
 - [x] Showcase plugins in `examples/` on the current runtime
       (`standalone.Main`, allocation-free processing, read-only meters via
       `ctx.SetOutputParameter`), each with offline `pkg/plugintest` tests.

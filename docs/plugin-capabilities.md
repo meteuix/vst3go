@@ -153,12 +153,20 @@ afconvert on macOS and with `flac -t` and sox on Linux.
 | --- | --- | --- |
 | `filter` | `Biquad` (lowpass, highpass, bandpass, notch, peaking, shelves), `SVF`, `MultiModeSVF` | `filter`, `auto_params`, `mastercompressor`, `drumbus`, `surround`, `vocalstrip` |
 | `dynamics` | `Compressor` (soft/hard knee, lookahead, sidechain), `Limiter` (true-peak lookahead brick wall), `Gate` (hysteresis, hold, key filter), `Expander`, `TransientShaper` | `mastercompressor`, `masterlimiter`, `studiogate`, `sidechain`, `transientshaper`, `drumbus`, `vocalstrip`, `auto_params`, `chain_fx` |
-| `envelope` | ADSR/AR envelopes, peak/RMS `Detector`, `Follower` | `pkg/dsp/dynamics` |
+| `envelope` | ADSR/AR envelopes, peak/RMS `Detector`, `Follower` | `wavetablesynth`, `fmsynth`, `pkg/dsp/dynamics`, `pkg/dsp/sampler` |
 | `delay` | `Line`, `MultiTap`, `Comb`, `Allpass`, `Modulated` | `delay` |
 | `modulation` | `LFO`, `Chorus`, `Flanger`, `Phaser`, `Tremolo`, `RingModulator` | `vintagechorus`, `jetflanger` |
 | `distortion` | `Waveshaper`, `TubeSaturation`, `TapeSaturation`, `Bitcrusher` | `multidistortion` |
 | `reverb` | `Schroeder`, `Freeverb`, `FDN` | |
-| `oscillator`, `utility`, `gain`, `pan`, `mix`, `interpolation` | oscillators, noise, DC blockers, dB/pan laws, mixing, interpolation | `gain`, `delay`, `filter`, `chain_fx` |
+| `oscillator` | basic waveforms, `BLIT`, band-limited saw, mipmapped `Wavetable`/`WavetableBank`, FM `Operator` | `wavetablesynth`, `fmsynth` |
+| `utility`, `gain`, `pan`, `mix`, `interpolation` | noise, DC blockers, dB/pan laws, mixing, interpolation | `gain`, `delay`, `filter`, `chain_fx` |
+| `fft` | complex and packed real radix-2 FFT | `pkg/dsp/convolution`, `pkg/dsp/spectral`, `pkg/dsp/pitch` |
+| `spectral` | `STFT`: windowed overlap-add frame processing | `pkg/dsp/pitch` |
+| `resample` | `Oversampler` (2x to 16x halfband cascade), streaming `Resampler` and `Convert` (Kaiser-windowed sinc, any ratio), shared sinc `Kernel` | `saturator`, `pkg/dsp/sampler` |
+| `convolution` | `Convolver`: zero-latency uniformly partitioned convolution | `convreverb` |
+| `pitch` | delay-line `Shifter`, phase-vocoder `SpectralShifter`, offline time `Stretch`, YIN `Detector` | `pitchshifter`, `tuner` |
+| `granular` | `Granulator`: granular delay and freeze with spray, pitch and stereo spread | `granulator` |
+| `sampler` | `Sample` (loop, half-rate copies), key/velocity `Map`, band-limited `Voice` | `sampler` |
 | `analysis` | FFT, spectrum, peak/RMS/LUFS (BS.1770-4, EBU R 128 LRA) meters, correlation, phase scopes | |
 
 `pkg/framework/dsp` chains processors (`NewChain`, `NewParallelChain`,
@@ -632,6 +640,9 @@ with `SOUND=1`, playback through ALSA.
   `IProgramListData` updates the processor side only.
 - Chord and scale events are input-only; the Linux editor needs an X11 host
   (no Wayland embedding exists in VST3).
+- There is no AAX format: AAX plugins are built against Avid's AAX SDK and
+  need PACE signing to load in release Pro Tools, neither of which vst3go
+  wraps.
 - Audio Units are AUv2 only (no AUv3 app extension), with the channel
   configuration of the CLAP ports (no host-negotiated layouts) and no
   MIDI 2.0 event lists.

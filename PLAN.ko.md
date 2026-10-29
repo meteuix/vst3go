@@ -187,6 +187,10 @@ DSP를 포함해, 플러그인 작업에서 JUCE를 대체할 수 있는 플러�
       디스토션, 오실레이터, 엔벨로프, 팬, 믹스, 보간, 분석), 프로세서 체인
       (`pkg/framework/dsp`), 보이스 할당(`pkg/framework/voice`), 디버그/프로파일링 헬퍼
       (`pkg/framework/debug`)와 그 단위 테스트.
+- [x] 고급 DSP: FFT/STFT, 오버샘플링과 샘플 레이트 변환, 분할 컨볼루션, 피치 시프트,
+      타임 스트레치와 피치 검출, 웨이브테이블과 FM 오실레이터, 그래뉼러 합성과 샘플 재생,
+      각각 쇼케이스 플러그인 포함(`saturator`, `convreverb`, `pitchshifter`, `tuner`,
+      `wavetablesynth`, `fmsynth`, `granulator`, `sampler`).
 - [x] 현재 런타임에 맞춘 `examples/`의 쇼케이스 플러그인(`standalone.Main`, 메모리 할당 없는
       처리, `ctx.SetOutputParameter`를 통한 읽기 전용 미터), 각각 오프라인 `pkg/plugintest`
       테스트 포함.

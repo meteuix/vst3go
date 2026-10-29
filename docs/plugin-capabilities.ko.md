@@ -151,12 +151,20 @@ afconvert로, Linux에서는 `flac -t`와 sox로 검사합니다.
 | --- | --- | --- |
 | `filter` | `Biquad`(로우패스, 하이패스, 밴드패스, 노치, 피킹, 셸프), `SVF`, `MultiModeSVF` | `filter`, `auto_params`, `mastercompressor`, `drumbus`, `surround`, `vocalstrip` |
 | `dynamics` | `Compressor`(소프트/하드 니, 룩어헤드, 사이드체인), `Limiter`(트루 피크 룩어헤드 브릭월), `Gate`(히스테리시스, 홀드, 키 필터), `Expander`, `TransientShaper` | `mastercompressor`, `masterlimiter`, `studiogate`, `sidechain`, `transientshaper`, `drumbus`, `vocalstrip`, `auto_params`, `chain_fx` |
-| `envelope` | ADSR/AR 엔벨로프, 피크/RMS `Detector`, `Follower` | `pkg/dsp/dynamics` |
+| `envelope` | ADSR/AR 엔벨로프, 피크/RMS `Detector`, `Follower` | `wavetablesynth`, `fmsynth`, `pkg/dsp/dynamics`, `pkg/dsp/sampler` |
 | `delay` | `Line`, `MultiTap`, `Comb`, `Allpass`, `Modulated` | `delay` |
 | `modulation` | `LFO`, `Chorus`, `Flanger`, `Phaser`, `Tremolo`, `RingModulator` | `vintagechorus`, `jetflanger` |
 | `distortion` | `Waveshaper`, `TubeSaturation`, `TapeSaturation`, `Bitcrusher` | `multidistortion` |
 | `reverb` | `Schroeder`, `Freeverb`, `FDN` | |
-| `oscillator`, `utility`, `gain`, `pan`, `mix`, `interpolation` | 오실레이터, 노이즈, DC 블로커, dB/팬 법칙, 믹싱, 보간 | `gain`, `delay`, `filter`, `chain_fx` |
+| `oscillator` | 기본 파형, `BLIT`, 대역 제한 톱니파, 밉맵 `Wavetable`/`WavetableBank`, FM `Operator` | `wavetablesynth`, `fmsynth` |
+| `utility`, `gain`, `pan`, `mix`, `interpolation` | 노이즈, DC 블로커, dB/팬 법칙, 믹싱, 보간 | `gain`, `delay`, `filter`, `chain_fx` |
+| `fft` | 복소수 및 packed real radix-2 FFT | `pkg/dsp/convolution`, `pkg/dsp/spectral`, `pkg/dsp/pitch` |
+| `spectral` | `STFT`: 윈도 overlap-add 프레임 처리 | `pkg/dsp/pitch` |
+| `resample` | `Oversampler`(2x~16x 하프밴드 캐스케이드), 스트리밍 `Resampler`와 `Convert`(카이저 윈도 sinc, 임의 비율), 공유 sinc `Kernel` | `saturator`, `pkg/dsp/sampler` |
+| `convolution` | `Convolver`: 지연 없는 균일 분할 컨볼루션 | `convreverb` |
+| `pitch` | 딜레이 라인 `Shifter`, 페이즈 보코더 `SpectralShifter`, 오프라인 타임 `Stretch`, YIN `Detector` | `pitchshifter`, `tuner` |
+| `granular` | `Granulator`: 스프레이, 피치, 스테레오 확산을 갖춘 그래뉼러 딜레이와 프리즈 | `granulator` |
+| `sampler` | `Sample`(루프, 절반 레이트 사본), 키/벨로시티 `Map`, 대역 제한 `Voice` | `sampler` |
 | `analysis` | FFT, 스펙트럼, 피크/RMS/LUFS(BS.1770-4, EBU R 128 LRA) 미터, 상관도, 위상 스코프 | |
 
 `pkg/framework/dsp`는 프로세서를 체인으로 묶고(`NewChain`, `NewParallelChain`,
@@ -603,6 +611,8 @@ Linux를 다룹니다: headless 앱, Xvfb에서의 신스 에디터(페이지가
   갱신합니다.
 - 코드와 스케일 이벤트는 입력 전용이며, Linux 에디터에는 X11 host가 필요합니다(VST3에는
   Wayland 임베딩이 없습니다).
+- AAX 포맷은 없습니다. AAX 플러그인은 Avid의 AAX SDK로 빌드해야 하고 정식 Pro Tools에서
+  로드하려면 PACE 서명이 필요한데, vst3go는 둘 다 감싸지 않습니다.
 - Audio Unit은 AUv2만 지원하며(AUv3 앱 확장 없음), 채널 구성은 CLAP 포트의 구성을
   따르고(host와 협상하는 레이아웃 없음), MIDI 2.0 이벤트 리스트는 없습니다.
 - LV2는 Linux 전용입니다. UI가 열려 있지 않으면 플러그인이 스스로 바꾼 값(MIDI로
