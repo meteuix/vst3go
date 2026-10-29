@@ -321,3 +321,28 @@ func BenchmarkAutoRegistry(b *testing.B) {
 		}
 	})
 }
+
+func TestAutoRegistryHasOneBypassParameter(t *testing.T) {
+	reg := NewAutoRegistry()
+	if err := reg.RegisterStandardControls(); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.RegisterCompressorControls(); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.RegisterEQBand(1); err != nil {
+		t.Fatal(err)
+	}
+	var bypass []string
+	for _, p := range reg.All() {
+		if p.Flags&IsBypass != 0 {
+			bypass = append(bypass, p.Name)
+		}
+	}
+	if len(bypass) != 1 || bypass[0] != "Bypass" {
+		t.Fatalf("bypass-flagged parameters = %v, want only Bypass", bypass)
+	}
+	if enable := reg.GetByName("Band 1 Enable"); enable == nil || enable.GetPlainValue() != 1 {
+		t.Fatal("EQ bands should be enabled by default")
+	}
+}

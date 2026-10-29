@@ -188,7 +188,7 @@ func (r *AutoRegistry) RegisterCompressorControls() error {
 			Default(2).
 			Formatter(func(v float64) string { return fmt.Sprintf("%.1f dB", v) }, nil).
 			Build()).
-		Add(BypassParameter(0, "Auto Gain").Build()).
+		Add(Choice(0, "Auto Gain", []ChoiceOption{{Value: 0, Name: "Off"}, {Value: 1, Name: "On"}}).Build()).
 		Build()
 }
 
@@ -206,7 +206,7 @@ func (r *AutoRegistry) RegisterEQBand(bandNumber int) error {
 	}
 
 	return NewRegistryBuilder(r).
-		Add(BypassParameter(0, prefix+" Enable").Build()).
+		Add(Choice(0, prefix+" Enable", []ChoiceOption{{Value: 0, Name: "Off"}, {Value: 1, Name: "On"}}).Default(1).Build()).
 		Add(FrequencyParameter(0, prefix+" Frequency", 20, 20000, 1000).Build()).
 		Add(GainParameter(0, prefix+" Gain").Build()).
 		Add(QParameter(0, prefix+" Q", 0.1, 10, 0.7).Build()).
