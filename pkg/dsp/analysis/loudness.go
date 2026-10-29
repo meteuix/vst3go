@@ -1,9 +1,6 @@
 package analysis
 
-import (
-	"math"
-	"sync"
-)
+import "math"
 
 // Loudness histograms span -70 LUFS (the absolute gate) to +10 LUFS in
 // 0.01 LU bins; louder blocks land in the top bin.
@@ -29,7 +26,6 @@ const (
 // with 0.01 LU resolution, so the meter runs indefinitely without
 // allocating after construction.
 type LUFSMeter struct {
-	mu       sync.Mutex
 	channels int
 	weights  []float64
 	stage1   []kFilter // K-weighting high shelf, per channel
@@ -47,6 +43,13 @@ type LUFSMeter struct {
 
 	integrated loudnessHistogram // 400 ms blocks
 	shortTerms loudnessHistogram // 3 s blocks for the loudness range
+
+	out published[loudnessReading]
+}
+
+// loudnessReading is the set of readings published after each step.
+type loudnessReading struct {
+	momentary, shortTerm, integrated, lra float64
 }
 
 type kFilter struct {
@@ -66,6 +69,8 @@ func (f *kFilter) process(x float64) float64 {
 type loudnessHistogram struct {
 	count []int
 	power []float64
+	n     int     // blocks in all bins
+	sum   float64 // power of all blocks
 }
 
 func newLoudnessHistogram() loudnessHistogram {
@@ -81,25 +86,23 @@ func (h *loudnessHistogram) add(power float64) {
 	bin := loudnessBin(l)
 	h.count[bin]++
 	h.power[bin] += power
+	h.n++
+	h.sum += power
 }
 
 // gated returns the bin of the relative gate (the power mean of all blocks
 // plus offset LU), or -1 when there are no blocks.
 func (h *loudnessHistogram) gated(offset float64) int {
-	n, sum := 0, 0.0
-	for i, c := range h.count {
-		n += c
-		sum += h.power[i]
-	}
-	if n == 0 {
+	if h.n == 0 {
 		return -1
 	}
-	return loudnessBin(max(loudnessFloor, powerToLUFS(sum/float64(n))+offset))
+	return loudnessBin(max(loudnessFloor, powerToLUFS(h.sum/float64(h.n))+offset))
 }
 
 func (h *loudnessHistogram) reset() {
 	clear(h.count)
 	clear(h.power)
+	h.n, h.sum = 0, 0
 }
 
 func loudnessBin(lufs float64) int {
@@ -162,15 +165,14 @@ func NewLUFSMeter(sampleRate float64, channels int) *LUFSMeter {
 		lm.stage1[ch] = shelf
 		lm.stage2[ch] = highpass
 	}
+	lm.out.init(func(*loudnessReading) {})
+	lm.publish()
 	return lm
 }
 
 // Process adds interleaved samples ([ch0, ch1, ch0, ch1, ...]); a trailing
 // partial frame is ignored.
 func (lm *LUFSMeter) Process(samples []float64) {
-	lm.mu.Lock()
-	defer lm.mu.Unlock()
-
 	for i := 0; i+lm.channels <= len(samples); i += lm.channels {
 		for ch, x := range samples[i : i+lm.channels] {
 			y := lm.stage2[ch].process(lm.stage1[ch].process(x))
@@ -207,31 +209,34 @@ func (lm *LUFSMeter) completeStep() {
 	if lm.steps >= shortTermSteps {
 		lm.shortTerms.add(lm.shortTerm)
 	}
+	lm.publish()
+}
+
+// publish computes the readings for readers.
+func (lm *LUFSMeter) publish() {
+	*lm.out.write() = loudnessReading{
+		momentary:  powerToLUFS(lm.momentary),
+		shortTerm:  powerToLUFS(lm.shortTerm),
+		integrated: lm.integratedLUFS(),
+		lra:        lm.loudnessRange(),
+	}
+	lm.out.publish()
 }
 
 // GetMomentaryLUFS returns the loudness of the last 400 ms, or -Inf before
 // the first 100 ms step and for silence.
-func (lm *LUFSMeter) GetMomentaryLUFS() float64 {
-	lm.mu.Lock()
-	defer lm.mu.Unlock()
-	return powerToLUFS(lm.momentary)
-}
+func (lm *LUFSMeter) GetMomentaryLUFS() float64 { return lm.out.get().momentary }
 
 // GetShortTermLUFS returns the loudness of the last 3 s.
-func (lm *LUFSMeter) GetShortTermLUFS() float64 {
-	lm.mu.Lock()
-	defer lm.mu.Unlock()
-	return powerToLUFS(lm.shortTerm)
-}
+func (lm *LUFSMeter) GetShortTermLUFS() float64 { return lm.out.get().shortTerm }
 
 // GetIntegratedLUFS returns the gated loudness of everything since the
 // last reset: the power mean of the 400 ms blocks (75% overlap) above
 // -70 LUFS and above the ungated mean minus 10 LU. It is -Inf until the
 // first block passes the gates.
-func (lm *LUFSMeter) GetIntegratedLUFS() float64 {
-	lm.mu.Lock()
-	defer lm.mu.Unlock()
+func (lm *LUFSMeter) GetIntegratedLUFS() float64 { return lm.out.get().integrated }
 
+func (lm *LUFSMeter) integratedLUFS() float64 {
 	h := &lm.integrated
 	gate := h.gated(integratedRelative)
 	if gate < 0 {
@@ -252,10 +257,9 @@ func (lm *LUFSMeter) GetIntegratedLUFS() float64 {
 // spread between the 10th and 95th percentiles of the 3 s short-term
 // loudness values above -70 LUFS and above their mean minus 20 LU. It is
 // 0 until a full 3 s window has been measured.
-func (lm *LUFSMeter) GetLoudnessRange() float64 {
-	lm.mu.Lock()
-	defer lm.mu.Unlock()
+func (lm *LUFSMeter) GetLoudnessRange() float64 { return lm.out.get().lra }
 
+func (lm *LUFSMeter) loudnessRange() float64 {
 	h := &lm.shortTerms
 	gate := h.gated(rangeRelative)
 	if gate < 0 {
@@ -287,9 +291,6 @@ func (h *loudnessHistogram) percentileBin(from, rank int) int {
 
 // Reset clears the filters and all measurements.
 func (lm *LUFSMeter) Reset() {
-	lm.mu.Lock()
-	defer lm.mu.Unlock()
-
 	for ch := range lm.stage1 {
 		lm.stage1[ch].x1, lm.stage1[ch].x2, lm.stage1[ch].y1, lm.stage1[ch].y2 = 0, 0, 0, 0
 		lm.stage2[ch].x1, lm.stage2[ch].x2, lm.stage2[ch].y1, lm.stage2[ch].y2 = 0, 0, 0, 0
@@ -299,4 +300,5 @@ func (lm *LUFSMeter) Reset() {
 	lm.momentary, lm.shortTerm = 0, 0
 	lm.integrated.reset()
 	lm.shortTerms.reset()
+	lm.publish()
 }

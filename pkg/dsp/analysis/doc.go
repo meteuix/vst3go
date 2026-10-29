@@ -28,8 +28,11 @@
 //   - Vector scope with graticule
 //   - Polar coordinate display
 //
-// All analysis tools are designed for real-time operation with minimal
-// allocations and thread-safe access.
+// Process, Reset and the Set* methods belong to the goroutine that
+// processes the audio (or run before processing starts); Process does not
+// allocate. The Get* methods may be called from any goroutine: each
+// analyzer publishes its readings by triple buffering, so readers take no
+// lock the audio thread waits for and see a consistent reading.
 //
 // Example usage:
 //

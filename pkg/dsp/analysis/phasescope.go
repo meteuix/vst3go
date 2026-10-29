@@ -1,9 +1,6 @@
 package analysis
 
-import (
-	"math"
-	"sync"
-)
+import "math"
 
 // PhaseScope visualizes stereo phase relationships
 type PhaseScope struct {
@@ -19,7 +16,16 @@ type PhaseScope struct {
 	rotation    float64 // 45-degree rotation for Lissajous display
 	scale       float64
 	persistence float64
-	mu          sync.Mutex
+	out         published[scopeReading]
+}
+
+// scopeReading is the display state readers see, oldest point first.
+type scopeReading struct {
+	l, r       []float64
+	points     []PhasePoint
+	brightness []float64
+	count      int
+	scale      float64
 }
 
 // PhasePoint represents a point in the phase display
@@ -38,7 +44,7 @@ const (
 
 // NewPhaseScope creates a new phase scope
 func NewPhaseScope(bufferSize int) *PhaseScope {
-	return &PhaseScope{
+	ps := &PhaseScope{
 		bufferSize:  bufferSize,
 		bufferL:     make([]float64, bufferSize),
 		bufferR:     make([]float64, bufferSize),
@@ -50,13 +56,37 @@ func NewPhaseScope(bufferSize int) *PhaseScope {
 		decay:       0.95,
 		persistence: 0.8,
 	}
+	ps.out.init(func(r *scopeReading) {
+		r.l = make([]float64, bufferSize)
+		r.r = make([]float64, bufferSize)
+		r.points = make([]PhasePoint, bufferSize)
+		r.brightness = make([]float64, bufferSize)
+		r.scale = 1
+	})
+	return ps
+}
+
+// publish copies the display state, oldest point first, for readers.
+func (ps *PhaseScope) publish() {
+	r := ps.out.write()
+	start := 0
+	if ps.count == ps.bufferSize {
+		start = ps.writePos
+	}
+	n := copy(r.l, ps.bufferL[start:ps.count])
+	copy(r.l[n:], ps.bufferL[:start])
+	n = copy(r.r, ps.bufferR[start:ps.count])
+	copy(r.r[n:], ps.bufferR[:start])
+	n = copy(r.points, ps.points[start:ps.count])
+	copy(r.points[n:], ps.points[:start])
+	n = copy(r.brightness, ps.brightness[start:ps.count])
+	copy(r.brightness[n:], ps.brightness[:start])
+	r.count, r.scale = ps.count, ps.scale
+	ps.out.publish()
 }
 
 // SetMode sets the display mode
 func (ps *PhaseScope) SetMode(mode PhaseScopeMode) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-
 	switch mode {
 	case ModeLissajous:
 		ps.rotation = 0
@@ -69,9 +99,6 @@ func (ps *PhaseScope) SetMode(mode PhaseScopeMode) {
 
 // SetDecay sets the decay rate for the display (0-1)
 func (ps *PhaseScope) SetDecay(decay float64) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-
 	if decay >= 0 && decay <= 1 {
 		ps.decay = decay
 	}
@@ -79,9 +106,6 @@ func (ps *PhaseScope) SetDecay(decay float64) {
 
 // SetPersistence sets the trail persistence (0-1)
 func (ps *PhaseScope) SetPersistence(persistence float64) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-
 	if persistence >= 0 && persistence <= 1 {
 		ps.persistence = persistence
 	}
@@ -89,9 +113,6 @@ func (ps *PhaseScope) SetPersistence(persistence float64) {
 
 // SetScale sets the display scale factor
 func (ps *PhaseScope) SetScale(scale float64) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-
 	if scale > 0 {
 		ps.scale = scale
 	}
@@ -99,9 +120,6 @@ func (ps *PhaseScope) SetScale(scale float64) {
 
 // Process updates the phase scope with stereo samples
 func (ps *PhaseScope) Process(samplesL, samplesR []float64) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-
 	if len(samplesL) != len(samplesR) {
 		return
 	}
@@ -142,124 +160,77 @@ func (ps *PhaseScope) Process(samplesL, samplesR []float64) {
 			ps.count++
 		}
 	}
+	ps.publish()
 }
 
-// GetPoints returns the current display points with brightness
+// GetPoints returns the current display points with brightness, oldest
+// first.
 func (ps *PhaseScope) GetPoints() ([]PhasePoint, []float64) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-
-	// Return copies to avoid race conditions
-	points := make([]PhasePoint, ps.count)
-	brightness := make([]float64, ps.count)
-
-	// Copy points in order (oldest to newest)
-	if ps.count == ps.bufferSize {
-		// Buffer is full, start from writePos
-		for i := 0; i < ps.count; i++ {
-			idx := (ps.writePos + i) % ps.bufferSize
-			points[i] = ps.points[idx]
-			brightness[i] = ps.brightness[idx]
-		}
-	} else {
-		// Buffer not full, copy from beginning
-		copy(points, ps.points[:ps.count])
-		copy(brightness, ps.brightness[:ps.count])
-	}
-
+	var points []PhasePoint
+	var brightness []float64
+	ps.out.read(func(r *scopeReading) {
+		points = append([]PhasePoint{}, r.points[:r.count]...)
+		brightness = append([]float64{}, r.brightness[:r.count]...)
+	})
 	return points, brightness
 }
 
 // GetPolarData returns data formatted for polar display
 func (ps *PhaseScope) GetPolarData() ([]float64, []float64, []float64) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-
-	radius := make([]float64, ps.count)
-	angle := make([]float64, ps.count)
-	bright := make([]float64, ps.count)
-
-	for i := 0; i < ps.count; i++ {
-		idx := i
-		if ps.count == ps.bufferSize {
-			idx = (ps.writePos + i) % ps.bufferSize
+	var radius, angle, bright []float64
+	ps.out.read(func(r *scopeReading) {
+		radius = make([]float64, r.count)
+		angle = make([]float64, r.count)
+		bright = append([]float64{}, r.brightness[:r.count]...)
+		for i := range r.count {
+			x := r.l[i] * r.scale
+			y := r.r[i] * r.scale
+			radius[i] = math.Sqrt(x*x + y*y)
+			angle[i] = math.Atan2(y, x)
 		}
-
-		// Convert to polar coordinates
-		x := ps.bufferL[idx] * ps.scale
-		y := ps.bufferR[idx] * ps.scale
-
-		radius[i] = math.Sqrt(x*x + y*y)
-		angle[i] = math.Atan2(y, x)
-		bright[i] = ps.brightness[idx]
-	}
-
+	})
 	return radius, angle, bright
 }
 
 // GetStatistics returns phase statistics
 func (ps *PhaseScope) GetStatistics() PhaseScopeStats {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
+	var stats PhaseScopeStats
+	ps.out.read(func(r *scopeReading) { stats = scopeStatistics(r.l[:r.count], r.r[:r.count]) })
+	return stats
+}
 
-	if ps.count == 0 {
-		return PhaseScopeStats{}
+// scopeStatistics computes the statistics of the displayed samples.
+func scopeStatistics(left, right []float64) PhaseScopeStats {
+	stats := PhaseScopeStats{}
+	if len(left) == 0 {
+		return stats
 	}
 
-	stats := PhaseScopeStats{}
-
-	// Calculate average width and balance
+	// Average width and balance
 	sumM := 0.0
 	sumS := 0.0
 	maxRadius := 0.0
-
-	for i := 0; i < ps.count; i++ {
-		idx := i
-		if ps.count == ps.bufferSize {
-			idx = (ps.writePos + i) % ps.bufferSize
-		}
-
-		l := ps.bufferL[idx]
-		r := ps.bufferR[idx]
-
-		// Mid/Side calculation
-		m := (l + r) * 0.5
-		s := (l - r) * 0.5
-
-		sumM += math.Abs(m)
-		sumS += math.Abs(s)
-
-		// Max radius
-		radius := math.Sqrt(l*l + r*r)
-		if radius > maxRadius {
-			maxRadius = radius
-		}
+	for i, l := range left {
+		r := right[i]
+		sumM += math.Abs((l + r) * 0.5)
+		sumS += math.Abs((l - r) * 0.5)
+		maxRadius = math.Max(maxRadius, math.Sqrt(l*l+r*r))
 	}
-
-	stats.AverageMid = sumM / float64(ps.count)
-	stats.AverageSide = sumS / float64(ps.count)
+	stats.AverageMid = sumM / float64(len(left))
+	stats.AverageSide = sumS / float64(len(left))
 	stats.MaxRadius = maxRadius
 
-	// Width calculation (side to mid ratio)
+	// Width (side to mid ratio)
 	if stats.AverageMid > 0 {
 		stats.Width = stats.AverageSide / stats.AverageMid
 	}
 
-	// Phase concentration (how concentrated the display is)
-	// Calculate standard deviation of angles
+	// Phase concentration: from the standard deviation of the angles
 	sumAngle := 0.0
 	sumAngleSq := 0.0
 	validPoints := 0
-
-	for i := 0; i < ps.count; i++ {
-		idx := i
-		if ps.count == ps.bufferSize {
-			idx = (ps.writePos + i) % ps.bufferSize
-		}
-
-		l := ps.bufferL[idx]
-		r := ps.bufferR[idx]
-
+	for i, l := range left {
+		r := right[i]
 		if l != 0 || r != 0 {
 			angle := math.Atan2(r, l)
 			sumAngle += angle
@@ -267,14 +238,12 @@ func (ps *PhaseScope) GetStatistics() PhaseScopeStats {
 			validPoints++
 		}
 	}
-
 	if validPoints > 0 {
 		meanAngle := sumAngle / float64(validPoints)
 		variance := sumAngleSq/float64(validPoints) - meanAngle*meanAngle
 		stats.PhaseConcentration = 1.0 / (1.0 + math.Sqrt(math.Abs(variance)))
 		stats.DominantAngle = meanAngle
 	}
-
 	return stats
 }
 
@@ -290,9 +259,6 @@ type PhaseScopeStats struct {
 
 // Reset clears the phase scope display
 func (ps *PhaseScope) Reset() {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-
 	// Clear buffers
 	for i := range ps.bufferL {
 		ps.bufferL[i] = 0
@@ -308,6 +274,7 @@ func (ps *PhaseScope) Reset() {
 	// Reset counters
 	ps.writePos = 0
 	ps.count = 0
+	ps.publish()
 }
 
 // VectorScope provides a vector scope display with graticule

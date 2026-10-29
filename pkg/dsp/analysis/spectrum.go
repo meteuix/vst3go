@@ -1,9 +1,6 @@
 package analysis
 
-import (
-	"math"
-	"sync"
-)
+import "math"
 
 // SpectrumAnalyzer provides real-time spectral analysis
 type SpectrumAnalyzer struct {
@@ -23,7 +20,13 @@ type SpectrumAnalyzer struct {
 	minBin       int
 	maxBin       int
 	outputBuffer []float64
-	mu           sync.Mutex
+	out          published[spectrumReading]
+}
+
+// spectrumReading is the spectrum and analysis range readers see.
+type spectrumReading struct {
+	magnitude      []float64
+	minBin, maxBin int
 }
 
 // AveragingMode defines how the spectrum is averaged over time
@@ -51,16 +54,21 @@ func NewSpectrumAnalyzer(fftSize int, sampleRate float64, window WindowFunc) *Sp
 		outputBuffer: make([]float64, fftSize/2+1),
 	}
 
+	sa.out.init(func(r *spectrumReading) { r.magnitude = make([]float64, fftSize/2+1) })
 	sa.updateFrequencyRange()
-
 	return sa
+}
+
+// publish hands the current spectrum and range to readers.
+func (sa *SpectrumAnalyzer) publish() {
+	r := sa.out.write()
+	copy(r.magnitude, sa.outputBuffer)
+	r.minBin, r.maxBin = sa.minBin, sa.maxBin
+	sa.out.publish()
 }
 
 // SetHopSize sets the hop size (samples between FFT frames)
 func (sa *SpectrumAnalyzer) SetHopSize(hopSize int) {
-	sa.mu.Lock()
-	defer sa.mu.Unlock()
-
 	if hopSize > 0 && hopSize <= sa.fftSize {
 		sa.hopSize = hopSize
 	}
@@ -68,9 +76,6 @@ func (sa *SpectrumAnalyzer) SetHopSize(hopSize int) {
 
 // SetAveraging sets the averaging mode and buffer size
 func (sa *SpectrumAnalyzer) SetAveraging(mode AveragingMode, bufferSize int) {
-	sa.mu.Lock()
-	defer sa.mu.Unlock()
-
 	sa.averaging = mode
 	if mode != NoAveraging && bufferSize > 0 {
 		sa.avgBuffer = make([][]float64, bufferSize)
@@ -84,9 +89,6 @@ func (sa *SpectrumAnalyzer) SetAveraging(mode AveragingMode, bufferSize int) {
 
 // SetSmoothing sets the smoothing factor for exponential averaging (0-1)
 func (sa *SpectrumAnalyzer) SetSmoothing(smoothing float64) {
-	sa.mu.Lock()
-	defer sa.mu.Unlock()
-
 	if smoothing >= 0 && smoothing <= 1 {
 		sa.smoothing = smoothing
 	}
@@ -94,9 +96,6 @@ func (sa *SpectrumAnalyzer) SetSmoothing(smoothing float64) {
 
 // SetFrequencyRange sets the frequency range to analyze
 func (sa *SpectrumAnalyzer) SetFrequencyRange(minFreq, maxFreq float64) {
-	sa.mu.Lock()
-	defer sa.mu.Unlock()
-
 	sa.minFreq = math.Max(0, minFreq)
 	sa.maxFreq = math.Min(sa.sampleRate/2.0, maxFreq)
 	sa.updateFrequencyRange()
@@ -111,13 +110,11 @@ func (sa *SpectrumAnalyzer) updateFrequencyRange() {
 	if sa.maxBin > sa.fftSize/2 {
 		sa.maxBin = sa.fftSize / 2
 	}
+	sa.publish()
 }
 
 // Process adds samples to the analyzer and returns true when new spectrum is available
 func (sa *SpectrumAnalyzer) Process(samples []float64) bool {
-	sa.mu.Lock()
-	defer sa.mu.Unlock()
-
 	spectrumReady := false
 
 	for _, sample := range samples {
@@ -142,7 +139,9 @@ func (sa *SpectrumAnalyzer) Process(samples []float64) bool {
 			spectrumReady = true
 		}
 	}
-
+	if spectrumReady {
+		sa.publish()
+	}
 	return spectrumReady
 }
 
@@ -188,58 +187,42 @@ func (sa *SpectrumAnalyzer) applyAveraging(magnitude []float64) {
 
 // GetSpectrum returns the current magnitude spectrum
 func (sa *SpectrumAnalyzer) GetSpectrum() []float64 {
-	sa.mu.Lock()
-	defer sa.mu.Unlock()
-
-	result := make([]float64, len(sa.outputBuffer))
-	copy(result, sa.outputBuffer)
+	var result []float64
+	sa.out.read(func(r *spectrumReading) { result = append([]float64(nil), r.magnitude...) })
 	return result
 }
 
 // GetSpectrumDB returns the spectrum in decibels
 func (sa *SpectrumAnalyzer) GetSpectrumDB() []float64 {
-	sa.mu.Lock()
-	defer sa.mu.Unlock()
-
-	db := make([]float64, len(sa.outputBuffer))
-	for i, mag := range sa.outputBuffer {
-		if mag > 0 {
-			db[i] = 20.0 * math.Log10(mag)
-		} else {
-			db[i] = -120.0 // Floor at -120 dB
-		}
-	}
-	return db
+	return magnitudesToDB(sa.GetSpectrum())
 }
 
 // GetSpectrumInRange returns the spectrum only for the configured frequency range
 func (sa *SpectrumAnalyzer) GetSpectrumInRange() []float64 {
-	sa.mu.Lock()
-	defer sa.mu.Unlock()
-
-	if sa.minBin >= sa.maxBin {
-		return []float64{}
-	}
-
-	rangeSize := sa.maxBin - sa.minBin
-	result := make([]float64, rangeSize)
-	copy(result, sa.outputBuffer[sa.minBin:sa.maxBin])
+	result := []float64{}
+	sa.out.read(func(r *spectrumReading) {
+		if r.minBin < r.maxBin {
+			result = append(result, r.magnitude[r.minBin:r.maxBin]...)
+		}
+	})
 	return result
 }
 
 // GetSpectrumDBInRange returns the spectrum in dB for the configured frequency range
 func (sa *SpectrumAnalyzer) GetSpectrumDBInRange() []float64 {
-	spectrum := sa.GetSpectrumInRange()
-	db := make([]float64, len(spectrum))
+	return magnitudesToDB(sa.GetSpectrumInRange())
+}
 
-	for i, mag := range spectrum {
+// magnitudesToDB converts magnitudes to dB in place, flooring at -120 dB.
+func magnitudesToDB(mags []float64) []float64 {
+	for i, mag := range mags {
 		if mag > 0 {
-			db[i] = 20.0 * math.Log10(mag)
+			mags[i] = 20.0 * math.Log10(mag)
 		} else {
-			db[i] = -120.0
+			mags[i] = -120.0
 		}
 	}
-	return db
+	return mags
 }
 
 // GetFrequencyForBin returns the frequency corresponding to a bin index
@@ -254,9 +237,6 @@ func (sa *SpectrumAnalyzer) GetBinForFrequency(freq float64) int {
 
 // Reset clears all buffers and averaging history
 func (sa *SpectrumAnalyzer) Reset() {
-	sa.mu.Lock()
-	defer sa.mu.Unlock()
-
 	// Clear buffers
 	for i := range sa.buffer {
 		sa.buffer[i] = 0
@@ -278,81 +258,57 @@ func (sa *SpectrumAnalyzer) Reset() {
 			}
 		}
 	}
+	sa.publish()
 }
 
 // GetPeakFrequency finds the frequency with the highest magnitude
 func (sa *SpectrumAnalyzer) GetPeakFrequency() (float64, float64) {
-	sa.mu.Lock()
-	defer sa.mu.Unlock()
-
 	maxMag := 0.0
 	maxBin := 0
-
-	for i := sa.minBin; i < sa.maxBin && i < len(sa.outputBuffer); i++ {
-		if sa.outputBuffer[i] > maxMag {
-			maxMag = sa.outputBuffer[i]
-			maxBin = i
+	sa.out.read(func(r *spectrumReading) {
+		for i := r.minBin; i < r.maxBin && i < len(r.magnitude); i++ {
+			if r.magnitude[i] > maxMag {
+				maxMag = r.magnitude[i]
+				maxBin = i
+			}
 		}
-	}
-
-	freq := sa.GetFrequencyForBin(maxBin)
-	return freq, maxMag
+	})
+	return sa.GetFrequencyForBin(maxBin), maxMag
 }
 
 // GetBandEnergy calculates the energy in a frequency band
 func (sa *SpectrumAnalyzer) GetBandEnergy(minFreq, maxFreq float64) float64 {
-	sa.mu.Lock()
-	defer sa.mu.Unlock()
-
-	minBin := sa.GetBinForFrequency(minFreq)
+	minBin := max(0, sa.GetBinForFrequency(minFreq))
 	maxBin := sa.GetBinForFrequency(maxFreq)
-
-	if minBin < 0 {
-		minBin = 0
-	}
-	if maxBin >= len(sa.outputBuffer) {
-		maxBin = len(sa.outputBuffer) - 1
-	}
-
 	energy := 0.0
-	for i := minBin; i <= maxBin; i++ {
-		energy += sa.outputBuffer[i] * sa.outputBuffer[i]
-	}
-
+	sa.out.read(func(r *spectrumReading) {
+		for i := minBin; i <= min(maxBin, len(r.magnitude)-1); i++ {
+			energy += r.magnitude[i] * r.magnitude[i]
+		}
+	})
 	return energy
 }
 
 // GetOctaveBands returns spectrum data grouped into octave bands
 func (sa *SpectrumAnalyzer) GetOctaveBands(centerFreqs []float64) []float64 {
-	sa.mu.Lock()
-	defer sa.mu.Unlock()
-
 	bands := make([]float64, len(centerFreqs))
+	sa.out.read(func(r *spectrumReading) {
+		for i, centerFreq := range centerFreqs {
+			// Octave band limits
+			lowerBin := sa.GetBinForFrequency(centerFreq / math.Sqrt2)
+			upperBin := sa.GetBinForFrequency(centerFreq * math.Sqrt2)
 
-	for i, centerFreq := range centerFreqs {
-		// Calculate octave band limits
-		lowerFreq := centerFreq / math.Sqrt(2)
-		upperFreq := centerFreq * math.Sqrt(2)
-
-		// Sum energy in band
-		energy := 0.0
-		count := 0
-
-		lowerBin := sa.GetBinForFrequency(lowerFreq)
-		upperBin := sa.GetBinForFrequency(upperFreq)
-
-		for bin := lowerBin; bin <= upperBin && bin < len(sa.outputBuffer); bin++ {
-			if bin >= 0 {
-				energy += sa.outputBuffer[bin] * sa.outputBuffer[bin]
+			energy := 0.0
+			count := 0
+			for bin := max(0, lowerBin); bin <= upperBin && bin < len(r.magnitude); bin++ {
+				energy += r.magnitude[bin] * r.magnitude[bin]
 				count++
 			}
+			if count > 0 {
+				bands[i] = math.Sqrt(energy / float64(count))
+			}
 		}
-
-		if count > 0 {
-			bands[i] = math.Sqrt(energy / float64(count))
-		}
-	}
-
+	})
 	return bands
 }
 

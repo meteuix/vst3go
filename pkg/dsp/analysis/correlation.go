@@ -1,9 +1,6 @@
 package analysis
 
-import (
-	"math"
-	"sync"
-)
+import "math"
 
 // CorrelationMeter measures stereo correlation/phase relationships
 type CorrelationMeter struct {
@@ -18,12 +15,14 @@ type CorrelationMeter struct {
 	peakHoldTime  float64
 	peakHoldCount int
 	sampleRate    float64
-	mu            sync.Mutex
+	out           published[correlationReading]
 }
+
+type correlationReading struct{ correlation, peakHold float64 }
 
 // NewCorrelationMeter creates a new correlation meter
 func NewCorrelationMeter(windowSizeSamples int, sampleRate float64) *CorrelationMeter {
-	return &CorrelationMeter{
+	cm := &CorrelationMeter{
 		windowSize:   windowSizeSamples,
 		bufferL:      make([]float64, windowSizeSamples),
 		bufferR:      make([]float64, windowSizeSamples),
@@ -33,13 +32,18 @@ func NewCorrelationMeter(windowSizeSamples int, sampleRate float64) *Correlation
 		correlation:  0.0, // Initialize to neutral
 		peakHold:     1.0, // Initialize to best case
 	}
+	cm.out.init(func(*correlationReading) {})
+	cm.publish()
+	return cm
+}
+
+func (cm *CorrelationMeter) publish() {
+	*cm.out.write() = correlationReading{correlation: cm.correlation, peakHold: cm.peakHold}
+	cm.out.publish()
 }
 
 // SetAveraging sets the exponential averaging factor (0-1)
 func (cm *CorrelationMeter) SetAveraging(factor float64) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
 	if factor >= 0 && factor <= 1 {
 		cm.averaging = factor
 	}
@@ -47,17 +51,11 @@ func (cm *CorrelationMeter) SetAveraging(factor float64) {
 
 // SetPeakHoldTime sets the peak hold time in seconds
 func (cm *CorrelationMeter) SetPeakHoldTime(seconds float64) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
 	cm.peakHoldTime = seconds
 }
 
 // Process updates the correlation meter with stereo samples
 func (cm *CorrelationMeter) Process(samplesL, samplesR []float64) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
 	if len(samplesL) != len(samplesR) {
 		return
 	}
@@ -93,6 +91,7 @@ func (cm *CorrelationMeter) Process(samplesL, samplesR []float64) {
 			}
 		}
 	}
+	cm.publish()
 }
 
 // calculateCorrelation computes the Pearson correlation coefficient
@@ -142,18 +141,10 @@ func (cm *CorrelationMeter) calculateCorrelation() float64 {
 }
 
 // GetCorrelation returns the current correlation value (-1 to 1)
-func (cm *CorrelationMeter) GetCorrelation() float64 {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-	return cm.correlation
-}
+func (cm *CorrelationMeter) GetCorrelation() float64 { return cm.out.get().correlation }
 
 // GetPeakHold returns the peak hold correlation (most negative)
-func (cm *CorrelationMeter) GetPeakHold() float64 {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-	return cm.peakHold
-}
+func (cm *CorrelationMeter) GetPeakHold() float64 { return cm.out.get().peakHold }
 
 // GetPhaseStatus returns a qualitative phase status
 func (cm *CorrelationMeter) GetPhaseStatus() PhaseStatus {
@@ -212,9 +203,6 @@ func (cm *CorrelationMeter) GetMonoCompatibility() float64 {
 
 // Reset clears the correlation meter
 func (cm *CorrelationMeter) Reset() {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
 	// Clear buffers
 	for i := range cm.bufferL {
 		cm.bufferL[i] = 0
@@ -227,6 +215,7 @@ func (cm *CorrelationMeter) Reset() {
 	cm.correlation = 0
 	cm.peakHold = 0
 	cm.peakHoldCount = 0
+	cm.publish()
 }
 
 // StereoFieldAnalyzer provides detailed stereo field analysis
@@ -283,22 +272,23 @@ type BalanceMeter struct {
 	powerR     float64
 	balance    float64
 	averaging  float64
-	mu         sync.Mutex
+	out        published[balanceReading]
 }
+
+type balanceReading struct{ balance, balanceDB float64 }
 
 // NewBalanceMeter creates a new balance meter
 func NewBalanceMeter(windowSize int) *BalanceMeter {
-	return &BalanceMeter{
+	bm := &BalanceMeter{
 		windowSize: windowSize,
 		averaging:  0.95,
 	}
+	bm.out.init(func(*balanceReading) {})
+	return bm
 }
 
 // Process updates the balance meter
 func (bm *BalanceMeter) Process(samplesL, samplesR []float64) {
-	bm.mu.Lock()
-	defer bm.mu.Unlock()
-
 	// Calculate power for each channel
 	sumL := 0.0
 	sumR := 0.0
@@ -325,25 +315,19 @@ func (bm *BalanceMeter) Process(samplesL, samplesR []float64) {
 			bm.balance = 0
 		}
 	}
+	r := bm.out.write()
+	r.balance, r.balanceDB = bm.balance, 0
+	if bm.powerL > 0 && bm.powerR > 0 {
+		r.balanceDB = 10.0 * math.Log10(bm.powerR/bm.powerL)
+	}
+	bm.out.publish()
 }
 
 // GetBalance returns the stereo balance (-1 to 1)
-func (bm *BalanceMeter) GetBalance() float64 {
-	bm.mu.Lock()
-	defer bm.mu.Unlock()
-	return bm.balance
-}
+func (bm *BalanceMeter) GetBalance() float64 { return bm.out.get().balance }
 
 // GetBalanceDB returns the balance in dB difference
-func (bm *BalanceMeter) GetBalanceDB() float64 {
-	bm.mu.Lock()
-	defer bm.mu.Unlock()
-
-	if bm.powerL > 0 && bm.powerR > 0 {
-		return 10.0 * math.Log10(bm.powerR/bm.powerL)
-	}
-	return 0
-}
+func (bm *BalanceMeter) GetBalanceDB() float64 { return bm.out.get().balanceDB }
 
 // StereoWidthMeter measures stereo width
 type StereoWidthMeter struct {
@@ -352,22 +336,23 @@ type StereoWidthMeter struct {
 	sidePower  float64
 	width      float64
 	averaging  float64
-	mu         sync.Mutex
+	out        published[widthReading]
 }
+
+type widthReading struct{ width, widthDB float64 }
 
 // NewStereoWidthMeter creates a new stereo width meter
 func NewStereoWidthMeter(windowSize int) *StereoWidthMeter {
-	return &StereoWidthMeter{
+	swm := &StereoWidthMeter{
 		windowSize: windowSize,
 		averaging:  0.95,
 	}
+	swm.out.init(func(r *widthReading) { r.widthDB = math.Inf(-1) })
+	return swm
 }
 
 // Process updates the width meter
 func (swm *StereoWidthMeter) Process(samplesL, samplesR []float64) {
-	swm.mu.Lock()
-	defer swm.mu.Unlock()
-
 	// Calculate mid/side signals
 	sumMid := 0.0
 	sumSide := 0.0
@@ -397,22 +382,16 @@ func (swm *StereoWidthMeter) Process(samplesL, samplesR []float64) {
 			swm.width = 0
 		}
 	}
+	r := swm.out.write()
+	r.width, r.widthDB = swm.width, math.Inf(-1)
+	if swm.midPower > 0 && swm.sidePower > 0 {
+		r.widthDB = 10.0 * math.Log10(swm.sidePower/swm.midPower)
+	}
+	swm.out.publish()
 }
 
 // GetWidth returns the stereo width (0 = mono, 1 = normal, >1 = wide)
-func (swm *StereoWidthMeter) GetWidth() float64 {
-	swm.mu.Lock()
-	defer swm.mu.Unlock()
-	return swm.width
-}
+func (swm *StereoWidthMeter) GetWidth() float64 { return swm.out.get().width }
 
 // GetWidthDB returns the width as side/mid ratio in dB
-func (swm *StereoWidthMeter) GetWidthDB() float64 {
-	swm.mu.Lock()
-	defer swm.mu.Unlock()
-
-	if swm.midPower > 0 && swm.sidePower > 0 {
-		return 10.0 * math.Log10(swm.sidePower/swm.midPower)
-	}
-	return -math.Inf(1)
-}
+func (swm *StereoWidthMeter) GetWidthDB() float64 { return swm.out.get().widthDB }
