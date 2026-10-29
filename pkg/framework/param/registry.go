@@ -2,53 +2,76 @@ package param
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"sync"
+	"sync/atomic"
 )
 
-// Registry manages plugin parameters
+// Registry manages plugin parameters. Lookups run on the audio thread, so
+// they take no lock: readers load an immutable snapshot, and the rare
+// writers (registration, normally while the plugin is constructed)
+// publish a modified copy.
 type Registry struct {
+	mu    sync.Mutex // serializes writers
+	state atomic.Pointer[registryState]
+}
+
+// registryState is one immutable snapshot of a Registry.
+type registryState struct {
 	params map[uint32]*Parameter
-	order  []uint32 // Maintain order for indexed access
-	mu     sync.RWMutex
+	order  []uint32          // registration order, for indexed access
+	names  map[string]uint32 // AutoRegistry name lookup
 }
 
 // NewRegistry creates a new parameter registry
 func NewRegistry() *Registry {
-	return &Registry{
-		params: make(map[uint32]*Parameter),
-		order:  make([]uint32, 0),
+	r := &Registry{}
+	r.state.Store(&registryState{params: map[uint32]*Parameter{}, names: map[string]uint32{}})
+	return r
+}
+
+// edit applies fn to a copy of the state and publishes it; when fn fails
+// nothing changes. The caller holds r.mu.
+func (r *Registry) edit(fn func(s *registryState) error) error {
+	old := r.state.Load()
+	s := &registryState{
+		params: maps.Clone(old.params),
+		order:  slices.Clone(old.order),
+		names:  maps.Clone(old.names),
 	}
+	if err := fn(s); err != nil {
+		return err
+	}
+	r.state.Store(s)
+	return nil
 }
 
 // Add registers a new parameter
 func (r *Registry) Add(params ...*Parameter) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
-	for _, p := range params {
-		if _, exists := r.params[p.ID]; exists {
-			return fmt.Errorf("parameter ID %d already exists", p.ID)
+	return r.edit(func(s *registryState) error {
+		for _, p := range params {
+			if _, exists := s.params[p.ID]; exists {
+				return fmt.Errorf("parameter ID %d already exists", p.ID)
+			}
+			s.params[p.ID] = p
+			s.order = append(s.order, p.ID)
 		}
-		r.params[p.ID] = p
-		r.order = append(r.order, p.ID)
-	}
-
-	return nil
+		return nil
+	})
 }
 
 // Get retrieves a parameter by ID
 func (r *Registry) Get(id uint32) *Parameter {
-	param, _ := r.GetOK(id)
-	return param
+	return r.state.Load().params[id]
 }
 
 // GetOK retrieves a parameter by ID and reports whether it exists.
 func (r *Registry) GetOK(id uint32) (*Parameter, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	param, ok := r.params[id]
-	return param, ok
+	p, ok := r.state.Load().params[id]
+	return p, ok
 }
 
 // Has reports whether a parameter with the given ID exists.
@@ -77,34 +100,24 @@ func (r *Registry) GetPlain(id uint32) (float64, bool) {
 
 // GetByIndex retrieves a parameter by index
 func (r *Registry) GetByIndex(index int32) *Parameter {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	if index < 0 || index >= int32(len(r.order)) {
+	s := r.state.Load()
+	if index < 0 || index >= int32(len(s.order)) {
 		return nil
 	}
-
-	id := r.order[index]
-	return r.params[id]
+	return s.params[s.order[index]]
 }
 
 // Count returns the number of parameters
 func (r *Registry) Count() int32 {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	return int32(len(r.order))
+	return int32(len(r.state.Load().order))
 }
 
 // All returns all parameters in order
 func (r *Registry) All() []*Parameter {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	result := make([]*Parameter, len(r.order))
-	for i, id := range r.order {
-		result[i] = r.params[id]
+	s := r.state.Load()
+	result := make([]*Parameter, len(s.order))
+	for i, id := range s.order {
+		result[i] = s.params[id]
 	}
-
 	return result
 }

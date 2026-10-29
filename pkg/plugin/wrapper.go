@@ -38,13 +38,8 @@ type componentWrapper struct {
 	editorSession
 }
 
-// components maps C handles to wrappers. Writes happen only on instance
-// creation/destruction, so the read lock taken per call is uncontended and
-// allocation-free, which keeps it safe for the audio thread.
-var (
-	components   = make(map[uintptr]*componentWrapper)
-	componentsMu sync.RWMutex
-)
+// components maps C handles to wrappers.
+var components instances[componentWrapper]
 
 // Object kinds (vst3_component.h).
 const (
@@ -136,9 +131,7 @@ func recoverPanic(result *C.Steinberg_tresult) {
 
 func registerComponent(wrapper *componentWrapper) uintptr {
 	wrapper.id = nextInstanceID()
-	componentsMu.Lock()
-	components[wrapper.id] = wrapper
-	componentsMu.Unlock()
+	components.add(wrapper.id, wrapper)
 	return wrapper.id
 }
 
@@ -149,18 +142,11 @@ var instanceIDs atomic.Uintptr
 func nextInstanceID() uintptr { return instanceIDs.Add(1) }
 
 func unregisterComponent(id uintptr) *componentWrapper {
-	componentsMu.Lock()
-	defer componentsMu.Unlock()
-	wrapper := components[id]
-	delete(components, id)
-	return wrapper
+	return components.remove(id)
 }
 
 func getComponent(id C.uintptr_t) *componentWrapper {
-	componentsMu.RLock()
-	wrapper := components[uintptr(id)]
-	componentsMu.RUnlock()
-	return wrapper
+	return components.get(uintptr(id))
 }
 
 // Host notifications (UI/main thread)

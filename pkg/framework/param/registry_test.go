@@ -98,3 +98,61 @@ func TestRegistryConcurrentAccess(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestRegistryReadsTakeNoLock(t *testing.T) {
+	reg := NewRegistry()
+	gain := &Parameter{ID: 1, Name: "Gain"}
+	if err := reg.Add(gain); err != nil {
+		t.Fatal(err)
+	}
+	// The audio thread looks parameters up while a writer holds the lock.
+	reg.mu.Lock()
+	allocs := testing.AllocsPerRun(100, func() {
+		if reg.Get(1) != gain || reg.GetByIndex(0) != gain || reg.Count() != 1 {
+			t.Fatal("lookup while a writer holds the lock")
+		}
+	})
+	reg.mu.Unlock()
+	if allocs != 0 {
+		t.Fatalf("lookups allocate %v times", allocs)
+	}
+
+	// Readers race a writer without data races (go test -race).
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				if reg.Get(1) != gain || reg.GetByIndex(0) != gain {
+					t.Error("registered parameter lost")
+					return
+				}
+			}
+		}
+	}()
+	for id := uint32(2); id < 200; id++ {
+		if err := reg.Add(&Parameter{ID: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(stop)
+	wg.Wait()
+}
+
+func TestRegistryFailedAddChangesNothing(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.Add(&Parameter{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Add(&Parameter{ID: 2}, &Parameter{ID: 1}); err == nil {
+		t.Fatal("duplicate accepted")
+	}
+	if reg.Count() != 1 || reg.Has(2) {
+		t.Fatalf("failed Add left %d parameters", reg.Count())
+	}
+}

@@ -39,7 +39,7 @@ type clapInstance struct {
 	mode           atomic.Int32
 	notes          clapNotes // audio thread
 	seenProgram    int32     // audio thread: last program applied by process
-	edits          chan clapEdit
+	edits          *mpscQueue[clapEdit]
 	editorPending  atomic.Bool // host automation changed values the editor shows
 	hostChanged    bool        // audio thread: the block had host parameter changes
 
@@ -47,8 +47,7 @@ type clapInstance struct {
 }
 
 var (
-	clapInstances   = make(map[uintptr]*clapInstance)
-	clapInstancesMu sync.RWMutex
+	clapInstances instances[clapInstance]
 
 	clapDescriptorsOnce sync.Once
 	clapDescriptors     []*C.clap_plugin_descriptor_t
@@ -63,10 +62,7 @@ const (
 )
 
 func getClap(id C.uintptr_t) *clapInstance {
-	clapInstancesMu.RLock()
-	inst := clapInstances[uintptr(id)]
-	clapInstancesMu.RUnlock()
-	return inst
+	return clapInstances.get(uintptr(id))
 }
 
 // clapPlugins is the registered plugin list; CLAP has no distributed mode,
@@ -131,7 +127,7 @@ func GoClapCreate(index C.uint32_t, plugin *C.VST3GoClapPlugin) (id C.uintptr_t)
 	if err != nil {
 		return 0
 	}
-	inst := &clapInstance{plugin: plugin, c: component, edits: make(chan clapEdit, clapEditQueueSize)}
+	inst := &clapInstance{plugin: plugin, c: component, edits: newMPSCQueue[clapEdit](clapEditQueueSize)}
 	for _, p := range component.params.All() {
 		// Output parameters (meters) change on their own while processing,
 		// which CLAP hosts treat as unrequested value changes; they stay
@@ -145,9 +141,7 @@ func GoClapCreate(index C.uint32_t, plugin *C.VST3GoClapPlugin) (id C.uintptr_t)
 	}
 	component.wrapper = inst
 	inst.id = nextInstanceID()
-	clapInstancesMu.Lock()
-	clapInstances[inst.id] = inst
-	clapInstancesMu.Unlock()
+	clapInstances.add(inst.id, inst)
 	return C.uintptr_t(inst.id)
 }
 
@@ -173,10 +167,7 @@ func recoverClap(ok *C.bool) {
 
 //export GoClapDestroy
 func GoClapDestroy(id C.uintptr_t) {
-	clapInstancesMu.Lock()
-	inst := clapInstances[uintptr(id)]
-	delete(clapInstances, uintptr(id))
-	clapInstancesMu.Unlock()
+	inst := clapInstances.remove(uintptr(id))
 	if inst == nil {
 		return
 	}
@@ -572,18 +563,17 @@ func (inst *clapInstance) drainEdits(out *C.clap_output_events_t) {
 		return
 	}
 	for {
-		select {
-		case e := <-inst.edits:
-			switch e.kind {
-			case editBegin:
-				C.vst3go_clap_push_gesture(out, C.CLAP_EVENT_PARAM_GESTURE_BEGIN, 0, C.clap_id(e.id))
-			case editEnd:
-				C.vst3go_clap_push_gesture(out, C.CLAP_EVENT_PARAM_GESTURE_END, 0, C.clap_id(e.id))
-			default:
-				C.vst3go_clap_push_param(out, 0, C.clap_id(e.id), C.double(e.plain))
-			}
-		default:
+		e, ok := inst.edits.pop()
+		if !ok {
 			return
+		}
+		switch e.kind {
+		case editBegin:
+			C.vst3go_clap_push_gesture(out, C.CLAP_EVENT_PARAM_GESTURE_BEGIN, 0, C.clap_id(e.id))
+		case editEnd:
+			C.vst3go_clap_push_gesture(out, C.CLAP_EVENT_PARAM_GESTURE_END, 0, C.clap_id(e.id))
+		default:
+			C.vst3go_clap_push_param(out, 0, C.clap_id(e.id), C.double(e.plain))
 		}
 	}
 }
@@ -629,10 +619,8 @@ func (inst *clapInstance) pushEvent(out *C.clap_output_events_t, event *midi.Eve
 // frontend
 
 func (inst *clapInstance) queueEdit(e clapEdit) {
-	select {
-	case inst.edits <- e:
-	default: // queue full: the host is not calling process or flush
-	}
+	// A full queue means the host is not calling process or flush.
+	inst.edits.push(e)
 	C.vst3go_clap_request_flush(inst.plugin)
 }
 

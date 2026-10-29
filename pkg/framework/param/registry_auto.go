@@ -9,15 +9,13 @@ import (
 type AutoRegistry struct {
 	*Registry
 	nextID      atomic.Uint32
-	nameToID    map[string]uint32
-	autoEnabled bool
+	autoEnabled bool // guarded by Registry.mu
 }
 
 // NewAutoRegistry creates a registry with automatic ID management
 func NewAutoRegistry() *AutoRegistry {
 	return &AutoRegistry{
 		Registry:    NewRegistry(),
-		nameToID:    make(map[string]uint32),
 		autoEnabled: true,
 	}
 }
@@ -33,80 +31,70 @@ func (r *AutoRegistry) EnableAutoID(enabled bool) {
 func (r *AutoRegistry) Register(params ...*Parameter) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	next := r.nextID.Load()
+	err := r.edit(func(s *registryState) error {
+		for _, p := range params {
+			// A parameter with a registered name replaces it.
+			if existingID, exists := s.names[p.Name]; exists {
+				p.ID = existingID
+				s.params[existingID] = p
+				continue
+			}
 
-	for _, p := range params {
-		// Check if we already have this parameter by name
-		if existingID, exists := r.nameToID[p.Name]; exists {
-			// Update existing parameter
-			p.ID = existingID
-			r.params[existingID] = p
-			continue
+			if r.autoEnabled && p.ID == 0 {
+				p.ID = next
+				next++
+			}
+
+			if _, exists := s.params[p.ID]; exists {
+				return fmt.Errorf("parameter ID %d already exists", p.ID)
+			}
+
+			s.params[p.ID] = p
+			s.order = append(s.order, p.ID)
+			s.names[p.Name] = p.ID
 		}
-
-		// Assign new ID if auto-enabled and ID is 0
-		if r.autoEnabled && p.ID == 0 {
-			p.ID = r.nextID.Add(1) - 1
-		}
-
-		// Check for ID conflicts
-		if _, exists := r.params[p.ID]; exists {
-			return fmt.Errorf("parameter ID %d already exists", p.ID)
-		}
-
-		// Register the parameter
-		r.params[p.ID] = p
-		r.order = append(r.order, p.ID)
-		r.nameToID[p.Name] = p.ID
+		return nil
+	})
+	if err == nil {
+		r.nextID.Store(next)
 	}
-
-	return nil
+	return err
 }
 
 // RegisterWithID adds a parameter with a specific ID
 func (r *AutoRegistry) RegisterWithID(id uint32, param *Parameter) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
-	// Force the ID
-	param.ID = id
-
-	// Check for conflicts
-	if existing, exists := r.params[id]; exists {
-		return fmt.Errorf("parameter ID %d already used by '%s'", id, existing.Name)
-	}
-
-	// Update next ID if necessary
-	if id >= r.nextID.Load() {
+	err := r.edit(func(s *registryState) error {
+		if existing, exists := s.params[id]; exists {
+			return fmt.Errorf("parameter ID %d already used by '%s'", id, existing.Name)
+		}
+		param.ID = id
+		s.params[id] = param
+		s.order = append(s.order, id)
+		s.names[param.Name] = id
+		return nil
+	})
+	if err == nil && id >= r.nextID.Load() {
 		r.nextID.Store(id + 1)
 	}
-
-	// Register
-	r.params[id] = param
-	r.order = append(r.order, id)
-	r.nameToID[param.Name] = id
-
-	return nil
+	return err
 }
 
 // GetByName retrieves a parameter by name
 func (r *AutoRegistry) GetByName(name string) *Parameter {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	id, exists := r.nameToID[name]
+	s := r.state.Load()
+	id, exists := s.names[name]
 	if !exists {
 		return nil
 	}
-
-	return r.params[id]
+	return s.params[id]
 }
 
 // GetID returns the ID for a parameter name
 func (r *AutoRegistry) GetID(name string) (uint32, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	id, exists := r.nameToID[name]
+	id, exists := r.state.Load().names[name]
 	return id, exists
 }
 
@@ -114,10 +102,7 @@ func (r *AutoRegistry) GetID(name string) (uint32, bool) {
 func (r *AutoRegistry) Clear() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
-	r.params = make(map[uint32]*Parameter)
-	r.order = make([]uint32, 0)
-	r.nameToID = make(map[string]uint32)
+	r.state.Store(&registryState{params: map[uint32]*Parameter{}, names: map[string]uint32{}})
 	r.nextID.Store(0)
 }
 
