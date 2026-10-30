@@ -74,7 +74,7 @@ func at(amp []float64, freq float64, n int) float64 {
 	c := int(math.Round(freq * float64(n) / rate))
 	best := 0.0
 	for k := max(0, c-3); k <= min(len(amp)-1, c+3); k++ {
-		best = math.Max(best, amp[k])
+		best = max(best, amp[k])
 	}
 	return best
 }
@@ -87,44 +87,56 @@ func TestVoicePlaysAtThePitchOfTheNote(t *testing.T) {
 	}
 	s.SetLoop(0, 88200)
 	inst := instrument(t, Zone{Sample: s, HighKey: 127, HighVelocity: 127})
-	for note, want := range map[uint8]float64{69: 1000, 81: 2000, 57: 500, 76: 1000 * math.Exp2(7.0/12), 93: 4000} {
-		v := NewVoice(rate, inst)
-		l, r := play(v, note, 127, 40000)
-		amp := spectrum(t, l[4096:])
-		if a := at(amp, want, 32768); math.Abs(a-0.5) > 0.01 {
-			t.Errorf("note %d: %.4f at %.1f Hz, want 0.5", note, a, want)
-		}
-		for i := range l {
-			if l[i] != r[i] {
-				t.Fatalf("note %d: a mono sample differs between channels at %d", note, i)
+	for _, q := range []Quality{QualityHigh, QualityStandard} {
+		for note, want := range map[uint8]float64{69: 1000, 81: 2000, 57: 500, 76: 1000 * math.Exp2(7.0/12), 93: 4000} {
+			v := NewVoice(rate, inst)
+			v.SetQuality(q)
+			l, r := play(v, note, 127, 40000)
+			amp := spectrum(t, l[4096:])
+			if a := at(amp, want, 32768); math.Abs(a-0.5) > 0.01 {
+				t.Errorf("quality %d note %d: %.4f at %.1f Hz, want 0.5", q, note, a, want)
+			}
+			for i := range l {
+				if l[i] != r[i] {
+					t.Fatalf("quality %d note %d: a mono sample differs between channels at %d", q, note, i)
+				}
 			}
 		}
 	}
 }
 
 func TestVoicePitchingUpDoesNotAlias(t *testing.T) {
-	// A 20 kHz tone seven semitones up is 30 kHz, above Nyquist: it must
-	// be filtered, not fold back to 18 kHz.
-	s, _ := NewSample([][]float32{tone(20000, rate, 96000)}, rate, 60)
-	v := NewVoice(rate, instrument(t, Zone{Sample: s, HighKey: 127, HighVelocity: 127}))
-	l, _ := play(v, 67, 127, 40000)
-	amp := spectrum(t, l[4096:])
-	worst := 0.0
-	for _, a := range amp {
-		worst = math.Max(worst, a)
-	}
-	if db := 20 * math.Log10(worst/0.5); db > -60 {
-		t.Fatalf("alias at %.1f dB, want below -60", db)
+	// Seven semitones up, the read cuts off at 16 kHz of the sample. A
+	// 20 kHz tone becomes 30 kHz, above Nyquist: it must be filtered, not
+	// fold back to 18 kHz. The standard kernel's wider transition band
+	// rejects from about 1.3 times the cutoff: 22 kHz (33 kHz, which
+	// would fold to 15 kHz).
+	for q, freq := range map[Quality]float64{QualityHigh: 20000, QualityStandard: 22000} {
+		s, _ := NewSample([][]float32{tone(freq, rate, 96000)}, rate, 60)
+		v := NewVoice(rate, instrument(t, Zone{Sample: s, HighKey: 127, HighVelocity: 127}))
+		v.SetQuality(q)
+		l, _ := play(v, 67, 127, 40000)
+		amp := spectrum(t, l[4096:])
+		worst := 0.0
+		for _, a := range amp {
+			worst = max(worst, a)
+		}
+		if db := 20 * math.Log10(worst/0.5); db > -60 {
+			t.Errorf("quality %d: alias of %.0f Hz at %.1f dB, want below -60", q, freq, db)
+		}
 	}
 	// Two and four octaves up a 1 kHz tone comes through cleanly.
-	s, _ = NewSample([][]float32{tone(1000, rate, 96000)}, rate, 60)
+	s, _ := NewSample([][]float32{tone(1000, rate, 96000)}, rate, 60)
 	s.SetLoop(0, 96000)
-	for note, want := range map[uint8]float64{84: 4000, 108: 16000} {
-		v = NewVoice(rate, instrument(t, Zone{Sample: s, HighKey: 127, HighVelocity: 127}))
-		l, _ = play(v, note, 127, 20000)
-		amp = spectrum(t, l[2048:])
-		if a := at(amp, want, 16384); math.Abs(a-0.5) > 0.02 {
-			t.Errorf("note %d: %.4f at %.0f Hz, want 0.5", note, a, want)
+	for _, q := range []Quality{QualityHigh, QualityStandard} {
+		for note, want := range map[uint8]float64{84: 4000, 108: 16000} {
+			v := NewVoice(rate, instrument(t, Zone{Sample: s, HighKey: 127, HighVelocity: 127}))
+			v.SetQuality(q)
+			l, _ := play(v, note, 127, 20000)
+			amp := spectrum(t, l[2048:])
+			if a := at(amp, want, 16384); math.Abs(a-0.5) > 0.02 {
+				t.Errorf("quality %d note %d: %.4f at %.0f Hz, want 0.5", q, note, a, want)
+			}
 		}
 	}
 }
@@ -167,13 +179,17 @@ func TestMapSelectsZonesByKeyAndVelocity(t *testing.T) {
 		Zone{Sample: high, LowKey: 67, HighKey: 127, HighVelocity: 127},
 	)
 	m := inst.Load()
-	if z := m.Find(60, 30); z == nil || z.Sample != soft {
+	only := func(note, velocity uint8, want *Sample) bool {
+		z := m.Match(note, velocity, make([]*Zone, 0, MaxLayers))
+		return len(z) == 1 && z[0].Sample == want
+	}
+	if !only(60, 30, soft) {
 		t.Error("soft layer not chosen")
 	}
-	if z := m.Find(60, 100); z == nil || z.Sample != loud {
+	if !only(60, 100, loud) {
 		t.Error("loud layer not chosen")
 	}
-	if z := m.Find(72, 100); z == nil || z.Sample != high {
+	if !only(72, 100, high) {
 		t.Error("upper zone not chosen")
 	}
 	// Velocity 127 at -6 dB.
@@ -232,11 +248,16 @@ func BenchmarkVoiceFifthUp(b *testing.B) {
 	m, _ := NewMap(Zone{Sample: s, HighKey: 127, HighVelocity: 127})
 	var p atomic.Pointer[Map]
 	p.Store(m)
-	v := NewVoice(rate, &p)
-	l := make([]float32, 512)
-	r := make([]float32, 512)
-	v.TriggerNote(67, 100)
-	for b.Loop() {
-		v.Render(l, r)
+	for name, q := range map[string]Quality{"High": QualityHigh, "Standard": QualityStandard} {
+		b.Run(name, func(b *testing.B) {
+			v := NewVoice(rate, &p)
+			v.SetQuality(q)
+			l := make([]float32, 512)
+			r := make([]float32, 512)
+			v.TriggerNote(67, 100)
+			for b.Loop() {
+				v.Render(l, r)
+			}
+		})
 	}
 }
