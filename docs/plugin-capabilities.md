@@ -935,10 +935,10 @@ deadline of a 64-sample block.
 - Standalone applications follow MIDI clock but not Ableton Link: Link's
   only implementation (github.com/Ableton/link) is GPL-2.0-or-later or
   licensed by Ableton for proprietary applications, which an MIT library
-  cannot pass on to the plugins built with it. The Windows applications have run under Wine on the null device
-  only; the Linux MIDI and Windows MIDI/audio paths have not
-  run on real hardware here (Core MIDI, Core Audio and ALSA playback
-  have).
+  cannot pass on to the plugins built with it. The Windows applications
+  have run under Wine on the null device only; the Linux MIDI and Windows
+  MIDI/audio paths have not run on real hardware here (Core MIDI, Core
+  Audio and ALSA playback have).
 - CLAP has no note expression metadata: its note expressions are a fixed
   set (volume, pan, tuning, vibrato, expression, brightness, pressure)
   with no extension to describe others, so `NoteExpressionProcessor`
