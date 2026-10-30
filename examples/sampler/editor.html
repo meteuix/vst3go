@@ -22,7 +22,8 @@
   <main>
     <h1 id="title"></h1>
     <form id="load">
-      <input id="path" type="text" placeholder="/path/to/sample.wav" spellcheck="false" />
+      <input id="path" type="text" placeholder="/path/to/instrument.sfz or sample.wav" spellcheck="false" />
+      <button type="button" id="browse">Browse…</button>
       <button type="submit">Load</button>
     </form>
     <div class="status" id="status"></div>
@@ -39,13 +40,29 @@
       vst3go.send("load", { path: pathInput.value.trim() });
     });
     const status = document.getElementById("status");
+    document.getElementById("browse").addEventListener("click", async () => {
+      try {
+        const path = await vst3go.chooseFile({ title: "Choose an instrument or sample",
+          extensions: ["sfz", "wav", "aif", "aiff", "flac", "mp3", "ogg"] });
+        if (path) {
+          pathInput.value = path;
+          vst3go.send("load", { path });
+        }
+      } catch (err) {
+        status.classList.add("error");
+        status.textContent = err.message;
+      }
+    });
     let shownPath = null;
     vst3go.on("status", (s) => {
       status.classList.toggle("error", Boolean(s.error));
       if (s.error) status.textContent = s.error;
       else if (s.loading) status.textContent = "Loading…";
       else if (!s.path) status.textContent = "Built-in tone";
+      else if (s.regions) status.textContent = `SFZ · ${s.regions} regions · ${s.samples} samples` +
+        (s.skipped ? ` · ${s.skipped} skipped` : "") + (s.ignored ? ` · ignored: ${s.ignored.join(", ")}` : "");
       else status.textContent = `${s.seconds.toFixed(2)} s · ${s.channels === 2 ? "stereo" : "mono"} · root ${s.rootNote}` + (s.looped ? " · looped" : "");
+      if (s.path && !s.error && !s.loading) status.textContent += ` · ${s.memoryMB.toFixed(1)} MB in memory`;
       if (s.path !== shownPath && document.activeElement !== pathInput) {
         pathInput.value = s.path;
         shownPath = s.path;

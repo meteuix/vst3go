@@ -3,13 +3,30 @@ package main
 import (
 	"encoding/json"
 	"math"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/th-release/vst3go/pkg/audiofile"
+	"github.com/th-release/vst3go/pkg/dsp/sampler"
 	"github.com/th-release/vst3go/pkg/plugintest"
 )
+
+// TestMain keeps the streamer's cache files out of the user's cache
+// directory.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "sampler-test")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("HOME", dir)
+	os.Setenv("XDG_CACHE_HOME", dir)
+	os.Setenv("LocalAppData", dir)
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
 
 // waitLoaded polls the editor status until the load in progress ends.
 func waitLoaded(t *testing.T, p *plugintest.Instance) loadStatus {
@@ -70,6 +87,19 @@ func TestSamplerBuiltInTone(t *testing.T) {
 	}
 }
 
+func TestSamplerStandardQuality(t *testing.T) {
+	p := plugintest.New(t, samplerPlugin{})
+	p.Set(paramQuality, float64(sampler.QualityStandard))
+	p.Note(0, 79, 1, 0, 23999)
+	out := p.RenderSilence(24000, 0, 2)
+	if f, want := plugintest.ZeroCrossingFrequency(out[0][4800:], 48000), 440*math.Exp2(10.0/12); math.Abs(f-want) > 1 {
+		t.Fatalf("G5 at %.2f Hz, want %.2f", f, want)
+	}
+	if rms := plugintest.RMS(out[0][4800:]); rms < 0.1 {
+		t.Fatalf("G5 at %.3f RMS", rms)
+	}
+}
+
 func TestSamplerLoadsAFile(t *testing.T) {
 	p := plugintest.New(t, samplerPlugin{})
 	path := writeTone(t)
@@ -77,7 +107,7 @@ func TestSamplerLoadsAFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := waitLoaded(t, p)
-	if s.Error != "" || s.Path != path || s.Channels != 1 || s.RootNote != defaultRoot || math.Abs(s.Seconds-1) > 1e-9 {
+	if s.Error != "" || s.Path != path || s.Channels != 1 || s.RootNote != sampler.DefaultRoot || math.Abs(s.Seconds-1) > 1e-9 {
 		t.Fatalf("status %+v", s)
 	}
 	// Root C4 at 1 kHz: G4 is a fifth up, resampled from 44.1 kHz.
@@ -88,6 +118,33 @@ func TestSamplerLoadsAFile(t *testing.T) {
 	p.RenderSilence(48000, 0, 2) // let the note release
 	if f := pitchOf(t, p, 60); math.Abs(f-500) > 1 {
 		t.Fatalf("C4 tuned an octave down at %.2f Hz, want 500", f)
+	}
+}
+
+func TestSamplerLoadsAnSFZInstrument(t *testing.T) {
+	p := plugintest.New(t, samplerPlugin{})
+	dir := filepath.Dir(writeTone(t))
+	sfz := filepath.Join(dir, "split.sfz")
+	// The 1 kHz tone at C4 below middle C (keycenter c4) and an octave
+	// lower above it (keycenter c5).
+	text := "<region> sample=tone.wav hikey=59 pitch_keycenter=c4\n" +
+		"<region> sample=tone.wav lokey=60 pitch_keycenter=c5 ampeg_attack=0.1\n"
+	if err := os.WriteFile(sfz, []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.EditorMessage("load", map[string]string{"path": sfz}); err != nil {
+		t.Fatal(err)
+	}
+	s := waitLoaded(t, p)
+	if s.Error != "" || s.Regions != 2 || s.Samples != 1 || len(s.Ignored) != 1 || s.Ignored[0] != "ampeg_attack" {
+		t.Fatalf("status %+v", s)
+	}
+	if f := pitchOf(t, p, 59); math.Abs(f-1000*math.Exp2(-1.0/12)) > 1 {
+		t.Fatalf("B3 at %.2f Hz", f)
+	}
+	p.RenderSilence(48000, 0, 2)
+	if f := pitchOf(t, p, 60); math.Abs(f-500) > 1 {
+		t.Fatalf("C4 at %.2f Hz, want 500", f)
 	}
 }
 
@@ -147,5 +204,49 @@ func TestSamplerDoesNotAllocate(t *testing.T) {
 	})
 	if allocs != 0 {
 		t.Fatalf("%v allocations per block", allocs)
+	}
+}
+
+// TestSamplerStreamsFromDisk plays a file longer than the preloaded start:
+// the rest streams from disk while the note plays.
+func TestSamplerStreamsFromDisk(t *testing.T) {
+	p := plugintest.New(t, samplerPlugin{})
+	path := filepath.Join(t.TempDir(), "long.wav")
+	b := &audiofile.Buffer{SampleRate: 48000, Channels: [][]float32{plugintest.Sine(1000, 48000, 4*48000, 0.5)}}
+	if err := audiofile.Save(path, b, audiofile.Float32); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.EditorMessage("load", map[string]string{"path": path}); err != nil {
+		t.Fatal(err)
+	}
+	s := waitLoaded(t, p)
+	// The file is 0.73 MB of float audio; the start and its half-rate
+	// copies stay in memory.
+	if s.Error != "" || s.Seconds != 4 || s.MemoryMB <= 0 || s.MemoryMB > 0.4 {
+		t.Fatalf("status %+v", s)
+	}
+	st, err := streamer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := st.Underruns()
+	p.Note(0, 60, 1, 0, 0)
+	var tail []float32
+	for block := 0; block < 3*48000/512; block++ {
+		out := p.RenderSilence(512, 0, 2)
+		if block >= 2*48000/512 {
+			tail = append(tail, out[0]...)
+		}
+		time.Sleep(200 * time.Microsecond)
+	}
+	if u := st.Underruns() - before; u != 0 {
+		t.Fatalf("%d underruns", u)
+	}
+	// The third second is well past the preloaded 0.68 s.
+	if f := plugintest.ZeroCrossingFrequency(tail, 48000); math.Abs(f-1000) > 1 {
+		t.Fatalf("streamed part at %.2f Hz", f)
+	}
+	if rms := plugintest.RMS(tail); rms < 0.1 {
+		t.Fatalf("streamed part RMS %.3f", rms)
 	}
 }

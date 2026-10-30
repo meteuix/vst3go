@@ -1,10 +1,15 @@
-// Command sampler plays an audio file across the keyboard: 16 voices with
-// band-limited pitch shifting, the file's loop (WAV smpl / AIFF markers)
-// and an ADSR envelope. Until a file is loaded it plays a built-in
-// harmonic tone. The editor page takes a file path (WAV, AIFF, FLAC, MP3
-// or Ogg Vorbis); the file is decoded on a background goroutine and
-// swapped in atomically, so the audio thread never waits for it, and the
-// path is saved with the plugin state and reloaded with it.
+// Command sampler plays an SFZ instrument or a single audio file across
+// the keyboard: 16 voices with band-limited pitch shifting, loops (SFZ
+// loop modes, or the file's WAV smpl / AIFF markers), layers, round robin
+// and an ADSR envelope. Until something is loaded it plays a built-in
+// harmonic tone. The editor page takes a path, typed or picked with
+// vst3go.chooseFile, to an .sfz file or an audio file (WAV, AIFF, FLAC,
+// MP3 or Ogg Vorbis); it is loaded on a background
+// goroutine and swapped in atomically, so the audio thread never waits for
+// it, and the path is saved with the plugin state and reloaded with it.
+// Samples stream from disk (sampler.Streamer, shared by every instance in
+// the process, caching decoded files in the user cache directory), so
+// instruments far larger than memory play.
 //
 // Build: scripts/build_vst3.sh examples/sampler Sampler
 package main
@@ -12,15 +17,14 @@ package main
 import (
 	_ "embed"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"io"
 	"math"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 
-	"github.com/th-release/vst3go/pkg/audiofile"
 	"github.com/th-release/vst3go/pkg/dsp/sampler"
 	"github.com/th-release/vst3go/pkg/framework/bus"
 	"github.com/th-release/vst3go/pkg/framework/param"
@@ -41,14 +45,10 @@ const (
 	paramRelease
 	paramTune
 	paramVolume
+	paramQuality
 )
 
-const (
-	numVoices   = 16
-	defaultRoot = 60      // root note of files without one
-	maxSeconds  = 10 * 60 // longest file loaded
-	readChunk   = 1 << 16 // frames decoded per read
-)
+const numVoices = 16
 
 type samplerPlugin struct{}
 
@@ -65,14 +65,18 @@ func (samplerPlugin) GetInfo() frameworkplugin.Info {
 func (samplerPlugin) CreateProcessor() plugin.Processor {
 	p := &samplerProcessor{BaseProcessor: frameworkplugin.NewBaseProcessor(bus.NewGenerator())}
 	p.Parameters().Add(
-		param.New(paramAttack, "Attack").Range(0.001, 2).Default(0.002).Unit("s").Build(),
-		param.New(paramDecay, "Decay").Range(0.001, 4).Default(0.3).Unit("s").Build(),
+		param.New(paramAttack, "Attack").Range(0.001, 2).Default(0.002).Logarithmic().Unit("s").Build(),
+		param.New(paramDecay, "Decay").Range(0.001, 4).Default(0.3).Logarithmic().Unit("s").Build(),
 		param.New(paramSustain, "Sustain").Range(0, 100).Default(100).Unit("%").
 			Formatter(param.PercentFormatter, param.PercentParser).Build(),
-		param.New(paramRelease, "Release").Range(0.001, 5).Default(0.3).Unit("s").Build(),
+		param.New(paramRelease, "Release").Range(0.001, 5).Default(0.3).Logarithmic().Unit("s").Build(),
 		param.New(paramTune, "Tune").Range(-24, 24).Default(0).Unit("st").Build(),
 		param.New(paramVolume, "Volume").Range(0, 100).Default(70).Unit("%").
 			Formatter(param.PercentFormatter, param.PercentParser).Smooth(0.01).Build(),
+		param.Choice(paramQuality, "Quality", []param.ChoiceOption{
+			{Value: float64(sampler.QualityHigh), Name: "High"},
+			{Value: float64(sampler.QualityStandard), Name: "Standard"},
+		}).Build(),
 	)
 	p.instrument.Store(defaultInstrument())
 	p.status.Store(&loadStatus{})
@@ -81,15 +85,22 @@ func (samplerPlugin) CreateProcessor() plugin.Processor {
 	return p
 }
 
-// loadStatus is what the editor shows about the loaded file.
+// loadStatus is what the editor shows about the loaded file: the audio
+// file's length, channels, root and loop, or the SFZ instrument's region
+// and sample counts with what it could not use.
 type loadStatus struct {
-	Path     string  `json:"path"`
-	Loading  bool    `json:"loading"`
-	Error    string  `json:"error,omitempty"`
-	Seconds  float64 `json:"seconds"`
-	Channels int     `json:"channels"`
-	RootNote float64 `json:"rootNote"`
-	Looped   bool    `json:"looped"`
+	Path     string   `json:"path"`
+	Loading  bool     `json:"loading"`
+	Error    string   `json:"error,omitempty"`
+	Seconds  float64  `json:"seconds"`
+	Channels int      `json:"channels"`
+	RootNote float64  `json:"rootNote"`
+	Looped   bool     `json:"looped"`
+	MemoryMB float64  `json:"memoryMB"`
+	Regions  int      `json:"regions,omitempty"`
+	Samples  int      `json:"samples,omitempty"`
+	Skipped  int      `json:"skipped,omitempty"`
+	Ignored  []string `json:"ignored,omitempty"`
 }
 
 type hostRef struct{ plugin.Host }
@@ -101,6 +112,7 @@ type samplerProcessor struct {
 	allocator  *voice.Allocator
 	env        [4]float64
 	tune       float64
+	quality    sampler.Quality
 
 	host   atomic.Pointer[hostRef]
 	status atomic.Pointer[loadStatus]
@@ -127,6 +139,7 @@ func (p *samplerProcessor) prepare(sampleRate float64, maxBlockSize int32) error
 	p.allocator = voice.NewAllocator(vs)
 	p.env = [4]float64{-1}
 	p.tune = math.NaN()
+	p.quality = -1
 	return nil
 }
 
@@ -146,11 +159,13 @@ func (p *samplerProcessor) ProcessAudio(ctx *process.Context) {
 		ctx.ParamPlain(paramSustain) / 100, ctx.ParamPlain(paramRelease),
 	}
 	tune := ctx.ParamPlain(paramTune)
-	if env != p.env || tune != p.tune {
-		p.env, p.tune = env, tune
+	quality := sampler.Quality(ctx.ParamPlain(paramQuality))
+	if env != p.env || tune != p.tune || quality != p.quality {
+		p.env, p.tune, p.quality = env, tune, quality
 		for _, v := range p.voices {
 			v.SetADSR(env[0], env[1], env[2], env[3])
 			v.SetPitchBend(tune)
+			v.SetQuality(quality)
 		}
 	}
 
@@ -276,52 +291,40 @@ func (p *samplerProcessor) publish(gen int, path string, m *sampler.Map, st *loa
 	p.status.Store(st)
 }
 
-// loadInstrument decodes an audio file into a one-sample instrument
-// spanning the keyboard.
+// streamer streams the samples of every instance; it lives as long as the
+// process.
+var streamer = sync.OnceValues(func() (*sampler.Streamer, error) {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return nil, err
+	}
+	return sampler.NewStreamer(filepath.Join(dir, "vst3go-sampler"), sampler.StreamerOptions{Streams: 256})
+})
+
+// loadInstrument reads an SFZ instrument, or an audio file as a
+// one-sample instrument spanning the keyboard, streaming from disk.
 func loadInstrument(path string) (*sampler.Map, *loadStatus, error) {
-	r, err := audiofile.Open(path)
+	st, err := streamer()
 	if err != nil {
 		return nil, nil, err
 	}
-	defer r.Close()
-	info := r.Info()
-	if info.Channels < 1 || !(info.SampleRate > 0) {
-		return nil, nil, fmt.Errorf("%s: no audio", filepath.Base(path))
-	}
-	limit := int(maxSeconds * info.SampleRate)
-	data := make([][]float32, info.Channels)
-	chunk := make([][]float32, info.Channels)
-	for ch := range chunk {
-		chunk[ch] = make([]float32, readChunk)
-	}
-	for len(data[0]) < limit {
-		n, err := r.Read(chunk)
-		for ch := range data {
-			data[ch] = append(data[ch], chunk[ch][:n]...)
-		}
-		if errors.Is(err, io.EOF) {
-			break
-		}
+	if strings.EqualFold(filepath.Ext(path), ".sfz") {
+		sfz, err := st.LoadSFZ(path)
 		if err != nil {
 			return nil, nil, err
 		}
+		return sfz.Map, &loadStatus{
+			Path:     path,
+			MemoryMB: float64(sfz.Map.MemoryBytes()) / (1 << 20),
+			Regions:  sfz.Regions,
+			Samples:  sfz.Samples,
+			Skipped:  sfz.Skipped,
+			Ignored:  sfz.Ignored,
+		}, nil
 	}
-	if len(data[0]) == 0 {
-		return nil, nil, fmt.Errorf("%s: no audio", filepath.Base(path))
-	}
-	if len(data[0]) > limit {
-		return nil, nil, fmt.Errorf("%s: longer than %d minutes", filepath.Base(path), maxSeconds/60)
-	}
-	root := float64(defaultRoot)
-	if info.RootNote >= 0 {
-		root = float64(info.RootNote)
-	}
-	s, err := sampler.NewSample(data[:min(2, len(data))], info.SampleRate, root)
+	s, err := st.LoadSample(path)
 	if err != nil {
 		return nil, nil, err
-	}
-	if len(info.Loops) > 0 {
-		s.SetLoop(int(info.Loops[0].Start), int(info.Loops[0].End))
 	}
 	m, err := keyboard(s)
 	if err != nil {
@@ -331,8 +334,9 @@ func loadInstrument(path string) (*sampler.Map, *loadStatus, error) {
 		Path:     path,
 		Seconds:  float64(s.Len()) / s.SampleRate(),
 		Channels: s.Channels(),
-		RootNote: root,
+		RootNote: s.RootNote(),
 		Looped:   s.Looped(),
+		MemoryMB: float64(m.MemoryBytes()) / (1 << 20),
 	}, nil
 }
 
