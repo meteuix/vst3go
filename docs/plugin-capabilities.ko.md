@@ -169,7 +169,7 @@ afconvert로, Linux에서는 `flac -t`와 sox로 검사합니다.
 | `pitch` | 딜레이 라인 `Shifter`, 페이즈 보코더 `SpectralShifter`, 실시간으로 배율을 바꿀 수 있는 스트리밍 타임 `Stretcher`와 오프라인 `Stretch`, YIN `Detector` | `pitchshifter`, `tuner` |
 | `granular` | `Granulator`: 스프레이, 피치, 스테레오 확산을 갖춘 그래뉼러 딜레이와 프리즈 | `granulator` |
 | `sampler` | `Sample`(루프, 절반 레이트 사본), 라운드 로빈과 랜덤 레이어를 지원하는 키/벨로시티 `Map`, `Zone`의 튜닝·게인·팬·오프셋·루프 모드, 레이어를 겹치는 대역 제한 `Voice`(`QualityHigh` 또는 더 빠른 `QualityStandard` 커널), `LoadSample`(WAV/AIFF/FLAC/MP3/Ogg, 루트 음과 첫 루프 포함), `LoadSFZ`(상속되는 헤더, `#define`/`#include`, 일반적인 opcode), `Streamer`(디스크 스트리밍: 각 샘플의 앞부분과 루프만 메모리에 두고 나머지는 디코딩된 캐시에서 보이스보다 앞서 읽으므로, 메모리보다 큰 악기도 연주됨) | `sampler` |
-| `nam` | Neural Amp Modeler 모델(`.nam`, WaveNet, LSTM, Linear): `Load`/`Parse`, NeuralAmpModelerCore와 같은 결과를 내는 할당 없는 `Model`, 모델과 host의 샘플레이트 사이를 리샘플링하는 `Runner`(레이턴시 포함) | `namamp` |
+| `nam` | Neural Amp Modeler 모델(`.nam` 0.5~0.7 버전): WaveNet(gated/blended 레이어, bottleneck, 그룹 컨볼루션, layer/head 1x1, FiLM, condition 모델, head 커널, post-stack head), LSTM, ConvNet, Linear, Sequential 체인, A2 캡처의 slimmable 모델(SlimmableContainer, slimmable WaveNet: `File.Sizes`, `File.NewSized`)과 NAM의 모든 활성화 함수. `Load`/`Parse`, NeuralAmpModelerCore와 같은 결과를 내는 할당 없는 `Model`, 모델과 host의 샘플레이트 사이를 리샘플링하는 `Runner`(레이턴시 포함) | `namamp` |
 | `analysis` | FFT, 스펙트럼, 피크/RMS/LUFS(BS.1770-4, EBU R 128 LRA) 미터, 상관도, 위상 스코프 | |
 
 `pkg/framework/dsp`는 프로세서를 체인으로 묶고(`NewChain`, `NewParallelChain`,

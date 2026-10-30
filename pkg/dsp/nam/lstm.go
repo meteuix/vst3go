@@ -2,21 +2,19 @@ package nam
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
-type lstmConfig struct {
-	InputSize  int `json:"input_size"`
-	HiddenSize int `json:"hidden_size"`
-	NumLayers  int `json:"num_layers"`
-}
-
-// lstm is NAM's LSTM: stacked cells run one sample at a time and a linear
+// lstm is NAM's LSTM: stacked cells run one frame at a time and a linear
 // head on the last hidden state.
 type lstm struct {
+	in, out  int
 	cells    []lstmCell
-	head     []float32
-	headBias float32
+	head     []float32 // out × hidden, row-major
+	headBias []float32
+	hidden   int
+	warm     int
 }
 
 type lstmCell struct {
@@ -29,42 +27,66 @@ type lstmCell struct {
 	gates      []float32
 }
 
-func newLSTM(raw json.RawMessage, params []float32) (*lstm, error) {
-	var c lstmConfig
-	if err := json.Unmarshal(raw, &c); err != nil {
+func newLSTM(s spec) (*lstm, error) {
+	var o object
+	if err := json.Unmarshal(s.config, &o); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	var layers, inputSize, hidden int
+	in, out := 1, 1
+	if err := errors.Join(o.get("num_layers", &layers), o.get("input_size", &inputSize), o.get("hidden_size", &hidden),
+		o.opt("in_channels", &in), o.opt("out_channels", &out)); err != nil {
 		return nil, err
 	}
-	if c.InputSize != 1 || c.HiddenSize < 1 || c.NumLayers < 1 {
-		return nil, fmt.Errorf("input size %d, hidden size %d and %d layers", c.InputSize, c.HiddenSize, c.NumLayers)
+	switch {
+	case in < 1 || out < 1 || hidden < 1 || layers < 0:
+		return nil, fmt.Errorf("%d to %d channels, hidden size %d and %d layers", in, out, hidden, layers)
+	case inputSize != in:
+		return nil, fmt.Errorf("input size %d for %d input channels", inputSize, in)
 	}
-	r := &reader{w: params}
-	m := &lstm{}
-	for i := range c.NumLayers {
-		in, h := c.HiddenSize, c.HiddenSize
+	r := &reader{w: s.weights}
+	m := &lstm{in: in, out: out, hidden: hidden}
+	for i := range layers {
+		cin := hidden
 		if i == 0 {
-			in = c.InputSize
+			cin = inputSize
 		}
-		cell := lstmCell{
-			in: in, hidden: h,
-			w: r.take(4 * h * (in + h)), b: r.take(4 * h),
-			h0: r.take(h), c0: r.take(h),
-			xh: make([]float32, in+h), c: make([]float32, h), gates: make([]float32, 4*h),
-		}
-		m.cells = append(m.cells, cell)
+		m.cells = append(m.cells, lstmCell{
+			in: cin, hidden: hidden,
+			w: r.take(4 * hidden * (cin + hidden)), b: r.take(4 * hidden),
+			h0: r.take(hidden), c0: r.take(hidden),
+			xh: make([]float32, cin+hidden), c: make([]float32, hidden), gates: make([]float32, 4*hidden),
+		})
 	}
-	m.head = r.take(c.HiddenSize)
-	m.headBias = r.take(1)[0]
+	m.head = r.take(out * hidden)
+	m.headBias = r.take(out)
 	if err := r.done(); err != nil {
 		return nil, err
 	}
-	m.reset()
+	// Half a second, as in NAM; a frame when the rate is unknown.
+	m.warm = max(1, int(0.5*s.rate))
 	return m, nil
 }
 
-func (m *lstm) process(in, out []float32) {
-	last := &m.cells[len(m.cells)-1]
-	for t, x := range in {
-		m.cells[0].xh[0] = x
+func (m *lstm) channels() (int, int) { return m.in, m.out }
+
+func (m *lstm) process(in, out matrix, n int) {
+	if len(m.cells) == 0 {
+		for r := range m.out {
+			y := out.row(r, 0, n)
+			if r < m.in {
+				copy(y, in.row(r, 0, n))
+			} else {
+				clear(y)
+			}
+		}
+		return
+	}
+	first, last := &m.cells[0], &m.cells[len(m.cells)-1]
+	for t := range n {
+		for ch := range m.in {
+			first.xh[ch] = in.data[ch*in.stride+t]
+		}
 		for i := range m.cells {
 			c := &m.cells[i]
 			if i > 0 {
@@ -72,11 +94,15 @@ func (m *lstm) process(in, out []float32) {
 			}
 			c.step()
 		}
-		y := m.headBias
-		for j, h := range last.xh[last.in:] {
-			y += m.head[j] * h
+		h := last.xh[last.in:]
+		for o := range m.out {
+			row := m.head[o*m.hidden : (o+1)*m.hidden]
+			var y float32
+			for j, v := range h {
+				y += row[j] * v
+			}
+			out.data[o*out.stride+t] = y + m.headBias[o]
 		}
-		out[t] = y
 	}
 }
 
@@ -85,11 +111,11 @@ func (c *lstmCell) step() {
 	xh := c.xh[:cols]
 	for r := range c.gates {
 		row := c.w[r*cols : (r+1)*cols : (r+1)*cols]
-		s := c.b[r]
+		var s float32
 		for j, v := range xh {
 			s += row[j] * v
 		}
-		c.gates[r] = s
+		c.gates[r] = s + c.b[r]
 	}
 	h := c.hidden
 	g := c.gates[:4*h]
@@ -110,5 +136,4 @@ func (m *lstm) reset() {
 	}
 }
 
-// prewarm is half a second, as in NAM since 0.2.
-func (m *lstm) prewarm(sampleRate float64) int { return int(0.5 * sampleRate) }
+func (m *lstm) prewarm() int { return m.warm }

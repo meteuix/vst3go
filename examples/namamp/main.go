@@ -1,5 +1,5 @@
 // Command namamp is an amp and pedal simulator that runs Neural Amp
-// Modeler captures (.nam files: WaveNet, LSTM or Linear) with pkg/dsp/nam.
+// Modeler captures (.nam files of any architecture) with pkg/dsp/nam.
 // The input channels are mixed to mono, driven into the model and the
 // result goes to every output; models trained at another sample rate are
 // resampled, which adds latency (announced to the host). Normalize
