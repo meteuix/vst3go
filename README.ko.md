@@ -2,6 +2,8 @@
 
 # VST3Go
 
+[![ci](https://github.com/th-release/vst3go/actions/workflows/ci.yml/badge.svg)](https://github.com/th-release/vst3go/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/th-release/vst3go/v2.svg)](https://pkg.go.dev/github.com/th-release/vst3go/v2) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 `vst3go`는 VST3를 위한 저수준 Go 인터페이스이자 런타임 계층입니다.
 
 이 포크는 원본 `justyntemme/vst3go` 프로젝트와 별도로 관리됩니다. 플러그인 런타임과 함께 DSP 라이브러리, 그리고 그 위에 만든 쇼케이스 플러그인을 제공합니다.
@@ -38,7 +40,7 @@ Windows 빌드 및 패키징 참고 사항은 [`docs/windows-build.ko.md`](docs/
 (Go 1.24 이상, C 컴파일러 필요. macOS에서는 Xcode 명령줄 도구):
 
 ```bash
-go run github.com/th-release/vst3go/cmd/vst3go@latest new -type effect ./mygain "My Gain"
+go run github.com/th-release/vst3go/v2/cmd/vst3go@latest new -type effect ./mygain "My Gain"
 cd mygain
 go test ./...                                # offline tests with pkg/plugintest
 go tool vst3go build -install . "My Gain"     # VST3, CLAP, AU (macOS) or LV2 (Linux), into the user plugin folders
@@ -48,6 +50,18 @@ go tool vst3go build -format app . "My Gain"  # standalone application
 `-type instrument`는 폴리포닉 신스에서, `-type midi`는 MIDI 트랜스포저에서 시작합니다.
 새 모듈은 `vst3go`를 `tool` 의존성으로 등록하므로, `go tool vst3go`는 항상 빌드 대상
 런타임 버전과 일치합니다.
+
+기존 모듈에 런타임만 추가하려면 다음을 실행합니다.
+
+```bash
+go get github.com/th-release/vst3go/v2@latest
+```
+
+플랫폼별 준비물은 다음과 같습니다.
+
+- macOS: Xcode 명령줄 도구(`xcode-select --install`). iOS용 AUv3는 전체 Xcode가 필요합니다
+- Linux: C 컴파일러, `pkg-config`, `libx11-dev`. 플러그인 에디터를 쓰려면 `libgtk-3-dev`와 `libwebkit2gtk-4.1-dev`도 필요합니다
+- Windows: [`docs/windows-build.ko.md`](docs/windows-build.ko.md)의 교차 빌드
 
 ## 범위
 
@@ -83,8 +97,8 @@ go tool vst3go build -format app . "My Gain"  # standalone application
 
 ## 사용 방법
 
-- 다운스트림 저장소는 브리지 내부에 직접 손대지 말고 `github.com/th-release/vst3go`를 import하여 지원되는 패키지 범위 위에 구축해야 합니다.
-- 버전에 태그가 붙으면, 사용자는 브리지/런타임 변경을 의도적으로 업그레이드할 수 있도록 계속 움직이는 브랜치 대신 태그에 고정해야 합니다.
+- 다운스트림 저장소는 브리지 내부에 직접 손대지 말고 `github.com/th-release/vst3go/v2`를 import하여 지원되는 패키지 범위 위에 구축해야 합니다.
+- 브리지/런타임 변경을 의도적으로 업그레이드할 수 있도록 계속 움직이는 브랜치 대신 릴리스 태그(`v2.x.y`)에 고정해야 합니다. 모듈 경로에 메이저 버전이 들어가므로 import 경로는 `github.com/th-release/vst3go/v2/...`입니다.
 - DAW 검증, 서명, 인스톨러, 제품별 동작은 다운스트림의 책임으로 남습니다.
 
 ## 개발
@@ -147,4 +161,10 @@ Windows 전용 에디터 및 패키징 참고 사항:
 
 ## 라이선스
 
-이 프로젝트는 MIT 라이선스로 배포됩니다. 함께 포함된 VST3 SDK 헤더는 각각의 라이선스를 따릅니다.
+이 프로젝트는 MIT 라이선스로 배포됩니다([`LICENSE`](LICENSE)). 함께 포함된 서드파티 코드는 각자의 라이선스를 따릅니다.
+
+- `include/vst3`: VST3 C API, BSD 계열 라이선스([`include/vst3/LICENSE.txt`](include/vst3/LICENSE.txt))
+- `include/clap`: CLAP, MIT([`include/clap/LICENSE`](include/clap/LICENSE))
+- `include/lv2`: LV2, ISC([`include/lv2/LICENSE`](include/lv2/LICENSE))
+- `include/ara`: ARA API, Apache 2.0([`include/ara/LICENSE.txt`](include/ara/LICENSE.txt))
+- `pkg/standalone/miniaudio.h`: miniaudio, 퍼블릭 도메인 또는 MIT-0(파일 끝에 명시)

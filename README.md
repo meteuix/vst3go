@@ -2,6 +2,8 @@ English | [한국어](README.ko.md)
 
 # VST3Go
 
+[![ci](https://github.com/th-release/vst3go/actions/workflows/ci.yml/badge.svg)](https://github.com/th-release/vst3go/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/th-release/vst3go/v2.svg)](https://pkg.go.dev/github.com/th-release/vst3go/v2) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 `vst3go` is the low-level Go interface and runtime layer for VST3.
 
 This fork is maintained separately from the original `justyntemme/vst3go` project. It ships the plugin runtime together with a DSP library and showcase plugins built on it.
@@ -38,7 +40,7 @@ The `vst3go` command creates a plugin module and builds it in every format
 (Go 1.24 or newer, a C compiler; on macOS the Xcode command line tools):
 
 ```bash
-go run github.com/th-release/vst3go/cmd/vst3go@latest new -type effect ./mygain "My Gain"
+go run github.com/th-release/vst3go/v2/cmd/vst3go@latest new -type effect ./mygain "My Gain"
 cd mygain
 go test ./...                                # offline tests with pkg/plugintest
 go tool vst3go build -install . "My Gain"     # VST3, CLAP, AU (macOS) or LV2 (Linux), into the user plugin folders
@@ -48,6 +50,18 @@ go tool vst3go build -format app . "My Gain"  # standalone application
 `-type instrument` starts from a polyphonic synth and `-type midi` from a
 MIDI transposer. The new module lists `vst3go` as a `tool` dependency, so
 `go tool vst3go` always matches the runtime version it builds against.
+
+To add the runtime to an existing module instead:
+
+```bash
+go get github.com/th-release/vst3go/v2@latest
+```
+
+Requirements per platform:
+
+- macOS: Xcode command line tools (`xcode-select --install`); AUv3 for iOS needs full Xcode
+- Linux: a C compiler, `pkg-config` and `libx11-dev`; the plugin editor also needs `libgtk-3-dev` and `libwebkit2gtk-4.1-dev`
+- Windows: the cross build in [`docs/windows-build.md`](docs/windows-build.md)
 
 ## Scope
 
@@ -83,8 +97,8 @@ MIDI transposer. The new module lists `vst3go` as a `tool` dependency, so
 
 ## Consumption
 
-- Downstream repos should import `github.com/th-release/vst3go` and build on the supported package surface rather than reaching into bridge internals.
-- Once versions are tagged, consumers should pin a tag instead of a moving branch so bridge/runtime changes can be upgraded intentionally.
+- Downstream repos should import `github.com/th-release/vst3go/v2` and build on the supported package surface rather than reaching into bridge internals.
+- Pin a release tag (`v2.x.y`) instead of a moving branch so bridge/runtime changes can be upgraded intentionally. The module path carries the major version, so the import path is `github.com/th-release/vst3go/v2/...`.
 - DAW validation, signing, installers, and product-specific behavior remain downstream responsibilities.
 
 ## Development
@@ -147,4 +161,10 @@ Windows-specific editor and packaging notes:
 
 ## License
 
-This project is licensed under the MIT License. The bundled VST3 SDK headers remain under their respective licenses.
+This project is licensed under the MIT License (see [`LICENSE`](LICENSE)). Bundled third-party code keeps its own license:
+
+- `include/vst3`: VST3 C API, BSD-style license ([`include/vst3/LICENSE.txt`](include/vst3/LICENSE.txt))
+- `include/clap`: CLAP, MIT ([`include/clap/LICENSE`](include/clap/LICENSE))
+- `include/lv2`: LV2, ISC ([`include/lv2/LICENSE`](include/lv2/LICENSE))
+- `include/ara`: ARA API, Apache 2.0 ([`include/ara/LICENSE.txt`](include/ara/LICENSE.txt))
+- `pkg/standalone/miniaudio.h`: miniaudio, public domain or MIT-0 (at the end of the file)
