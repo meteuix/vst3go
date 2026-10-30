@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/th-release/vst3go/v2/pkg/ara"
+	"github.com/meteuix/vst3go/v2/pkg/ara"
 )
 
 // ARAHost is an ara.Host for tests of ARA plugins: it serves the samples

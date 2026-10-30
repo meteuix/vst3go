@@ -22,7 +22,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/th-release/vst3go/v2/internal/midiport"
+	"github.com/meteuix/vst3go/v2/internal/midiport"
 )
 
 const (

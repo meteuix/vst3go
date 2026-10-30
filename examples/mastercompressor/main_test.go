@@ -4,8 +4,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/th-release/vst3go/v2/pkg/plugin"
-	"github.com/th-release/vst3go/v2/pkg/plugintest"
+	"github.com/meteuix/vst3go/v2/pkg/plugin"
+	"github.com/meteuix/vst3go/v2/pkg/plugintest"
 )
 
 const sr = 48000

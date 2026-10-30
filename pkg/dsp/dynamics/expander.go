@@ -3,7 +3,7 @@ package dynamics
 import (
 	"math"
 
-	"github.com/th-release/vst3go/v2/pkg/dsp/envelope"
+	"github.com/meteuix/vst3go/v2/pkg/dsp/envelope"
 )
 
 // Expander implements a downward expander for reducing low-level signals

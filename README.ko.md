@@ -2,13 +2,13 @@
 
 # VST3Go
 
-[![ci](https://github.com/meteuix/vst3go/actions/workflows/ci.yml/badge.svg)](https://github.com/meteuix/vst3go/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/th-release/vst3go/v2.svg)](https://pkg.go.dev/github.com/th-release/vst3go/v2) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![ci](https://github.com/meteuix/vst3go/actions/workflows/ci.yml/badge.svg)](https://github.com/meteuix/vst3go/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/meteuix/vst3go/v2.svg)](https://pkg.go.dev/github.com/meteuix/vst3go/v2) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 `vst3go`는 VST3를 위한 저수준 Go 인터페이스이자 런타임 계층입니다.
 
 이 포크는 원본 `justyntemme/vst3go` 프로젝트와 별도로 관리됩니다. 플러그인 런타임과 함께 DSP 라이브러리, 그리고 그 위에 만든 쇼케이스 플러그인을 제공합니다.
 
-소스는 [`th-release/vst3go`](https://github.com/th-release/vst3go)의 포크인 [`meteuix/vst3go`](https://github.com/meteuix/vst3go)에 있습니다. Go 모듈 경로는 `go.mod`에 선언된 대로 `github.com/th-release/vst3go/v2`를 유지하므로, 아래의 `go get`, `go run`, import 경로는 이 경로를 사용합니다.
+소스는 [`th-release/vst3go`](https://github.com/th-release/vst3go)의 포크인 [`meteuix/vst3go`](https://github.com/meteuix/vst3go)에 있으며, Go 모듈 경로는 `github.com/meteuix/vst3go/v2`입니다.
 
 포함된 내용:
 
@@ -42,7 +42,7 @@ Windows 빌드 및 패키징 참고 사항은 [`docs/windows-build.ko.md`](docs/
 (Go 1.24 이상, C 컴파일러 필요. macOS에서는 Xcode 명령줄 도구):
 
 ```bash
-go run github.com/th-release/vst3go/v2/cmd/vst3go@latest new -type effect ./mygain "My Gain"
+go run github.com/meteuix/vst3go/v2/cmd/vst3go@latest new -type effect ./mygain "My Gain"
 cd mygain
 go test ./...                                # offline tests with pkg/plugintest
 go tool vst3go build -install . "My Gain"     # VST3, CLAP, AU (macOS) or LV2 (Linux), into the user plugin folders
@@ -56,7 +56,7 @@ go tool vst3go build -format app . "My Gain"  # standalone application
 기존 모듈에 런타임만 추가하려면 다음을 실행합니다.
 
 ```bash
-go get github.com/th-release/vst3go/v2@latest
+go get github.com/meteuix/vst3go/v2@latest
 ```
 
 플랫폼별 준비물은 다음과 같습니다.
@@ -99,8 +99,8 @@ go get github.com/th-release/vst3go/v2@latest
 
 ## 사용 방법
 
-- 다운스트림 저장소는 브리지 내부에 직접 손대지 말고 `github.com/th-release/vst3go/v2`를 import하여 지원되는 패키지 범위 위에 구축해야 합니다.
-- 브리지/런타임 변경을 의도적으로 업그레이드할 수 있도록 계속 움직이는 브랜치 대신 릴리스 태그(`v2.x.y`)에 고정해야 합니다. 모듈 경로에 메이저 버전이 들어가므로 import 경로는 `github.com/th-release/vst3go/v2/...`입니다.
+- 다운스트림 저장소는 브리지 내부에 직접 손대지 말고 `github.com/meteuix/vst3go/v2`를 import하여 지원되는 패키지 범위 위에 구축해야 합니다.
+- 브리지/런타임 변경을 의도적으로 업그레이드할 수 있도록 계속 움직이는 브랜치 대신 릴리스 태그(`v2.x.y`)에 고정해야 합니다. 모듈 경로에 메이저 버전이 들어가므로 import 경로는 `github.com/meteuix/vst3go/v2/...`입니다.
 - DAW 검증, 서명, 인스톨러, 제품별 동작은 다운스트림의 책임으로 남습니다.
 
 ## 개발

@@ -1,4 +1,4 @@
-module github.com/th-release/vst3go/v2
+module github.com/meteuix/vst3go/v2
 
 go 1.24.3
 

@@ -160,7 +160,7 @@ static void host_request_process(const clap_host_t* h) { (void)h; }
 static void host_request_callback(const clap_host_t* h) { (void)h; atomic_store(&sa.callbackRequested, true); }
 
 static const clap_host_t host = {
-    CLAP_VERSION_INIT, NULL, "vst3go standalone", "vst3go", "https://github.com/th-release/vst3go", "1.0",
+    CLAP_VERSION_INIT, NULL, "vst3go standalone", "vst3go", "https://github.com/meteuix/vst3go", "1.0",
     host_get_extension, host_request_restart, host_request_process, host_request_callback,
 };
 

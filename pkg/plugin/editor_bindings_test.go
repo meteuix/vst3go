@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/th-release/vst3go/v2/pkg/framework/bus"
-	"github.com/th-release/vst3go/v2/pkg/framework/param"
-	frameworkplugin "github.com/th-release/vst3go/v2/pkg/framework/plugin"
+	"github.com/meteuix/vst3go/v2/pkg/framework/bus"
+	"github.com/meteuix/vst3go/v2/pkg/framework/param"
+	frameworkplugin "github.com/meteuix/vst3go/v2/pkg/framework/plugin"
 )
 
 type bindingsPlugin struct{}

@@ -4,7 +4,7 @@ package modulation
 import (
 	"math"
 
-	"github.com/th-release/vst3go/v2/pkg/dsp/fastmath"
+	"github.com/meteuix/vst3go/v2/pkg/dsp/fastmath"
 )
 
 // Waveform represents the LFO waveform shape

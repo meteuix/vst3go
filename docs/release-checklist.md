@@ -34,7 +34,7 @@ Use this checklist before tagging a new `vst3go` release.
 
 ## Consumer Readiness
 
-- confirm the module path is still `github.com/th-release/vst3go/v2`
+- confirm the module path is still `github.com/meteuix/vst3go/v2`
 - confirm supported downstream API packages remain stable enough for tagging
 - confirm any intentionally compatibility-breaking changes are called out in release notes
 

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/th-release/vst3go/v2/pkg/framework/param"
-	"github.com/th-release/vst3go/v2/pkg/midi"
+	"github.com/meteuix/vst3go/v2/pkg/framework/param"
+	"github.com/meteuix/vst3go/v2/pkg/midi"
 )
 
 // MIDIControllerParamIDBase is the first parameter ID reserved for the hidden

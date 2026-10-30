@@ -3,7 +3,7 @@ package nam
 import (
 	"math"
 
-	"github.com/th-release/vst3go/v2/pkg/dsp/resample"
+	"github.com/meteuix/vst3go/v2/pkg/dsp/resample"
 )
 
 // Runner runs a Model at a host sample rate. When the rates differ it

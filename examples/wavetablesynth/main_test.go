@@ -4,8 +4,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/th-release/vst3go/v2/pkg/dsp/fft"
-	"github.com/th-release/vst3go/v2/pkg/plugintest"
+	"github.com/meteuix/vst3go/v2/pkg/dsp/fft"
+	"github.com/meteuix/vst3go/v2/pkg/plugintest"
 )
 
 // spectrum returns flat-top windowed amplitudes of x[:32768].

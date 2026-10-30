@@ -1,6 +1,6 @@
 package modulation
 
-import "github.com/th-release/vst3go/v2/pkg/dsp/fastmath"
+import "github.com/meteuix/vst3go/v2/pkg/dsp/fastmath"
 
 // RingModulator implements a ring modulation effect
 type RingModulator struct {

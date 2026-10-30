@@ -19,9 +19,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/th-release/vst3go/v2/pkg/audiofile"
-	"github.com/th-release/vst3go/v2/pkg/midi"
-	"github.com/th-release/vst3go/v2/pkg/plugin"
+	"github.com/meteuix/vst3go/v2/pkg/audiofile"
+	"github.com/meteuix/vst3go/v2/pkg/midi"
+	"github.com/meteuix/vst3go/v2/pkg/plugin"
 )
 
 // Instance is a plugin instance driven by a test.

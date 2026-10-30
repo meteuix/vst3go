@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/th-release/vst3go/v2/pkg/framework/debug"
-	"github.com/th-release/vst3go/v2/pkg/plugintest"
+	"github.com/meteuix/vst3go/v2/pkg/framework/debug"
+	"github.com/meteuix/vst3go/v2/pkg/plugintest"
 )
 
 // logBuffer is a bytes.Buffer safe for the reporter goroutine.

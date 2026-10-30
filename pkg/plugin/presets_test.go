@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/th-release/vst3go/v2/pkg/framework/bus"
-	"github.com/th-release/vst3go/v2/pkg/framework/param"
-	frameworkplugin "github.com/th-release/vst3go/v2/pkg/framework/plugin"
-	"github.com/th-release/vst3go/v2/pkg/preset"
+	"github.com/meteuix/vst3go/v2/pkg/framework/bus"
+	"github.com/meteuix/vst3go/v2/pkg/framework/param"
+	frameworkplugin "github.com/meteuix/vst3go/v2/pkg/framework/plugin"
+	"github.com/meteuix/vst3go/v2/pkg/preset"
 )
 
 func presetWrapper(t *testing.T, id string) *componentWrapper {

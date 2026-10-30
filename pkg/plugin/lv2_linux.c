@@ -343,7 +343,7 @@ static LV2Instance* create_instance(uint32_t index) {
     LV2Instance* in = (LV2Instance*)calloc(1, sizeof(LV2Instance));
     if (!in) return NULL;
     in->descriptor = lv2Factory->get_plugin_descriptor(lv2Factory, index);
-    in->host = (clap_host_t){ CLAP_VERSION_INIT, in, "vst3go LV2", "vst3go", "https://github.com/th-release/vst3go", "1.0",
+    in->host = (clap_host_t){ CLAP_VERSION_INIT, in, "vst3go LV2", "vst3go", "https://github.com/meteuix/vst3go", "1.0",
                               host_get_extension, host_request_restart, host_request_process, host_request_callback };
     in->magic = LV2_INSTANCE_MAGIC;
     in->programParam = -1;

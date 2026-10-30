@@ -13,8 +13,8 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"github.com/th-release/vst3go/v2/pkg/framework/param"
-	"github.com/th-release/vst3go/v2/pkg/preset"
+	"github.com/meteuix/vst3go/v2/pkg/framework/param"
+	"github.com/meteuix/vst3go/v2/pkg/preset"
 )
 
 // editorSession is the open editor page of an instance, shared by the VST3

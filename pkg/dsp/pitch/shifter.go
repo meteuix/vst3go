@@ -8,8 +8,8 @@ package pitch
 import (
 	"math"
 
-	"github.com/th-release/vst3go/v2/pkg/dsp/fastmath"
-	"github.com/th-release/vst3go/v2/pkg/dsp/interpolation"
+	"github.com/meteuix/vst3go/v2/pkg/dsp/fastmath"
+	"github.com/meteuix/vst3go/v2/pkg/dsp/interpolation"
 )
 
 // Shifter shifts pitch with two delay-line taps whose delays sweep at the

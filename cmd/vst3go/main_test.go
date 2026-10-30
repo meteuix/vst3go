@@ -33,7 +33,7 @@ func TestRenderEveryKind(t *testing.T) {
 			}
 		}
 		mod := string(files["go.mod"])
-		for _, want := range []string{"module example.com/myplug", "replace github.com/th-release/vst3go/v2 => /src/vst3go", "tool github.com/th-release/vst3go/v2/cmd/vst3go"} {
+		for _, want := range []string{"module example.com/myplug", "replace github.com/meteuix/vst3go/v2 => /src/vst3go", "tool github.com/meteuix/vst3go/v2/cmd/vst3go"} {
 			if !strings.Contains(mod, want) {
 				t.Errorf("%s go.mod lacks %q:\n%s", kind, want, mod)
 			}

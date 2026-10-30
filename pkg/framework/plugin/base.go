@@ -4,8 +4,8 @@
 package plugin
 
 import (
-	"github.com/th-release/vst3go/v2/pkg/framework/param"
-	"github.com/th-release/vst3go/v2/pkg/framework/state"
+	"github.com/meteuix/vst3go/v2/pkg/framework/param"
+	"github.com/meteuix/vst3go/v2/pkg/framework/state"
 )
 
 // Base provides shared metadata/parameter/state storage for plugin authors.

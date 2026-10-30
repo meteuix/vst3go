@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/th-release/vst3go/v2/pkg/dsp/fft"
+	"github.com/meteuix/vst3go/v2/pkg/dsp/fft"
 )
 
 const rate = 48000.0

@@ -1,8 +1,8 @@
 package dsp
 
 import (
-	"github.com/th-release/vst3go/v2/pkg/dsp/dynamics"
-	"github.com/th-release/vst3go/v2/pkg/dsp/utility"
+	"github.com/meteuix/vst3go/v2/pkg/dsp/dynamics"
+	"github.com/meteuix/vst3go/v2/pkg/dsp/utility"
 )
 
 // The adapters wrap pkg/dsp processors as chain stages. Each implements

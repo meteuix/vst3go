@@ -2186,7 +2186,7 @@ static OSStatus au_open(void* self, AudioComponentInstance ci) {
     const clap_plugin_factory_t* factory = (const clap_plugin_factory_t*)clap_entry.get_factory(CLAP_PLUGIN_FACTORY_ID);
     const clap_plugin_descriptor_t* desc = GoClapDescriptor(a->index);
     if (!factory || !desc) return kAudioUnitErr_FailedInitialization;
-    a->host = (clap_host_t){ CLAP_VERSION_INIT, a, "vst3go Audio Unit", "vst3go", "https://github.com/th-release/vst3go", "1.0",
+    a->host = (clap_host_t){ CLAP_VERSION_INIT, a, "vst3go Audio Unit", "vst3go", "https://github.com/meteuix/vst3go", "1.0",
                              host_get_extension, host_request_restart, host_request_process, host_request_callback };
     a->plugin = factory->create_plugin(factory, &a->host, desc->id);
     if (!a->plugin) return kAudioUnitErr_FailedInitialization;

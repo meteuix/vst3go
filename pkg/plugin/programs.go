@@ -8,7 +8,7 @@ import (
 	"math"
 	"sync/atomic"
 
-	"github.com/th-release/vst3go/v2/pkg/framework/param"
+	"github.com/meteuix/vst3go/v2/pkg/framework/param"
 )
 
 // programListID is the ID of the single program list a ProgramListProcessor

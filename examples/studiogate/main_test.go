@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/th-release/vst3go/v2/pkg/plugintest"
+	"github.com/meteuix/vst3go/v2/pkg/plugintest"
 )
 
 func lastOutput(t *testing.T, p *plugintest.Instance, id uint32) float64 {

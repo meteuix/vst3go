@@ -13,7 +13,7 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/th-release/vst3go/v2/pkg/ara"
+	"github.com/meteuix/vst3go/v2/pkg/ara"
 )
 
 // maxARAFactories is the number of ARA plugins one binary can register

@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/th-release/vst3go/v2/pkg/preset"
+	"github.com/meteuix/vst3go/v2/pkg/preset"
 )
 
 func main() {

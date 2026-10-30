@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/th-release/vst3go/v2/pkg/dsp/fft"
+	"github.com/meteuix/vst3go/v2/pkg/dsp/fft"
 )
 
 // Detector estimates the fundamental frequency of a monophonic signal with

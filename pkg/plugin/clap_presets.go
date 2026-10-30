@@ -17,8 +17,8 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/th-release/vst3go/v2/pkg/framework/plugin"
-	"github.com/th-release/vst3go/v2/pkg/preset"
+	"github.com/meteuix/vst3go/v2/pkg/framework/plugin"
+	"github.com/meteuix/vst3go/v2/pkg/preset"
 )
 
 // CLAP preset discovery: every plugin has a provider that declares its user

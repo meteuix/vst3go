@@ -1,8 +1,8 @@
 package debug_test
 
 import (
-	"github.com/th-release/vst3go/v2/pkg/dsp/debug"
-	"github.com/th-release/vst3go/v2/pkg/dsp/gain"
+	"github.com/meteuix/vst3go/v2/pkg/dsp/debug"
+	"github.com/meteuix/vst3go/v2/pkg/dsp/gain"
 )
 
 // Example of using debug utilities in an audio processor

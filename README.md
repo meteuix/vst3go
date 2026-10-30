@@ -2,13 +2,13 @@ English | [한국어](README.ko.md)
 
 # VST3Go
 
-[![ci](https://github.com/meteuix/vst3go/actions/workflows/ci.yml/badge.svg)](https://github.com/meteuix/vst3go/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/th-release/vst3go/v2.svg)](https://pkg.go.dev/github.com/th-release/vst3go/v2) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![ci](https://github.com/meteuix/vst3go/actions/workflows/ci.yml/badge.svg)](https://github.com/meteuix/vst3go/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/meteuix/vst3go/v2.svg)](https://pkg.go.dev/github.com/meteuix/vst3go/v2) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 `vst3go` is the low-level Go interface and runtime layer for VST3.
 
 This fork is maintained separately from the original `justyntemme/vst3go` project. It ships the plugin runtime together with a DSP library and showcase plugins built on it.
 
-The source lives at [`meteuix/vst3go`](https://github.com/meteuix/vst3go), a fork of [`th-release/vst3go`](https://github.com/th-release/vst3go). The Go module path stays `github.com/th-release/vst3go/v2` (as declared in `go.mod`), so the `go get`, `go run` and import paths below use that path.
+The source lives at [`meteuix/vst3go`](https://github.com/meteuix/vst3go), a fork of [`th-release/vst3go`](https://github.com/th-release/vst3go), and the Go module path is `github.com/meteuix/vst3go/v2`.
 
 It contains:
 
@@ -42,7 +42,7 @@ The `vst3go` command creates a plugin module and builds it in every format
 (Go 1.24 or newer, a C compiler; on macOS the Xcode command line tools):
 
 ```bash
-go run github.com/th-release/vst3go/v2/cmd/vst3go@latest new -type effect ./mygain "My Gain"
+go run github.com/meteuix/vst3go/v2/cmd/vst3go@latest new -type effect ./mygain "My Gain"
 cd mygain
 go test ./...                                # offline tests with pkg/plugintest
 go tool vst3go build -install . "My Gain"     # VST3, CLAP, AU (macOS) or LV2 (Linux), into the user plugin folders
@@ -56,7 +56,7 @@ MIDI transposer. The new module lists `vst3go` as a `tool` dependency, so
 To add the runtime to an existing module instead:
 
 ```bash
-go get github.com/th-release/vst3go/v2@latest
+go get github.com/meteuix/vst3go/v2@latest
 ```
 
 Requirements per platform:
@@ -99,8 +99,8 @@ Requirements per platform:
 
 ## Consumption
 
-- Downstream repos should import `github.com/th-release/vst3go/v2` and build on the supported package surface rather than reaching into bridge internals.
-- Pin a release tag (`v2.x.y`) instead of a moving branch so bridge/runtime changes can be upgraded intentionally. The module path carries the major version, so the import path is `github.com/th-release/vst3go/v2/...`.
+- Downstream repos should import `github.com/meteuix/vst3go/v2` and build on the supported package surface rather than reaching into bridge internals.
+- Pin a release tag (`v2.x.y`) instead of a moving branch so bridge/runtime changes can be upgraded intentionally. The module path carries the major version, so the import path is `github.com/meteuix/vst3go/v2/...`.
 - DAW validation, signing, installers, and product-specific behavior remain downstream responsibilities.
 
 ## Development

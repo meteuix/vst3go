@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/th-release/vst3go/v2/pkg/ara"
-	"github.com/th-release/vst3go/v2/pkg/framework/bus"
-	"github.com/th-release/vst3go/v2/pkg/framework/process"
-	"github.com/th-release/vst3go/v2/pkg/midi"
+	"github.com/meteuix/vst3go/v2/pkg/ara"
+	"github.com/meteuix/vst3go/v2/pkg/framework/bus"
+	"github.com/meteuix/vst3go/v2/pkg/framework/process"
+	"github.com/meteuix/vst3go/v2/pkg/midi"
 )
 
 // OfflineSetup configures an Offline instance.

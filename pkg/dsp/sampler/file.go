@@ -6,7 +6,7 @@ import (
 	"io"
 	"path/filepath"
 
-	"github.com/th-release/vst3go/v2/pkg/audiofile"
+	"github.com/meteuix/vst3go/v2/pkg/audiofile"
 )
 
 // MaxFileSeconds is the longest audio file LoadSample accepts.

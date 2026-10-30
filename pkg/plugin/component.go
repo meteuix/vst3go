@@ -9,11 +9,11 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/th-release/vst3go/v2/pkg/framework/bus"
-	"github.com/th-release/vst3go/v2/pkg/framework/param"
-	"github.com/th-release/vst3go/v2/pkg/framework/plugin"
-	"github.com/th-release/vst3go/v2/pkg/framework/process"
-	"github.com/th-release/vst3go/v2/pkg/framework/state"
+	"github.com/meteuix/vst3go/v2/pkg/framework/bus"
+	"github.com/meteuix/vst3go/v2/pkg/framework/param"
+	"github.com/meteuix/vst3go/v2/pkg/framework/plugin"
+	"github.com/meteuix/vst3go/v2/pkg/framework/process"
+	"github.com/meteuix/vst3go/v2/pkg/framework/state"
 )
 
 var (

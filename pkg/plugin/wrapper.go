@@ -16,9 +16,9 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"github.com/th-release/vst3go/v2/pkg/framework/bus"
-	"github.com/th-release/vst3go/v2/pkg/framework/plugin"
-	"github.com/th-release/vst3go/v2/pkg/vst3"
+	"github.com/meteuix/vst3go/v2/pkg/framework/bus"
+	"github.com/meteuix/vst3go/v2/pkg/framework/plugin"
+	"github.com/meteuix/vst3go/v2/pkg/vst3"
 )
 
 // SDKVersion is the VST3 SDK version reported in PClassInfo2.
@@ -61,7 +61,7 @@ type FactoryInfo struct {
 
 var globalFactoryInfo = FactoryInfo{
 	Vendor: "VST3Go",
-	URL:    "https://github.com/th-release/vst3go",
+	URL:    "https://github.com/meteuix/vst3go",
 	Email:  "",
 }
 

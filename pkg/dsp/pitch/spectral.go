@@ -4,7 +4,7 @@ import (
 	"math"
 	"math/cmplx"
 
-	"github.com/th-release/vst3go/v2/pkg/dsp/spectral"
+	"github.com/meteuix/vst3go/v2/pkg/dsp/spectral"
 )
 
 // SpectralShifter shifts pitch with a phase vocoder (Laroche and Dolson's

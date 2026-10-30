@@ -6,14 +6,14 @@
 package main
 
 import (
-	"github.com/th-release/vst3go/v2/pkg/dsp/delay"
-	"github.com/th-release/vst3go/v2/pkg/dsp/mix"
-	"github.com/th-release/vst3go/v2/pkg/framework/bus"
-	"github.com/th-release/vst3go/v2/pkg/framework/param"
-	frameworkplugin "github.com/th-release/vst3go/v2/pkg/framework/plugin"
-	"github.com/th-release/vst3go/v2/pkg/framework/process"
-	"github.com/th-release/vst3go/v2/pkg/plugin"
-	"github.com/th-release/vst3go/v2/pkg/standalone"
+	"github.com/meteuix/vst3go/v2/pkg/dsp/delay"
+	"github.com/meteuix/vst3go/v2/pkg/dsp/mix"
+	"github.com/meteuix/vst3go/v2/pkg/framework/bus"
+	"github.com/meteuix/vst3go/v2/pkg/framework/param"
+	frameworkplugin "github.com/meteuix/vst3go/v2/pkg/framework/plugin"
+	"github.com/meteuix/vst3go/v2/pkg/framework/process"
+	"github.com/meteuix/vst3go/v2/pkg/plugin"
+	"github.com/meteuix/vst3go/v2/pkg/standalone"
 )
 
 const (

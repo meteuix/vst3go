@@ -5,9 +5,9 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/th-release/vst3go/v2/pkg/framework/param"
-	frameworkplugin "github.com/th-release/vst3go/v2/pkg/framework/plugin"
-	"github.com/th-release/vst3go/v2/pkg/midi"
+	"github.com/meteuix/vst3go/v2/pkg/framework/param"
+	frameworkplugin "github.com/meteuix/vst3go/v2/pkg/framework/plugin"
+	"github.com/meteuix/vst3go/v2/pkg/midi"
 )
 
 type featurePlugin struct {

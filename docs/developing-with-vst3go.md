@@ -79,11 +79,11 @@ This is the shape you want in a downstream repo:
 package myplugin
 
 import (
-	"github.com/th-release/vst3go/v2/pkg/framework/bus"
-	frameworkplugin "github.com/th-release/vst3go/v2/pkg/framework/plugin"
-	"github.com/th-release/vst3go/v2/pkg/framework/param"
-	"github.com/th-release/vst3go/v2/pkg/framework/process"
-	"github.com/th-release/vst3go/v2/pkg/plugin"
+	"github.com/meteuix/vst3go/v2/pkg/framework/bus"
+	frameworkplugin "github.com/meteuix/vst3go/v2/pkg/framework/plugin"
+	"github.com/meteuix/vst3go/v2/pkg/framework/param"
+	"github.com/meteuix/vst3go/v2/pkg/framework/process"
+	"github.com/meteuix/vst3go/v2/pkg/plugin"
 )
 
 type Plugin struct{}

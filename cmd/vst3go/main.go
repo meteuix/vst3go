@@ -4,7 +4,7 @@
 //	vst3go build [flags] <package> <Name>  build VST3, CLAP, Audio Unit, LV2 and app bundles
 //
 // Add it to a plugin module as a tool (go get -tool
-// github.com/th-release/vst3go/v2/cmd/vst3go) and run it with go tool vst3go;
+// github.com/meteuix/vst3go/v2/cmd/vst3go) and run it with go tool vst3go;
 // vst3go new does that for the modules it creates.
 package main
 

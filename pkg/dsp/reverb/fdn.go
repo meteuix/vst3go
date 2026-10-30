@@ -3,7 +3,7 @@ package reverb
 import (
 	"math"
 
-	"github.com/th-release/vst3go/v2/pkg/dsp/fastmath"
+	"github.com/meteuix/vst3go/v2/pkg/dsp/fastmath"
 )
 
 // FDN implements a Feedback Delay Network reverb: several delay lines whose

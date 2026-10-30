@@ -4,8 +4,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/th-release/vst3go/v2/pkg/midi"
-	"github.com/th-release/vst3go/v2/pkg/plugintest"
+	"github.com/meteuix/vst3go/v2/pkg/midi"
+	"github.com/meteuix/vst3go/v2/pkg/plugintest"
 )
 
 func TestSynthNoteIsSampleAccurateAndInTune(t *testing.T) {

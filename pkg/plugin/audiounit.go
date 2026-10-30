@@ -7,8 +7,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/th-release/vst3go/v2/pkg/framework/bus"
-	frameworkplugin "github.com/th-release/vst3go/v2/pkg/framework/plugin"
+	"github.com/meteuix/vst3go/v2/pkg/framework/bus"
+	frameworkplugin "github.com/meteuix/vst3go/v2/pkg/framework/plugin"
 )
 
 // Format-independent parts of the Audio Unit (AUv2) front end

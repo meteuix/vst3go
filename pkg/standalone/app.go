@@ -29,7 +29,7 @@ import (
 	"unsafe"
 
 	// The application hosts the plugin through its clap_entry.
-	"github.com/th-release/vst3go/v2/pkg/plugin"
+	"github.com/meteuix/vst3go/v2/pkg/plugin"
 )
 
 // The main goroutine owns the main thread: the run loop and the editor
