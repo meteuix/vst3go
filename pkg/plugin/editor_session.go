@@ -103,7 +103,11 @@ func (s *editorSession) handleEditorMessage(c *componentImpl, host Host, data []
 	case "choose-file":
 		s.chooseFile(msg.ID, msg.Name, msg.Data)
 	case "message":
-		if receiver, ok := c.processor.(EditorMessageProcessor); ok && msg.Name != "" {
+		target := c.processor
+		if c.controllerSide != nil {
+			target = c.controllerSide
+		}
+		if receiver, ok := target.(EditorMessageProcessor); ok && msg.Name != "" {
 			receiver.EditorMessage(msg.Name, msg.Data)
 		}
 	}

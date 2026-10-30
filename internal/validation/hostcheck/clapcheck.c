@@ -407,6 +407,39 @@ static void test_synth(const char* path) {
     CHECK(p.noteName && p.noteName->count(p.plugin) == 2, "2 note names");
     clap_note_name_t name;
     CHECK(p.noteName->get(p.plugin, 0, &name) && name.key == 24 && !strcmp(name.name, "Saw"), "note name %d %s", name.key, name.name);
+    // Programs without pitch names show the keyswitches (CLAP has no
+    // keyswitch query) on every channel.
+    in_init(&in);
+    add_param(&in, 0, program.id, 0);
+    CHECK(p.plugin->process(p.plugin, &proc) == CLAP_PROCESS_CONTINUE, "process");
+    p.plugin->on_main_thread(p.plugin);
+    CHECK(p.noteName->count(p.plugin) == 2, "2 keyswitch note names, got %u", p.noteName->count(p.plugin));
+    CHECK(p.noteName->get(p.plugin, 1, &name) && name.key == 25 && name.channel == -1 && !strcmp(name.name, "Square"), "keyswitch note name %d %d %s",
+          name.key, name.channel, name.name);
+
+    // MIDI learn: CLAP has no learn mode, so controllers the host plays
+    // reach the processor's MIDI learn on the main thread. The synth maps
+    // the first one to Volume, which the controller then moves, reported
+    // to the host as the plugin's own edit.
+    clap_param_info_t volume;
+    CHECK(find_param(&p, "Volume", &volume), "volume param");
+    in_init(&in);
+    add_midi(&in, 0, 0xB0, 20, 64);
+    callbacks = hostLog.callbacks;
+    CHECK(p.plugin->process(p.plugin, &proc) == CLAP_PROCESS_CONTINUE, "process");
+    CHECK(hostLog.callbacks > callbacks, "a controller requests a main-thread callback for MIDI learn");
+    p.plugin->on_main_thread(p.plugin);
+    in_init(&in);
+    out_init(&out);
+    add_midi(&in, 0, 0xB0, 20, 127);
+    CHECK(p.plugin->process(p.plugin, &proc) == CLAP_PROCESS_CONTINUE, "process");
+    bool sawVolume = false;
+    for (uint32_t i = 0; i < out.count; i++) {
+        const clap_event_param_value_t* v = &out.events[i].param;
+        sawVolume |= out.events[i].header.type == CLAP_EVENT_PARAM_VALUE && v->param_id == volume.id && v->value == volume.max_value;
+    }
+    CHECK(sawVolume, "learned CC 20 moves Volume to %g", volume.max_value);
+    CHECK(fabs(param_value(&p, volume.id) - volume.max_value) < 1e-9, "volume %g", param_value(&p, volume.id));
     stop(&p);
     printf("synth ok\n");
 }

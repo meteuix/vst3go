@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"math"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -46,6 +47,15 @@ type clapInstance struct {
 	// processing.
 	changed      [clapChangedSize]paramValue
 	changedCount int
+	// learn carries the MIDI controllers the host plays in, for a
+	// MIDILearnProcessor (nil otherwise), from the audio thread to the
+	// main thread.
+	learn *mpscQueue[clapLearned]
+	// peer is the controller side of a DistributedPlugin (nil otherwise):
+	// CLAP runs a plugin as one object, so this instance serves parameters,
+	// the editor and processing, and the controller side's processor only
+	// exchanges Host.SendMessage messages with it.
+	peer *componentImpl
 
 	editorSession
 }
@@ -63,6 +73,17 @@ const clapEditQueueSize = 4096
 // block; later ones in a full block still reach the processor.
 const clapChangedSize = 128
 
+// clapLearnQueueSize bounds the controllers waiting for the main thread;
+// further ones are dropped until it catches up.
+const clapLearnQueueSize = 256
+
+// clapLearned is a MIDI controller the host sent, for MIDI learn.
+type clapLearned struct {
+	port       int32
+	channel    int16
+	controller int16
+}
+
 // clap.h defines these as static const variables, which cgo cannot link.
 const (
 	clapCoreEventSpaceID = 0          // CLAP_CORE_EVENT_SPACE_ID
@@ -74,7 +95,8 @@ func getClap(id C.uintptr_t) *clapInstance {
 }
 
 // clapPlugins is the registered plugin list; CLAP has no distributed mode,
-// so every plugin is one class.
+// so every plugin is one class (a DistributedPlugin runs its controller
+// side next to it, see clapInstance.peer).
 func clapDescriptorList() []*C.clap_plugin_descriptor_t {
 	clapDescriptorsOnce.Do(func() {
 		for _, p := range registeredPlugins {
@@ -147,6 +169,16 @@ func GoClapCreate(index C.uint32_t, plugin *C.VST3GoClapPlugin) (id C.uintptr_t)
 	if component.programs != nil {
 		inst.seenProgram = component.programs.audioProgram.Load()
 	}
+	if _, ok := component.processor.(MIDILearnProcessor); ok {
+		inst.learn = newMPSCQueue[clapLearned](clapLearnQueueSize)
+	}
+	if d, ok := p.(DistributedPlugin); ok && d.Distributed() {
+		if inst.peer, err = newComponent(p.CreateProcessor(), p.GetInfo()); err != nil {
+			return 0
+		}
+		// The controller side serves the editor's custom messages, as in VST3.
+		component.controllerSide = inst.peer.processor
+	}
 	component.wrapper = inst
 	component.ara = newARAInstance(int(index))
 	inst.id = nextInstanceID()
@@ -163,6 +195,12 @@ func GoClapInit(id C.uintptr_t) (ok C.bool) {
 	}
 	if aware, ok := inst.c.processor.(HostAwareProcessor); ok {
 		aware.SetHost(clapHost{inst})
+	}
+	if inst.peer != nil {
+		inst.syncPeer()
+		if aware, ok := inst.peer.processor.(HostAwareProcessor); ok {
+			aware.SetHost(clapPeerHost{inst})
+		}
 	}
 	inst.updateTrackInfo()
 	return true
@@ -185,6 +223,11 @@ func GoClapDestroy(id C.uintptr_t) {
 	}
 	if aware, ok := inst.c.processor.(HostAwareProcessor); ok {
 		aware.SetHost(nil)
+	}
+	if inst.peer != nil {
+		if aware, ok := inst.peer.processor.(HostAwareProcessor); ok {
+			aware.SetHost(nil)
+		}
 	}
 	inst.c.ara.release()
 }
@@ -254,6 +297,7 @@ func GoClapOnMainThread(id C.uintptr_t) {
 		inst.restart(RestartParamValuesChanged)
 		inst.editorPending.Store(true)
 	}
+	inst.deliverLearned()
 	if inst.editorPending.Swap(false) {
 		inst.refreshEditorParameters()
 	}
@@ -567,6 +611,9 @@ func (inst *clapInstance) routeMIDI(ctx *process.Context, port int32, msg clapMI
 	case msg.isEvent:
 		ctx.AddInputEvent(msg.event)
 	case msg.isCtrl:
+		if inst.learn != nil && inst.learn.push(clapLearned{port: port, channel: int16(msg.event.Channel), controller: msg.controller}) {
+			C.vst3go_clap_request_callback(inst.plugin)
+		}
 		if id, ok := c.MIDIControllerAssignment(port, int16(msg.event.Channel), msg.controller); ok {
 			c.queueParameterChange(ctx, id, msg.value, int(offset))
 			if inst.changedCount < len(inst.changed) {
@@ -598,6 +645,25 @@ func (inst *clapInstance) drainEdits(out *C.clap_output_events_t) {
 		default:
 			C.vst3go_clap_push_param(out, 0, C.clap_id(e.id), C.double(e.plain))
 		}
+	}
+}
+
+// deliverLearned hands the controllers the host played to the processor's
+// MIDI learn, on the main thread. CLAP has no MIDI learn mode, so every
+// controller arrives, as VST3 hosts send every live controller to
+// IMidiLearn::onLiveMIDIControllerInput: the processor learns only while
+// its own learn mode is on.
+func (inst *clapInstance) deliverLearned() {
+	if inst.learn == nil {
+		return
+	}
+	learner := inst.c.processor.(MIDILearnProcessor)
+	for {
+		l, ok := inst.learn.pop()
+		if !ok {
+			return
+		}
+		learner.LearnMIDIController(l.port, l.channel, l.controller)
 	}
 }
 
@@ -727,9 +793,9 @@ func (inst *clapInstance) restart(flags RestartFlags) {
 	}
 	if flags&RestartParamValuesChanged != 0 {
 		C.vst3go_clap_params_rescan(p, C.CLAP_PARAM_RESCAN_VALUES|C.CLAP_PARAM_RESCAN_TEXT)
-		if inst.c.programs != nil {
-			C.vst3go_clap_note_names_changed(p)
-		}
+	}
+	if (flags&RestartParamValuesChanged != 0 && inst.c.programs != nil) || flags&RestartKeyswitchChanged != 0 {
+		C.vst3go_clap_note_names_changed(p)
 	}
 }
 
@@ -765,7 +831,73 @@ func (h clapHost) LoadPreset(path string) error {
 	return nil
 }
 
-func (h clapHost) SendMessage(string, []byte) error { return errNotSupported }
+// SendMessage delivers to the controller side of a DistributedPlugin, at
+// once on the calling (main) thread, as VST3 hosts connect the two sides.
+func (h clapHost) SendMessage(id string, data []byte) error {
+	peer := h.inst.peer
+	if peer == nil {
+		return errNotSupported
+	}
+	if id == "" || strings.HasPrefix(id, messagePrefix) {
+		return errInvalidArgument
+	}
+	h.inst.syncPeer()
+	if receiver, ok := peer.processor.(MessageReceiver); ok {
+		receiver.ReceiveMessage(id, slices.Clone(data))
+	}
+	return nil
+}
+
+// syncPeer copies the parameter values to the controller side, whose
+// registry VST3 hosts keep in sync through parameter changes.
+func (inst *clapInstance) syncPeer() {
+	for _, p := range inst.peer.params.All() {
+		if source, ok := inst.c.params.GetOK(p.ID); ok {
+			p.SetNormalized(source.GetNormalized())
+		}
+	}
+}
+
+// clapPeerHost is the Host of the controller side of a DistributedPlugin
+// in CLAP. Host calls act on the plugin instance as the VST3 controller's
+// would; SendMessage delivers to the processor side.
+type clapPeerHost struct{ inst *clapInstance }
+
+func (h clapPeerHost) RestartComponent(flags RestartFlags) error {
+	return clapHost(h).RestartComponent(flags)
+}
+
+func (h clapPeerHost) EditParameter(id uint32, normalized float64) error {
+	return clapHost(h).EditParameter(id, normalized)
+}
+
+func (h clapPeerHost) BeginEdit(id uint32) error { return clapHost(h).BeginEdit(id) }
+
+func (h clapPeerHost) EndEdit(id uint32) error { return clapHost(h).EndEdit(id) }
+
+func (h clapPeerHost) SavePreset(path string) error { return clapHost(h).SavePreset(path) }
+
+func (h clapPeerHost) LoadPreset(path string) error {
+	if err := clapHost(h).LoadPreset(path); err != nil {
+		return err
+	}
+	h.inst.syncPeer()
+	return nil
+}
+
+func (h clapPeerHost) PostEditorMessage(name string, data any) error {
+	return clapHost(h).PostEditorMessage(name, data)
+}
+
+func (h clapPeerHost) SendMessage(id string, data []byte) error {
+	if id == "" || strings.HasPrefix(id, messagePrefix) {
+		return errInvalidArgument
+	}
+	if receiver, ok := h.inst.c.processor.(MessageReceiver); ok {
+		receiver.ReceiveMessage(id, slices.Clone(data))
+	}
+	return nil
+}
 
 func (h clapHost) PostEditorMessage(name string, data any) error {
 	msg, err := customEditorMessage(name, data)
@@ -897,6 +1029,11 @@ func GoClapStateLoad(id C.uintptr_t, stream *C.clap_istream_t) (ok C.bool) {
 	inst := getClap(id)
 	if inst.c.SetState(state.Bytes()) != nil {
 		return false
+	}
+	if inst.peer != nil {
+		// The controller side gets the component state, as VST3 hosts
+		// pass it to setComponentState.
+		_ = inst.peer.SetState(state.Bytes())
 	}
 	inst.restart(RestartParamValuesChanged)
 	inst.refreshEditorParameters()
@@ -1140,26 +1277,68 @@ func (inst *clapInstance) updateTrackInfo() {
 	listener.SetChannelInfo(info)
 }
 
-// clapNoteName is one pitch name of the selected program.
+// clapNoteName is a pitch name of the selected program or a keyswitch.
 type clapNoteName struct {
-	key  int16
-	name string
+	key     int16
+	channel int16 // -1: every channel
+	name    string
 }
 
+// noteNames returns the selected program's pitch names, then the
+// keyswitches of the first note port (KeyswitchProcessor) on keys the
+// program does not name: CLAP has no keyswitch query, so hosts show them
+// as note names.
 func (inst *clapInstance) noteNames() []clapNoteName {
 	c := inst.c
-	if c.programs == nil {
-		return nil
+	var names []clapNoteName
+	named := map[int16]bool{}
+	if c.programs != nil {
+		if index := c.programs.uiProgram.Load(); index >= 0 && int(index) < len(c.programs.list.Programs) {
+			for key, name := range c.programs.list.Programs[index].PitchNames {
+				names = append(names, clapNoteName{key: key, channel: -1, name: name})
+				named[key] = true
+			}
+		}
 	}
-	index := c.programs.uiProgram.Load()
-	if index < 0 || int(index) >= len(c.programs.list.Programs) {
-		return nil
+	if processor, ok := c.processor.(KeyswitchProcessor); ok {
+		names = append(names, keyswitchNoteNames(processor, named)...)
+	}
+	slices.SortFunc(names, func(a, b clapNoteName) int {
+		if a.key != b.key {
+			return int(a.key) - int(b.key)
+		}
+		return int(a.channel) - int(b.channel)
+	})
+	return names
+}
+
+// keyswitchNoteNames names every key of each keyswitch's range with its
+// title, for all channels when every channel has the same keyswitches.
+func keyswitchNoteNames(processor KeyswitchProcessor, named map[int16]bool) []clapNoteName {
+	var perChannel [16][]KeyswitchInfo
+	same := true
+	for ch := range perChannel {
+		perChannel[ch] = processor.Keyswitches(0, int16(ch))
+		same = same && slices.Equal(perChannel[ch], perChannel[0])
+	}
+	channels := perChannel[:]
+	if same {
+		channels = perChannel[:1]
 	}
 	var names []clapNoteName
-	for key, name := range c.programs.list.Programs[index].PitchNames {
-		names = append(names, clapNoteName{key: key, name: name})
+	for ch, keyswitches := range channels {
+		channel := int16(ch)
+		if same {
+			channel = -1
+		}
+		for _, k := range keyswitches {
+			for key := max(k.Min, 0); key <= min(k.Max, 127); key++ {
+				if !named[int16(key)] {
+					names = append(names, clapNoteName{key: int16(key), channel: channel, name: k.Title})
+				}
+			}
+		}
 	}
-	slices.SortFunc(names, func(a, b clapNoteName) int { return int(a.key) - int(b.key) })
 	return names
 }
 
@@ -1174,7 +1353,7 @@ func GoClapNoteNameGet(id C.uintptr_t, index C.uint32_t, name *C.clap_note_name_
 	if int(index) >= len(names) {
 		return false
 	}
-	*name = C.clap_note_name_t{port: -1, key: C.int16_t(names[index].key), channel: -1}
+	*name = C.clap_note_name_t{port: -1, key: C.int16_t(names[index].key), channel: C.int16_t(names[index].channel)}
 	copyCString(&name.name[0], len(name.name), names[index].name)
 	return true
 }

@@ -40,6 +40,10 @@ type componentImpl struct {
 	double     bool         // processor supports 64-bit samples
 	editor     Editor       // editorSpec of the processor
 	ara        *araInstance // nil unless the plugin is an ARAPlugin
+	// controllerSide receives the editor page's custom messages instead of
+	// processor: the controller side of a DistributedPlugin in CLAP, where
+	// both sides share one plugin object and its editor.
+	controllerSide Processor
 
 	mu           sync.Mutex
 	processCtx   *process.Context
