@@ -3,8 +3,8 @@
 // Package midiport opens the MIDI ports of the system MIDI API (Core MIDI,
 // the ALSA sequencer, WinMM) for the standalone applications: listing,
 // inputs, virtual inputs other applications play (Core MIDI and ALSA) and
-// outputs. Inputs deliver complete channel and system common messages;
-// SysEx and real-time messages are dropped.
+// outputs. Inputs deliver complete channel, system common and real-time
+// messages; SysEx is dropped.
 package midiport
 
 /*

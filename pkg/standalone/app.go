@@ -82,6 +82,7 @@ func parseFlags(args []string, name string, out io.Writer, s *Settings) (options
 	tempo := fs.Float64("tempo", 0, "transport tempo in BPM (default 120)")
 	signature := fs.String("time-signature", "", `transport time signature, such as "3/4" (default 4/4)`)
 	fs.BoolVar(&o.play, "play", false, "start the transport playing")
+	clock := fs.Bool("midi-clock", false, "follow the MIDI clock of the MIDI inputs (start, stop, song position, tempo)")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -109,6 +110,8 @@ func parseFlags(args []string, name string, out io.Writer, s *Settings) (options
 			s.NoVirtualMIDI = !*virtual
 		case "tempo":
 			s.Tempo = *tempo
+		case "midi-clock":
+			s.MIDIClock = *clock
 		}
 	})
 	if *signature != "" {
@@ -176,8 +179,10 @@ type app struct {
 	quit     atomic.Bool
 	failed   error
 
-	playing        bool   // transport
-	shownPosition  string // position the toolbar shows
+	playing        bool          // transport
+	clock          clockFollower // the MIDI clock master, when the settings follow one
+	shownPosition  string        // position the toolbar shows
+	shownTempo     float64       // tempo the toolbar shows
 	toolbar        *plugin.Panel
 	settingsWindow *plugin.Panel
 	toolbarPost    poster
@@ -240,6 +245,9 @@ func run(args []string, log io.Writer) error {
 	a.saveSettings()
 	a.playing = o.play
 	a.applyTransport()
+	if a.settings.MIDIClock {
+		a.followClock()
+	}
 
 	in, out := mainChannels()
 	if a.audio, err = openAudio(a.settings, in, out); err != nil {
@@ -252,7 +260,7 @@ func run(args []string, log io.Writer) error {
 	}
 	defer a.stopAudio()
 
-	if a.midi, err = openMIDI(a.settings, a.name, bool(C.vst3go_sa_note_input())); err != nil {
+	if a.midi, err = openMIDI(a.settings, a.name, bool(C.vst3go_sa_note_input()), &a.clock); err != nil {
 		fmt.Fprintf(log, "%s: MIDI: %v\n", a.name, err)
 	}
 	defer func() { a.midi.close() }()
@@ -359,6 +367,7 @@ func (a *app) tick() bool {
 			return true
 		}
 	}
+	a.updateClock(time.Now())
 	a.updatePosition()
 	a.idlePanels()
 	return a.quit.Load()

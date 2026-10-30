@@ -33,28 +33,26 @@ func midiPortNames() (ins, outs []string, err error) {
 const midiOutPoll = time.Millisecond
 
 // openMIDI opens the MIDI ports of the settings: inputs (for plugins with
-// note input), a virtual input named after the plugin, and the output.
-// Input goes to the next block (pushMIDI); the output port gets what the
-// plugin outputs (popMIDI).
-func openMIDI(s Settings, name string, noteInput bool) (*midiPorts, error) {
+// note input, or to follow MIDI clock), a virtual input named after the
+// plugin, and the output. Channel messages go to the next block (pushMIDI)
+// and clock messages to clock; the output port gets what the plugin
+// outputs (popMIDI).
+func openMIDI(s Settings, name string, noteInput bool, clock *clockFollower) (*midiPorts, error) {
 	m := &midiPorts{}
+	input := noteInput || s.MIDIClock
 	wanted := s.midiInputs()
-	if !noteInput {
+	if !input {
 		wanted = nil
 	}
-	if len(wanted) == 0 && (!noteInput || s.NoVirtualMIDI) && s.MIDIOutput == "" {
+	if len(wanted) == 0 && (!input || s.NoVirtualMIDI) && s.MIDIOutput == "" {
 		return m, nil
 	}
 	if err := midiport.Init(name); err != nil {
 		return nil, err
 	}
-	receive := func(msg []byte) {
-		if b, ok := channelMessage(msg); ok {
-			pushMIDI(b) // dropped when the audio thread is behind
-		}
-	}
+	receive := inputHandler(noteInput, s.MIDIClock, clock)
 	var errs []error
-	if noteInput {
+	if input {
 		if len(wanted) > 0 {
 			ports, err := midiport.Inputs()
 			if err != nil {
@@ -116,6 +114,25 @@ func (m *midiPorts) openOutput(name string) error {
 		}
 	}()
 	return nil
+}
+
+// inputHandler routes the messages of the MIDI inputs: channel messages to
+// the plugin when it takes notes, clock and song position to the clock
+// follower when following.
+func inputHandler(notes, follow bool, clock *clockFollower) func(msg []byte) {
+	return func(msg []byte) {
+		switch {
+		case len(msg) == 0:
+		case msg[0] >= 0xF0:
+			if follow {
+				clock.message(msg, time.Now())
+			}
+		case notes:
+			if b, ok := channelMessage(msg); ok {
+				pushMIDI(b) // dropped when the audio thread is behind
+			}
+		}
+	}
 }
 
 // channelMessage keeps channel voice messages (note, pressure, controller,

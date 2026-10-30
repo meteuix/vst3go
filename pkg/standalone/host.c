@@ -2,6 +2,7 @@
 
 #include "host.h"
 
+#include <math.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,6 +60,11 @@ static struct {
     atomic_uint_least32_t timeSignature;  // numerator << 16 | denominator
     atomic_uint_least64_t positionBits;   // double beats, published by the audio thread
     double beats;                         // audio thread
+    // MIDI clock: while following, the position drifts toward the master's.
+    atomic_bool following, locateRequest;
+    atomic_uint_least64_t clockBits;   // double beats of the master at its last clock
+    atomic_uint_least64_t locateBits;  // double beats to jump to
+    double clockError;                 // audio thread: smoothed distance to the master
     clap_event_transport_t transport;
 
     clap_event_midi_t midiIn[MAX_MIDI_IN];
@@ -408,13 +414,64 @@ void vst3go_sa_transport_rewind(void) {
 
 double vst3go_sa_transport_position(void) { return bits_double(atomic_load(&sa.positionBits)); }
 
+// vst3go_sa_clock_* follow a MIDI clock master (24 clocks per quarter note).
+void vst3go_sa_clock_follow(bool on) { atomic_store(&sa.following, on); }
+
+void vst3go_sa_clock(bool playing, double tempo, double position) {
+    if (tempo >= VST3GO_SA_MIN_TEMPO && tempo <= VST3GO_SA_MAX_TEMPO) atomic_store(&sa.tempoBits, double_bits(tempo));
+    atomic_store(&sa.clockBits, double_bits(position));
+    atomic_store(&sa.playing, playing);
+}
+
+void vst3go_sa_clock_locate(double position) {
+    atomic_store(&sa.clockBits, double_bits(position));
+    atomic_store(&sa.locateBits, double_bits(position));
+    atomic_store(&sa.locateRequest, true);
+    if (!atomic_load(&sa.playing)) atomic_store(&sa.positionBits, double_bits(position));
+}
+
+// Phase lock to a clock master. The master was at the clock position when
+// its last clock arrived, on average half a clock before the block starts;
+// the measured distance carries the jitter of clock arrival and of the
+// audio callback, so it is smoothed over CLOCK_SMOOTHING seconds and closes
+// at CLOCK_GAIN of the tempo per quarter note of distance, within
+// CLOCK_MAX_CORRECTION. A distance beyond a block and two clocks (a stall,
+// a missed locate) jumps.
+#define CLOCK_SMOOTHING 0.2
+#define CLOCK_GAIN 0.5
+#define CLOCK_MAX_CORRECTION 0.05
+
+// clock_rate returns the tempo the position advances at over a block of
+// frames, after a jump if the master is too far.
+static double clock_rate(double tempo, uint32_t frames) {
+    double block = frames * tempo / (60.0 * sa.sampleRate);
+    double distance = bits_double(atomic_load(&sa.clockBits)) + 0.5 / 24 - sa.beats;
+    if (fabs(distance) > 0.25 + 2 * block + 2.0 / 24) {
+        sa.beats += distance;
+        sa.clockError = 0;
+        return tempo;
+    }
+    double weight = frames / (sa.sampleRate * CLOCK_SMOOTHING);
+    sa.clockError += (weight < 1 ? weight : 1) * (distance - sa.clockError);
+    double correction = CLOCK_GAIN * sa.clockError;
+    if (correction > CLOCK_MAX_CORRECTION) correction = CLOCK_MAX_CORRECTION;
+    if (correction < -CLOCK_MAX_CORRECTION) correction = -CLOCK_MAX_CORRECTION;
+    return tempo * (1 + correction);
+}
+
 // update_transport fills sa.transport for a block of frames starting at the
 // current position, then advances the position over the block if playing.
 static void update_transport(uint32_t frames) {
     if (atomic_exchange(&sa.rewindRequest, false)) sa.beats = 0;
+    if (atomic_exchange(&sa.locateRequest, false)) {
+        sa.beats = bits_double(atomic_load(&sa.locateBits));
+        sa.clockError = 0;
+    }
     bool playing = atomic_load(&sa.playing);
     double tempo = bits_double(atomic_load(&sa.tempoBits));
     if (!(tempo >= VST3GO_SA_MIN_TEMPO)) tempo = VST3GO_SA_DEFAULT_TEMPO;
+    double rate = tempo;
+    if (playing && sa.sampleRate > 0 && atomic_load(&sa.following)) rate = clock_rate(tempo, frames);
     uint32_t signature = atomic_load(&sa.timeSignature);
     uint16_t numerator = signature ? (uint16_t)(signature >> 16) : 4, denominator = signature ? (uint16_t)signature : 4;
     double barBeats = numerator * 4.0 / denominator;
@@ -430,7 +487,7 @@ static void update_transport(uint32_t frames) {
     t->bar_number = (int32_t)bar;
     t->tsig_num = numerator;
     t->tsig_denom = denominator;
-    if (playing && sa.sampleRate > 0) sa.beats += frames * tempo / (60.0 * sa.sampleRate);
+    if (playing && sa.sampleRate > 0) sa.beats += frames * rate / (60.0 * sa.sampleRate);
     atomic_store(&sa.positionBits, double_bits(sa.beats));
 }
 

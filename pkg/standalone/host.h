@@ -51,6 +51,14 @@ void vst3go_sa_transport_set(bool playing, double tempo, uint32_t numerator, uin
 void vst3go_sa_transport_rewind(void);
 double vst3go_sa_transport_position(void);
 
+// MIDI clock sync. While following (vst3go_sa_clock_follow), the transport
+// plays when the master does, at its tempo, and phase-locks to position:
+// the master's position in quarter notes at its last clock. A locate jumps
+// there (start, song position pointer).
+void vst3go_sa_clock_follow(bool on);
+void vst3go_sa_clock(bool playing, double tempo, double position);
+void vst3go_sa_clock_locate(double position);
+
 // State as one malloc'd buffer (free it), and loading it back.
 bool vst3go_sa_state_save(uint8_t** data, size_t* size);
 bool vst3go_sa_state_load(const uint8_t* data, size_t size);

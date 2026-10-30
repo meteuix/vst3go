@@ -455,6 +455,16 @@ processors need no CLAP-specific code.
   events in the next process or flush call; `RestartComponent` maps to
   parameter rescans, latency changes and restart requests. Track name and
   color reach `ChannelInfoProcessor`; program pitch names are CLAP note names.
+  MIDI program changes and MIDI-mapped controllers come back to the host as
+  output parameter events.
+- CLAP has no MIDI learn mode, keyswitch query or distributed plugins, so:
+  every MIDI controller the host plays reaches `MIDILearnProcessor` on the
+  main thread (it learns while its own learn mode is on, as VST3 hosts send
+  every live controller to `IMidiLearn`); `KeyswitchProcessor` keyswitches
+  are note names on the keys the program does not name; a
+  `DistributedPlugin` runs its controller-side processor next to the
+  instance, so `Host.SendMessage` works both ways and editor messages reach
+  the controller side.
 - Output constant flags come from `ctx.SetOutputSilenceFlags`.
 - The editor is the `gui` extension with the platform's window API
   (`cocoa`, `win32`, `x11` in `webkitgtk` builds), embedded in the host's
@@ -635,6 +645,12 @@ ports, UIs) and `presets.ttl`.
   with touch gestures, values the plugin changes itself (a program chosen
   in the editor or by MIDI) as port writes from the idle callback, which
   also runs the editor's timers. One UI per instance.
+- Without a UI, values the plugin changes itself (a program chosen by MIDI)
+  go to the host through the KXStudio `control-input-port-change-request`
+  feature (`lv2:optionalFeature`) when it offers it.
+- License: `plugin.FactoryInfo.License` (an http or https URI, such as
+  `https://spdx.org/licenses/MIT` or a commercial EULA page) becomes
+  `doap:license`.
 
 `scripts/validate_lv2.sh [out]` (Linux, needs lv2-dev and liblilv-dev)
 builds every validation plugin as an LV2 bundle and runs lv2_validate on its
@@ -766,7 +782,7 @@ enters Go.
   Channel messages from every input (or the ones named), and on macOS and
   Linux from a virtual input named after the plugin, reach the plugin's
   first note port; its MIDI output can go to a port (`-midi-out`). SysEx
-  and real-time messages are dropped.
+  is dropped; MIDI clock drives the transport when followed (below).
 - Editor: the plugin's `gui` extension in a window (Cocoa, Win32, X11 in
   `webkitgtk` builds), resizable within the editor's limits and following
   `vst3go.resize`. Builds without an editor view, `-headless` and Linux
@@ -784,12 +800,22 @@ enters Go.
   signature), the audio devices and MIDI ports in use, and a Settings button
   (Cmd+, on macOS) that opens the audio and MIDI settings window: driver,
   output and input device, sample rate, buffer size, MIDI inputs and
-  output. Applying reopens the devices (the previous ones come back when
+  output, and whether to follow MIDI clock. Applying reopens the devices (the previous ones come back when
   the new ones fail) and saves the choice.
 - Transport: the plugin gets tempo, time signature, play state and the
   musical position, advancing while playing. It starts stopped at 120 BPM
   in 4/4; `-tempo`, `-time-signature` and `-play` set it at launch, and
   tempo and time signature are saved with the settings.
+- MIDI clock: with `-midi-clock` (or Follow MIDI clock in the settings,
+  saved with them) a clock master on the MIDI inputs runs the transport,
+  for effects too: start plays from the start, continue from the song
+  position pointer, stop holds, and the tempo comes from the 24 clocks per
+  quarter note (a least-squares fit over the last two beats, shown in the
+  toolbar to 0.1 BPM). The position phase-locks to the master's clocks
+  (within a few ms of its clock jitter) instead of free-running, and a
+  master that stops sending clocks stops the transport. The toolbar's
+  play, rewind and tempo controls are off while following; the time
+  signature stays the application's, as MIDI clock carries none.
 
 ```text
 -list                 list audio devices and MIDI ports
@@ -804,6 +830,7 @@ enters Go.
 -tempo bpm            transport tempo (default 120)
 -time-signature n/d   transport time signature (default 4/4)
 -play                 start the transport playing
+-midi-clock           follow the MIDI clock of the MIDI inputs
 -headless             no editor window
 -config dir, -reset, -duration d
 ```
@@ -867,14 +894,21 @@ deadline of a 64-sample block.
 - The open file dialog ran in tests on macOS (cancelled by the check);
   the Windows, Linux and iOS dialogs are built but have not run here.
 - LV2 is Linux only. Without an open UI, values the plugin changes itself
-  (a program selected by MIDI) do not reach the host's control ports. The
-  plugins have no `doap:license`, and a plugin that turns the deadline
-  guard off does not claim `lv2:hardRTCapable`.
-- Standalone applications follow no external clock (MIDI clock, Ableton
-  Link). The Windows applications have run under Wine on the null device
+  reach the host's control ports only in hosts with the KXStudio
+  `control-input-port-change-request` feature (Carla, Qtractor); LV2 core
+  has no other way for a plugin to change an input port. A plugin that
+  turns the deadline guard off does not claim `lv2:hardRTCapable`.
+- Standalone applications follow MIDI clock but not Ableton Link: Link's
+  only implementation (github.com/Ableton/link) is GPL-2.0-or-later or
+  licensed by Ableton for proprietary applications, which an MIT library
+  cannot pass on to the plugins built with it. The Windows applications have run under Wine on the null device
   only; the Linux MIDI and Windows MIDI/audio paths have not
   run on real hardware here (Core MIDI, Core Audio and ALSA playback
   have).
-- CLAP hosts have no MIDI learn mode,
-  keyswitch or note expression metadata queries; distributed plugins run as
-  one CLAP object, so `Host.SendMessage` returns an error there.
+- CLAP has no note expression metadata: its note expressions are a fixed
+  set (volume, pan, tuning, vibrato, expression, brightness, pressure)
+  with no extension to describe others, so `NoteExpressionProcessor`
+  types beyond those (custom IDs, ranges, names) reach VST3 hosts only.
+  CLAP has no MIDI learn mode or keyswitch query either; vst3go sends
+  every host controller to `MIDILearnProcessor` and names keyswitches as
+  note names instead (see [CLAP](#clap)).

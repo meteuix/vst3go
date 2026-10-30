@@ -37,6 +37,9 @@ type Settings struct {
 	// MIDIOutput is the MIDI output port name for the plugin's MIDI output;
 	// empty sends none.
 	MIDIOutput string `json:"midiOutput,omitempty"`
+	// MIDIClock makes the transport follow the MIDI clock of the MIDI
+	// inputs: start, continue, stop, song position and tempo.
+	MIDIClock bool `json:"midiClock,omitempty"`
 	// Tempo of the transport in BPM; 0 uses 120.
 	Tempo float64 `json:"tempo,omitempty"`
 	// BeatsPerBar and BeatUnit are the transport's time signature; 0 uses

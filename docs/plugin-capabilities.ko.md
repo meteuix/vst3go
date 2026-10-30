@@ -444,7 +444,14 @@ CLAP 전용 코드가 필요하지 않습니다.
 - `Host.EditParameter`/`BeginEdit`/`EndEdit`는 다음 process 또는 flush 호출에서 CLAP
   제스처 및 값 이벤트가 됩니다. `RestartComponent`는 파라미터 재스캔, 레이턴시 변경,
   재시작 요청에 매핑됩니다. 트랙 이름과 색상은 `ChannelInfoProcessor`로 전달되고,
-  프로그램 피치 이름은 CLAP 노트 이름이 됩니다.
+  프로그램 피치 이름은 CLAP 노트 이름이 됩니다. MIDI 프로그램 체인지와 MIDI에 매핑된
+  컨트롤러는 출력 파라미터 이벤트로 host에 돌아갑니다.
+- CLAP에는 MIDI learn 모드, 키스위치 쿼리, 분산 플러그인이 없으므로: host가 보내는 모든
+  MIDI 컨트롤러는 메인 스레드에서 `MIDILearnProcessor`로 전달되고(VST3 host가 모든 라이브
+  컨트롤러를 `IMidiLearn`으로 보내는 것처럼, 자체 learn 모드가 켜져 있을 때만 학습),
+  `KeyswitchProcessor`의 키스위치는 프로그램이 이름을 붙이지 않은 건반의 노트 이름이
+  되며, `DistributedPlugin`은 컨트롤러 쪽 프로세서를 인스턴스 옆에서 실행하므로
+  `Host.SendMessage`가 양방향으로 동작하고 에디터 메시지가 컨트롤러 쪽에 도달합니다.
 - 출력 constant 플래그는 `ctx.SetOutputSilenceFlags`에서 옵니다.
 - 에디터는 플랫폼의 창 API(`cocoa`, `win32`, `webkitgtk` 빌드의 `x11`)를 사용하는
   `gui` 확장이며, host 창에 임베드되거나 자체 창에 플로팅됩니다. 플로팅 창은 host의
@@ -603,6 +610,11 @@ Linux에서는 모든 플러그인 바이너리가 `lv2_descriptor`와 `lv2ui_de
   더해진 포트 쓰기로 host에 전달되고, 플러그인이 스스로 바꾼 값(에디터나 MIDI로
   선택한 프로그램)은 idle 콜백에서 포트 쓰기로 전달됩니다. idle 콜백은 에디터의
   타이머도 실행합니다. 인스턴스당 UI는 하나입니다.
+- UI가 없을 때 플러그인이 스스로 바꾼 값(MIDI로 선택한 프로그램)은, host가 제공하면
+  KXStudio `control-input-port-change-request` 기능(`lv2:optionalFeature`)으로 host에
+  전달됩니다.
+- 라이선스: `plugin.FactoryInfo.License`(http 또는 https URI, 예:
+  `https://spdx.org/licenses/MIT`나 상용 EULA 페이지)는 `doap:license`가 됩니다.
 
 `scripts/validate_lv2.sh [out]`(Linux, lv2-dev와 liblilv-dev 필요)는 모든 검증용 플러그인을
 LV2 번들로 빌드하고, 그 Turtle에 대해 lv2_validate를, 설치되어 있으면 lv2lint를, 그리고
@@ -716,7 +728,8 @@ Linux 실행 파일이며, Windows 크로스 빌드는 `<name>.exe`를 기록합
 - MIDI: Core MIDI, ALSA sequencer, WinMM(`internal/midiport`). 모든 입력(또는 지정한
   입력)과, macOS 및 Linux에서는 플러그인 이름을 딴 가상 입력에서 오는 채널 메시지가
   플러그인의 첫 번째 노트 포트로 전달됩니다. 플러그인의 MIDI 출력은 포트로 보낼 수
-  있습니다(`-midi-out`). SysEx와 리얼타임 메시지는 버려집니다.
+  있습니다(`-midi-out`). SysEx는 버려지고, MIDI 클록은 따라가도록 설정하면 트랜스포트를
+  움직입니다(아래 참고).
 - 에디터: 플러그인의 `gui` 확장을 창에 띄웁니다(Cocoa, Win32, `webkitgtk` 빌드의
   X11). 에디터의 제한 범위 안에서 크기를 조절할 수 있고 `vst3go.resize`를 따릅니다.
   에디터 뷰가 없는 빌드, `-headless`, X 서버가 없는 Linux에서는 창 없이 실행됩니다.
@@ -731,11 +744,19 @@ Linux 실행 파일이며, Windows 크로스 빌드는 `<name>.exe`를 기록합
   트랜스포트(재생/정지, 되감기, 마디와 박, 템포, 박자표), 사용 중인 오디오 장치와 MIDI
   포트, 그리고 오디오·MIDI 설정 창을 여는 Settings 버튼(macOS에서는 Cmd+,)이 있습니다.
   설정 창에서는 드라이버, 출력·입력 장치, 샘플레이트, 버퍼 크기, MIDI 입력과 출력을
-  고릅니다. 적용하면 장치를 다시 열고(새 장치가 실패하면 이전 장치로 돌아감) 선택을
+  고르고, MIDI 클록을 따를지 정합니다. 적용하면 장치를 다시 열고(새 장치가 실패하면 이전 장치로 돌아감) 선택을
   저장합니다.
 - 트랜스포트: 플러그인은 템포, 박자표, 재생 상태, 음악적 위치를 받으며, 위치는 재생
   중에 진행합니다. 120 BPM, 4/4, 정지 상태로 시작하며 `-tempo`, `-time-signature`,
   `-play`로 시작 시 값을 정합니다. 템포와 박자표는 설정과 함께 저장됩니다.
+- MIDI 클록: `-midi-clock`(또는 설정 창의 Follow MIDI clock, 설정과 함께 저장)을 켜면
+  MIDI 입력의 클록 마스터가 트랜스포트를 움직이며, 이펙트도 마찬가지입니다. start는
+  처음부터, continue는 song position pointer 위치부터 재생하고, stop은 멈춥니다.
+  템포는 4분음표당 24개의 클록에서 구합니다(최근 두 박에 대한 최소제곱 적합, 툴바에는
+  0.1 BPM 단위로 표시). 위치는 자유롭게 흐르지 않고 마스터의 클록에 위상 고정되며(클록
+  지터 수준의 몇 ms 이내), 마스터가 클록을 보내지 않으면 트랜스포트가 멈춥니다. 따라가는
+  동안 툴바의 재생, 되감기, 템포 컨트롤은 꺼집니다. MIDI 클록에는 박자표가 없으므로
+  박자표는 애플리케이션의 것을 씁니다.
 
 ```text
 -list                 list audio devices and MIDI ports
@@ -750,6 +771,7 @@ Linux 실행 파일이며, Windows 크로스 빌드는 `<name>.exe`를 기록합
 -tempo bpm            transport tempo (default 120)
 -time-signature n/d   transport time signature (default 4/4)
 -play                 start the transport playing
+-midi-clock           follow the MIDI clock of the MIDI inputs
 -headless             no editor window
 -config dir, -reset, -duration d
 ```
@@ -803,14 +825,20 @@ Linux를 다룹니다: headless 앱, Xvfb에서의 신스 에디터(페이지가
   44.1kHz로 실행됩니다.
 - 파일 열기 대화상자는 macOS에서 테스트로 실행했습니다(검사가 취소함). Windows, Linux,
   iOS 대화상자는 빌드되지만 여기서 실행해 보지는 않았습니다.
-- LV2는 Linux 전용입니다. UI가 열려 있지 않으면 플러그인이 스스로 바꾼 값(MIDI로
-  선택한 프로그램)은 host의 컨트롤 포트에 도달하지 않습니다. 플러그인에는
-  `doap:license`가 없고, 데드라인 가드를 끈 플러그인은 `lv2:hardRTCapable`을
-  주장하지 않습니다.
-- 스탠드얼론 애플리케이션은 외부 클록(MIDI 클록, Ableton Link)을 따르지 않습니다.
+- LV2는 Linux 전용입니다. UI가 열려 있지 않으면 플러그인이 스스로 바꾼 값은 KXStudio
+  `control-input-port-change-request` 기능이 있는 host(Carla, Qtractor)에서만 host의
+  컨트롤 포트에 도달합니다. LV2 core에는 플러그인이 입력 포트를 바꿀 다른 방법이
+  없습니다. 데드라인 가드를 끈 플러그인은 `lv2:hardRTCapable`을 주장하지 않습니다.
+- 스탠드얼론 애플리케이션은 MIDI 클록은 따르지만 Ableton Link는 따르지 않습니다. Link의
+  유일한 구현(github.com/Ableton/link)은 GPL-2.0-or-later이거나 Ableton이 독점
+  애플리케이션용으로 따로 라이선스하는 것이라, MIT 라이브러리가 이를 사용해 빌드된
+  플러그인에 넘겨 줄 수 없습니다.
   Windows 애플리케이션은 Wine의 null 장치에서만 실행해 봤고, Linux MIDI와 Windows MIDI/오디오
   경로는 아직 실제 하드웨어에서 실행해 보지 않았습니다(Core MIDI, Core Audio, ALSA
   재생은 확인함).
-- CLAP host에는 MIDI learn 모드,
-  키스위치, 노트 익스프레션 메타데이터 쿼리가 없습니다. 분산 플러그인은 하나의 CLAP
-  객체로 실행되므로 그 경우 `Host.SendMessage`는 오류를 반환합니다.
+- CLAP에는 노트 익스프레션 메타데이터가 없습니다. CLAP의 노트 익스프레션은 고정된
+  집합(볼륨, 팬, 튜닝, 비브라토, 익스프레션, 브라이트니스, 프레셔)이고 다른 것을 설명할
+  확장이 없으므로, 그 밖의 `NoteExpressionProcessor` 타입(사용자 ID, 범위, 이름)은 VST3
+  host에만 전달됩니다. CLAP에는 MIDI learn 모드와 키스위치 쿼리도 없어서, vst3go는
+  host의 모든 컨트롤러를 `MIDILearnProcessor`로 보내고 키스위치를 노트 이름으로
+  알립니다([CLAP](#clap) 참고).

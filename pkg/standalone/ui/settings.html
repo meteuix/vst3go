@@ -36,6 +36,7 @@
   <h2>MIDI</h2>
   <div class="row"><span>Inputs</span><div id="midiInputs"></div></div>
   <div class="row"><span></span><label><input id="virtualMIDI" type="checkbox"> Virtual input port</label></div>
+  <div class="row"><span></span><label title="Play, stop, locate and take the tempo from the MIDI clock of the inputs"><input id="midiClock" type="checkbox"> Follow MIDI clock</label></div>
   <div class="row"><span>Output</span><select id="midiOutput"></select></div>
   <div id="message"></div>
   <div class="actions">
@@ -94,6 +95,7 @@
     }));
     if (d.midiInputs.length === 0) $("midiInputs").textContent = "No MIDI inputs";
     $("virtualMIDI").checked = !s.noVirtualMIDI;
+    $("midiClock").checked = !!s.midiClock;
     fill($("midiOutput"), [["", "None"], ...d.midiOutputs.map((n) => [n, n])], s.midiOutput || "");
     show(d.error, !!d.error);
   }
@@ -112,6 +114,7 @@
         bufferSize: Number($("bufferSize").value),
         midiInput: $("midiInputs").querySelector("input") ? midiSelection() : "all",
         noVirtualMIDI: !$("virtualMIDI").checked,
+        midiClock: $("midiClock").checked,
         midiOutput: $("midiOutput").value,
       },
     });

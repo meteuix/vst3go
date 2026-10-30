@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"time"
 	"unsafe"
 
 	"github.com/meteuix/vst3go/v2/pkg/plugin"
@@ -33,7 +34,7 @@ const (
 	// toolbarHeight is the toolbar strip's height in logical pixels.
 	toolbarHeight  = 36
 	settingsWidth  = 460
-	settingsHeight = 470
+	settingsHeight = 500
 )
 
 var (
@@ -62,6 +63,7 @@ type transportMessage struct {
 	BeatsPerBar int     `json:"beatsPerBar"`
 	BeatUnit    int     `json:"beatUnit"`
 	Position    string  `json:"position"`
+	Clock       bool    `json:"clock"` // a MIDI clock master runs it
 }
 
 type positionMessage struct {
@@ -97,10 +99,57 @@ type appliedMessage struct {
 	Error  string `json:"error,omitempty"`
 }
 
-// applyTransport hands the transport state to the audio thread.
+// applyTransport hands the transport state to the audio thread. Following
+// MIDI clock, the master's state stays: it is read and set under the
+// follower's lock, so no clock message comes in between.
 func (a *app) applyTransport() {
 	beats, unit := a.settings.timeSignature()
-	C.vst3go_sa_transport_set(C.bool(a.playing), C.double(a.settings.tempo()), C.uint32_t(beats), C.uint32_t(unit))
+	if !a.settings.MIDIClock {
+		C.vst3go_sa_transport_set(C.bool(a.playing), C.double(a.settings.tempo()), C.uint32_t(beats), C.uint32_t(unit))
+		return
+	}
+	a.clock.mu.Lock()
+	defer a.clock.mu.Unlock()
+	tempo := a.clock.tempo
+	if tempo == 0 {
+		tempo = a.settings.tempo()
+	}
+	C.vst3go_sa_transport_set(C.bool(a.clock.playing), C.double(tempo), C.uint32_t(beats), C.uint32_t(unit))
+}
+
+// followClock starts or stops following MIDI clock as the settings say;
+// the transport stops either way.
+func (a *app) followClock() {
+	a.playing = false
+	a.clock.reset()
+	C.vst3go_sa_clock_follow(C.bool(a.settings.MIDIClock))
+	a.applyTransport()
+	a.postTransport()
+}
+
+// updateClock times the clock master out and shows its transport when it
+// changed; it runs every tick.
+func (a *app) updateClock(now time.Time) {
+	if !a.settings.MIDIClock {
+		return
+	}
+	a.clock.check(now)
+	playing, tempo := a.clock.state()
+	if playing != a.playing || (tempo > 0 && roundTempo(tempo) != a.shownTempo) {
+		a.playing = playing
+		a.postTransport()
+	}
+}
+
+// tempo returns the tempo the transport plays at: the clock master's once
+// measured.
+func (a *app) tempo() float64 {
+	if a.settings.MIDIClock {
+		if _, tempo := a.clock.state(); tempo > 0 {
+			return roundTempo(tempo)
+		}
+	}
+	return a.settings.tempo()
 }
 
 // position formats the transport position as bar.beat, both from 1.
@@ -118,7 +167,11 @@ func (a *app) postTransport() {
 	}
 	beats, unit := a.settings.timeSignature()
 	a.shownPosition = a.position()
-	_ = a.toolbarPost.Post(transportMessage{"transport", a.playing, a.settings.tempo(), beats, unit, a.shownPosition})
+	a.shownTempo = a.tempo()
+	_ = a.toolbarPost.Post(transportMessage{
+		Type: "transport", Playing: a.playing, Tempo: a.shownTempo, BeatsPerBar: beats, BeatUnit: unit,
+		Position: a.shownPosition, Clock: a.settings.MIDIClock,
+	})
 }
 
 func (a *app) postStatus() {
@@ -149,6 +202,14 @@ func (a *app) toolbarMessage(data []byte) {
 	var msg controlMessage
 	if json.Unmarshal(data, &msg) != nil {
 		return
+	}
+	switch msg.Type {
+	case "play", "stop", "rewind", "tempo":
+		if a.settings.MIDIClock {
+			// The clock master runs these; the page shows its state again.
+			a.postTransport()
+			return
+		}
 	}
 	switch msg.Type {
 	case "ready":
@@ -291,11 +352,15 @@ func (a *app) applySettings(next Settings) error {
 		}
 		return err
 	}
+	follow := next.MIDIClock != a.settings.MIDIClock
 	a.settings = next
 	a.saveSettings()
 	a.midi.close()
+	if follow {
+		a.followClock()
+	}
 	var err error
-	if a.midi, err = openMIDI(next, a.name, bool(C.vst3go_sa_note_input())); err != nil {
+	if a.midi, err = openMIDI(next, a.name, bool(C.vst3go_sa_note_input()), &a.clock); err != nil {
 		return fmt.Errorf("MIDI: %w", err)
 	}
 	return nil

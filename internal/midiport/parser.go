@@ -1,11 +1,13 @@
 package midiport
 
 // parser splits a MIDI byte stream into complete short messages: channel
-// messages (with running status) and system common messages. SysEx and
-// real-time bytes are dropped.
+// messages (with running status), system common messages, and real-time
+// messages (clock, start, continue, stop, ...), which may appear inside
+// another message and come out as they arrive. SysEx is dropped.
 type parser struct {
 	status byte
 	buf    [3]byte
+	rt     [1]byte
 	n      int
 	want   int
 	sysex  bool
@@ -32,6 +34,8 @@ func (p *parser) feed(data []byte, emit func([]byte)) {
 	for _, b := range data {
 		switch {
 		case b >= 0xF8: // real-time, may appear anywhere
+			p.rt[0] = b
+			emit(p.rt[:])
 			continue
 		case b == 0xF0:
 			p.sysex, p.status, p.n = true, 0, 0

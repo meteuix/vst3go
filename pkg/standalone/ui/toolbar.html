@@ -15,7 +15,9 @@
     height: 24px; box-sizing: border-box;
   }
   button { padding: 0 10px; cursor: pointer; }
-  button:hover { background: #363a41; }
+  button:hover:enabled { background: #363a41; }
+  button:disabled, input:disabled { opacity: 0.6; cursor: default; }
+  button.on:disabled { opacity: 1; }
   button.on { background: #2f6f3e; border-color: #3f8f52; }
   input[type=number] { width: 58px; padding: 0 4px; }
   select { padding: 0 2px; }
@@ -52,6 +54,9 @@
     switch (message.type) {
     case "transport":
       playing = message.playing;
+      // A MIDI clock master runs the transport.
+      for (const id of ["rewind", "play", "tempo"]) $(id).disabled = message.clock;
+      $("play").title = message.clock ? "Following MIDI clock" : "Play or stop the transport";
       $("play").textContent = playing ? "Stop" : "Play";
       $("play").classList.toggle("on", playing);
       if (document.activeElement !== $("tempo")) $("tempo").value = message.tempo;
