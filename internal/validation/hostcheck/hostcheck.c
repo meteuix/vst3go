@@ -4,11 +4,12 @@
 // processing, programs, note expression, distributed messaging).
 // scripts/validate_vst3.sh builds and runs it.
 #include "vst3/vst3_c_api.h"
-#include <dlfcn.h>
+#include "portable.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define CHECK(cond, ...) do { if (!(cond)) { fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); exit(1); } } while (0)
 
@@ -527,12 +528,108 @@ static void test_ducker(const char* path) {
     printf("ducker ok\n");
 }
 
+static double now_ms(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
+}
+
+// The deadline guard (stall plugin): the output is the input times one
+// plus the note events received; Stall (0..100 ms) sleeps on the guard's
+// thread, whose deadline is half a block.
+
+// ManyNotes is an IEventList of count note ons at offset 0.
+typedef struct { struct Steinberg_Vst_IEventListVtbl* lpVtbl; int count; } ManyNotes;
+static Steinberg_int32 SMTG_STDMETHODCALLTYPE many_count(void* t) { return ((ManyNotes*)t)->count; }
+static Steinberg_tresult SMTG_STDMETHODCALLTYPE many_get(void* t, Steinberg_int32 i, struct Steinberg_Vst_Event* e) {
+    if (i < 0 || i >= ((ManyNotes*)t)->count) return Steinberg_kInvalidArgument;
+    *e = note_on(0, 60, 1, -1);
+    return Steinberg_kResultOk;
+}
+static struct Steinberg_Vst_IEventListVtbl manyVtbl = { qi, ref, ref, many_count, many_get, e_add };
+
+static void test_stall(const char* path) {
+    enum { B = 480 }; // 10 ms at 48 kHz: a 5 ms deadline
+    Plugin p = load(path);
+    start(&p, B);
+    float inL[B], inR[B], outL[B], outR[B];
+    for (int i = 0; i < B; i++) { inL[i] = 0.25f; inR[i] = -0.25f; }
+    float* ins[2] = { inL, inR }; float* outs[2] = { outL, outR };
+    struct Steinberg_Vst_AudioBusBuffers in = { 2, 0, { .Steinberg_Vst_AudioBusBuffers_channelBuffers32 = ins } };
+    struct Steinberg_Vst_AudioBusBuffers out = { 2, 0, { .Steinberg_Vst_AudioBusBuffers_channelBuffers32 = outs } };
+    Changes changes; Events events;
+    struct Steinberg_Vst_ProcessData data; memset(&data, 0, sizeof(data));
+    data.symbolicSampleSize = Steinberg_Vst_SymbolicSampleSizes_kSample32;
+    data.numSamples = B; data.numInputs = 1; data.numOutputs = 1; data.inputs = &in; data.outputs = &out;
+    data.inputParameterChanges = (struct Steinberg_Vst_IParameterChanges*)&changes;
+    data.inputEvents = (struct Steinberg_Vst_IEventList*)&events;
+    Steinberg_Vst_ParamID stall = 0; Steinberg_int32 idx;
+
+    // In time: the input passes.
+    changes_init(&changes); events_init(&events);
+    CHECK(p.proc->lpVtbl->process(p.proc, &data) == Steinberg_kResultOk, "process");
+    CHECK(outL[0] == 0.25f && outR[B - 1] == -0.25f, "in-time block: %f %f", outL[0], outR[B - 1]);
+
+    // Stalled for 60 ms: process returns at the deadline with silence.
+    struct Steinberg_Vst_IParamValueQueue* q = changes.lpVtbl->addParameterData(&changes, &stall, &idx);
+    q->lpVtbl->addPoint(q, 0, 0.6, &idx);
+    double t0 = now_ms();
+    CHECK(p.proc->lpVtbl->process(p.proc, &data) == Steinberg_kResultOk, "process stalled");
+    double late = now_ms() - t0;
+    CHECK(late < 6.5, "stalled block took %.1f ms, deadline 5 ms", late);
+    for (int i = 0; i < B; i++) CHECK(outL[i] == 0 && outR[i] == 0, "stalled block not silent at %d", i);
+    CHECK(out.silenceFlags == 3, "stalled block silence flags %llx", (unsigned long long)out.silenceFlags);
+
+    // While the stalled block still runs: skipped, its notes and Stall 0
+    // kept for later.
+    changes_init(&changes); events_init(&events);
+    q = changes.lpVtbl->addParameterData(&changes, &stall, &idx);
+    q->lpVtbl->addPoint(q, 100, 0, &idx);
+    events.events[events.count++] = note_on(100, 60, 1, 1);
+    events.events[events.count++] = note_off(300, 60, 1);
+    t0 = now_ms();
+    CHECK(p.proc->lpVtbl->process(p.proc, &data) == Steinberg_kResultOk, "process skipped");
+    CHECK(now_ms() - t0 < 5, "skipped block took %.1f ms", now_ms() - t0);
+    for (int i = 0; i < B; i++) CHECK(outL[i] == 0, "skipped block not silent at %d", i);
+
+    // After the stall: in time again, with the two carried notes (gain 3).
+    struct timespec wait = { 0, 80 * 1000000 };
+    nanosleep(&wait, NULL);
+    changes_init(&changes); events_init(&events);
+    t0 = now_ms();
+    CHECK(p.proc->lpVtbl->process(p.proc, &data) == Steinberg_kResultOk, "process after stall");
+    CHECK(now_ms() - t0 < 5, "block after the stall took %.1f ms", now_ms() - t0);
+    for (int i = 0; i < B; i++) CHECK(outL[i] == 0.75f && outR[i] == -0.75f, "after stall [%d] %f %f, want 0.75 (carried notes)", i, outL[i], outR[i]);
+
+    // More events than a job holds (2048): the rest arrive with the next
+    // block.
+    ManyNotes many = { &manyVtbl, 3000 };
+    data.inputEvents = (struct Steinberg_Vst_IEventList*)&many;
+    CHECK(p.proc->lpVtbl->process(p.proc, &data) == Steinberg_kResultOk, "process 3000 notes");
+    CHECK(outL[0] == 0.25f * 2051 && outL[B - 1] == 0.25f * 2051, "first 2048 notes: %f, want %f", outL[0], 0.25f * 2051);
+    events_init(&events);
+    data.inputEvents = (struct Steinberg_Vst_IEventList*)&events;
+    CHECK(p.proc->lpVtbl->process(p.proc, &data) == Steinberg_kResultOk, "process after 3000 notes");
+    CHECK(outL[0] == 0.25f * 3003, "the other 952 notes: %f, want %f", outL[0], 0.25f * 3003);
+
+    // Deactivating while a block is late waits for it.
+    changes_init(&changes);
+    q = changes.lpVtbl->addParameterData(&changes, &stall, &idx);
+    q->lpVtbl->addPoint(q, 0, 0.3, &idx);
+    CHECK(p.proc->lpVtbl->process(p.proc, &data) == Steinberg_kResultOk, "process stalled again");
+    p.proc->lpVtbl->setProcessing(p.proc, 0);
+    CHECK(p.comp->lpVtbl->setActive(p.comp, 0) == Steinberg_kResultOk, "deactivate during a late block");
+    p.comp->lpVtbl->terminate(p.comp);
+    printf("stall ok (late block returned after %.1f ms)\n", late);
+}
+
 int main(int argc, char** argv) {
-    CHECK(argc == 3, "usage: hostcheck gain|synth|midifx|ducker <binary>");
+    CHECK(argc == 3, "usage: hostcheck gain|synth|midifx|ducker|stall <binary>");
     if (!strcmp(argv[1], "gain")) test_gain(argv[2]);
     else if (!strcmp(argv[1], "synth")) test_synth(argv[2]);
     else if (!strcmp(argv[1], "midifx")) test_midifx(argv[2]);
     else if (!strcmp(argv[1], "ducker")) test_ducker(argv[2]);
+    else if (!strcmp(argv[1], "stall")) test_stall(argv[2]);
     else CHECK(0, "unknown test %s", argv[1]);
     return 0;
 }

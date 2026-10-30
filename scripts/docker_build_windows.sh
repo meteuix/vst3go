@@ -3,8 +3,9 @@
 # x86_64 VST3 DLL inside a Docker container with mingw-w64 and the WebView2
 # SDK headers, so Windows build breakage shows up on any host. The same DLL
 # is also copied as <name>.clap (CLAP plugins are plain DLLs on Windows), and
-# each plugin builds as a standalone application (<name>.exe). It checks
-# compilation and the exported entry points; it does not run the plugins.
+# each plugin builds as a standalone application (<name>.exe); the ARA
+# example (examples/araclip) builds too. It checks compilation and the
+# exported entry points; it does not run the plugins.
 #
 # usage: scripts/docker_build_windows.sh [output-dir]
 set -euo pipefail
@@ -77,5 +78,16 @@ docker run --rm \
         status=1
       fi
     done
+    # The ARA example, for aracheck (scripts/docker_check_windows_wine.sh).
+    dll=/out/araclip.vst3/Contents/x86_64-win/araclip.vst3
+    mkdir -p "$(dirname "$dll")"
+    if go build -buildmode=c-shared -trimpath -o "$dll" ./examples/araclip; then
+      rm -f "${dll%.vst3}.h"
+      cp "$dll" /out/araclip.clap
+      echo "PASS araclip: built araclip.vst3 and araclip.clap"
+    else
+      echo "FAIL araclip: build failed"
+      status=1
+    fi
     exit "$status"
   '

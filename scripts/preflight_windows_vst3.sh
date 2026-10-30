@@ -27,9 +27,9 @@ tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/vst3go-win-preflight.XXXXXX")"
 trap 'rm -rf "$tmpdir"' EXIT
 
 printf 'int main(void) { return 0; }\n' > "$tmpdir/check.c"
-if ! "$cc_bin" "$tmpdir/check.c" -lWebView2Loader -o "$tmpdir/check" >/dev/null 2>&1; then
-  echo "Windows build toolchain cannot link against WebView2Loader." >&2
-  echo "Make sure the loader library is installed and discoverable before running the Windows build again." >&2
+if ! "$cc_bin" "$tmpdir/check.c" -lole32 -luser32 -o "$tmpdir/check" >/dev/null 2>&1; then
+  echo "Windows build toolchain cannot link a Windows program against ole32 and user32." >&2
+  echo "Make sure the compiler targets Windows before running the Windows build again." >&2
   exit 1
 fi
 

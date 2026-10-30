@@ -29,7 +29,7 @@ binary() {
   fi
 }
 
-for dir in gain synth midifx ducker; do
+for dir in gain synth midifx ducker stall; do
   bash "${script_dir}/build_standalone.sh" "internal/validation/${dir}" "$dir" "$out" >/dev/null 2>"${out}/${dir}.build.log" ||
     { cat "${out}/${dir}.build.log"; exit 1; }
   rm -rf "${out}/cfg-${dir}"
@@ -44,13 +44,14 @@ go build -tags standalone -o "${out}/standalonecheck" ./internal/validation/host
 
 if [[ "$host_os" == darwin ]]; then
   # The window server may report window bounds in a scaled space, so the
-  # check reads the aspect ratio: the 640x400 editor opens in a window
-  # narrower than 1.55:1 (title bar included), the 720x420 one is wider.
+  # check reads the aspect ratio. The window holds the title bar and the
+  # 36-pixel toolbar above the editor: the 640x400 editor opens in a window
+  # of about 1.37:1, the 720x420 one makes it about 1.47:1.
   clang -fobjc-arc -Wall internal/validation/hostcheck/windowsize_darwin.m -o "${out}/windowsize_darwin" -framework Cocoa
   rm -rf "${out}/cfg-gui"
   "$(binary synth)" -backend null -config "${out}/cfg-gui" -midi-in none -virtual-midi=false >"${out}/gui.log" 2>&1 &
   app=$!
-  resized() { [[ -n "$1" ]] && (( ${1%x*} * 100 >= ${1#*x} * 155 )); }
+  resized() { [[ -n "$1" ]] && (( ${1%x*} * 100 >= ${1#*x} * 142 )); }
   size=
   for _ in $(seq 1 100); do
     sleep 0.1

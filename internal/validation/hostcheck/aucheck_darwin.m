@@ -1,9 +1,10 @@
-// aucheck drives an installed vst3go Audio Unit the way an AU host does,
-// beyond what auval covers: parameter text, ClassInfo round trips, MIDI in
-// and out, factory presets, latency, side chains, and the Cocoa editor with
+// aucheck drives an installed vst3go Audio Unit, or a registered AUv3
+// extension, the way an AU host does, beyond what auval covers: parameter
+// text, ClassInfo round trips, MIDI in and out, factory presets, latency,
+// side chains, the deadline guard, and the Cocoa editor (Audio Units) with
 // edits flowing from the page to AU parameter listeners and back.
 //
-// usage: aucheck <type> <subtype> <manufacturer> effect|instrument|midifx|sidechain
+// usage: aucheck <type> <subtype> <manufacturer> effect|instrument|midifx|sidechain|stall
 #import <AudioToolbox/AudioToolbox.h>
 #import <AudioToolbox/AUCocoaUIView.h>
 #import <Cocoa/Cocoa.h>
@@ -12,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define CHECK(cond, ...)                                                      \
     do {                                                                      \
@@ -28,6 +30,7 @@ enum { kFrames = 512, kProgramParam = 0x7EFFFFFF };
 static const Float64 kRate = 48000;
 
 static AudioUnit unit;
+static bool v3;  // an AUv3 extension, reached through the v2 API bridge
 static float inputLevel = 0.5f;
 static int midiOutNotes, midiOutKey = -1;
 static int gestures, valueChanges;
@@ -67,7 +70,34 @@ static OSStatus midiOutput(void* ref, const AudioTimeStamp* ts, UInt32 output, c
     return noErr;
 }
 
+// MIDI 2.0 note-ons from the event list callback.
+static int ump2Notes, ump2Key = -1;
+static uint32_t ump2Velocity;
+
+static void sendUMP(UInt32 offset, MIDIProtocolID protocol, const uint32_t* words, UInt32 count) {
+    Byte buffer[256];
+    MIDIEventList* list = (MIDIEventList*)buffer;
+    MIDIEventPacket* packet = MIDIEventListInit(list, protocol);
+    packet = MIDIEventListAdd(list, sizeof(buffer), packet, 0, count, words);
+    CHECK(packet, "event list");
+    OK(MusicDeviceMIDIEventList(unit, offset, list), "MIDI event list");
+}
+
 static Float64 sampleTime;
+
+static void setChannels(AudioUnitScope scope, UInt32 count) {
+    AudioStreamBasicDescription format;
+    UInt32 size = sizeof(format);
+    OK(AudioUnitGetProperty(unit, kAudioUnitProperty_StreamFormat, scope, 0, &format, &size), "stream format");
+    format.mChannelsPerFrame = count;
+    OK(AudioUnitSetProperty(unit, kAudioUnitProperty_StreamFormat, scope, 0, &format, sizeof(format)), "set stream format");
+}
+
+static double nowMs(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
+}
 
 // render runs one block and returns the peak of output bus 0.
 static float render(UInt32 outChannels) {
@@ -189,7 +219,13 @@ static void checkClassInfo(AudioUnitParameterID id) {
     SInt32 subtype = 0x7a7a7a7a;
     CFNumberRef number = CFNumberCreate(NULL, kCFNumberSInt32Type, &subtype);
     CFDictionarySetValue(other, CFSTR(kAUPresetSubtypeKey), number);
-    CHECK(AudioUnitSetProperty(unit, kAudioUnitProperty_ClassInfo, kAudioUnitScope_Global, 0, &other, sizeof(other)) != noErr, "ClassInfo of another component rejected");
+    // The bridge to an AUv3 extension sets its fullState, which has no
+    // error to return; the state must still not be applied.
+    setParam(id, info.maxValue);
+    OSStatus status = AudioUnitSetProperty(unit, kAudioUnitProperty_ClassInfo, kAudioUnitScope_Global, 0, &other, sizeof(other));
+    CHECK(v3 || status != noErr, "ClassInfo of another component rejected");
+    CHECK(getParam(id) == info.maxValue, "ClassInfo of another component applied: %g", getParam(id));
+    setParam(id, info.defaultValue);
     CFRelease(number);
     CFRelease(other);
     CFRelease(state);
@@ -337,17 +373,28 @@ static void checkEditor(bool custom, UInt32 outChannels) {
 
 int main(int argc, char** argv) {
     @autoreleasepool {
-        CHECK(argc == 5, "usage: aucheck <type> <subtype> <manufacturer> effect|instrument|midifx|sidechain");
+        CHECK(argc == 5, "usage: aucheck <type> <subtype> <manufacturer> effect|instrument|midifx|sidechain|stall");
         const char* kind = argv[4];
-        bool effect = !strcmp(kind, "effect"), instrument = !strcmp(kind, "instrument"), midifx = !strcmp(kind, "midifx"), sidechain = !strcmp(kind, "sidechain");
-        CHECK(effect || instrument || midifx || sidechain, "unknown kind %s", kind);
+        bool effect = !strcmp(kind, "effect"), instrument = !strcmp(kind, "instrument"), midifx = !strcmp(kind, "midifx"), sidechain = !strcmp(kind, "sidechain"), stall = !strcmp(kind, "stall");
+        CHECK(effect || instrument || midifx || sidechain || stall, "unknown kind %s", kind);
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 
         AudioComponentDescription desc = { fourCC(argv[1]), fourCC(argv[2]), fourCC(argv[3]), 0, 0 };
         AudioComponent component = AudioComponentFindNext(NULL, &desc);
         CHECK(component, "component %s %s %s installed", argv[1], argv[2], argv[3]);
-        OK(AudioComponentInstanceNew(component, &unit), "instantiate");
+        AudioComponentDescription found;
+        OK(AudioComponentGetDescription(component, &found), "component description");
+        v3 = (found.componentFlags & kAudioComponentFlag_IsV3AudioUnit) != 0;
+        // Asynchronously, as AUv3 extensions require; Audio Units load in
+        // process, extensions in their own.
+        __block OSStatus status = 1;
+        AudioComponentInstantiate(component, 0, ^(AudioComponentInstance instance, OSStatus err) {
+            unit = instance;
+            status = err;
+        });
+        for (int i = 0; i < 1000 && status == 1; i++) run(0.01);
+        OK(status, "instantiate");
 
         AudioUnitParameterID continuous;
         NSArray<NSNumber*>* list = params(&continuous);
@@ -358,6 +405,12 @@ int main(int argc, char** argv) {
         }
 
         setup();
+        if (midifx) {
+            SInt32 protocol = 0;
+            UInt32 size = sizeof(protocol);
+            OK(AudioUnitGetProperty(unit, kAudioUnitProperty_AudioUnitMIDIProtocol, kAudioUnitScope_Global, 0, &protocol, &size), "AU MIDI protocol");
+            CHECK(protocol == kMIDIProtocol_2_0, "AU MIDI protocol %d", (int)protocol);
+        }
         OK(AudioUnitInitialize(unit), "initialize");
         UInt32 outChannels = elementCount(kAudioUnitScope_Output) ? channels(kAudioUnitScope_Output, 0) : 0;
 
@@ -370,6 +423,45 @@ int main(int argc, char** argv) {
             for (int i = 0; i < 20; i++) high = render(outChannels);
             CHECK(high > 0 && high > low * 1.5f, "parameter %u changes the output: %g -> %g", (unsigned)continuous, low, high);
             printf("effect: output %g at minimum, %g at maximum of parameter %u\n", low, high, (unsigned)continuous);
+
+            // Channel configurations: the gain plugin runs in mono or
+            // stereo, the same on both sides.
+            // Sizes come from AudioUnitGetPropertyInfo: the AUv3 bridge does
+            // not shrink a larger buffer size to the value's.
+            AUChannelInfo infos[80];
+            UInt32 size = 0;
+            OK(AudioUnitGetPropertyInfo(unit, kAudioUnitProperty_SupportedNumChannels, kAudioUnitScope_Global, 0, &size, NULL), "supported channels size");
+            CHECK(size <= sizeof(infos), "supported channels size %u", (unsigned)size);
+            OK(AudioUnitGetProperty(unit, kAudioUnitProperty_SupportedNumChannels, kAudioUnitScope_Global, 0, infos, &size), "supported channels");
+            UInt32 count = size / sizeof(AUChannelInfo);
+            CHECK(count == 2 && infos[0].inChannels == 2 && infos[0].outChannels == 2 && infos[1].inChannels == 1 && infos[1].outChannels == 1,
+                  "stereo and mono configurations: %u, first %d/%d", (unsigned)count, infos[0].inChannels, infos[0].outChannels);
+            AudioChannelLayoutTag tags[8];
+            OK(AudioUnitGetPropertyInfo(unit, kAudioUnitProperty_SupportedChannelLayoutTags, kAudioUnitScope_Output, 0, &size, NULL), "layout tags size");
+            CHECK(size <= sizeof(tags), "layout tags size %u", (unsigned)size);
+            OK(AudioUnitGetProperty(unit, kAudioUnitProperty_SupportedChannelLayoutTags, kAudioUnitScope_Output, 0, tags, &size), "layout tags");
+            CHECK(size == 2 * sizeof(AudioChannelLayoutTag) && tags[0] == kAudioChannelLayoutTag_Mono && tags[1] == kAudioChannelLayoutTag_Stereo, "mono and stereo layouts");
+            OK(AudioUnitUninitialize(unit), "uninitialize");
+            setChannels(kAudioUnitScope_Output, 1);
+            CHECK(AudioUnitInitialize(unit) == kAudioUnitErr_FormatNotSupported, "stereo in, mono out refused");
+            setChannels(kAudioUnitScope_Input, 1);
+            // Through the AUv3 bridge the layout is the bus format's, which a
+            // stream format set alone leaves without one.
+            if (!v3) {
+                AudioChannelLayout layout;
+                size = sizeof(layout);
+                OK(AudioUnitGetProperty(unit, kAudioUnitProperty_AudioChannelLayout, kAudioUnitScope_Input, 0, &layout, &size), "channel layout");
+                CHECK(layout.mChannelLayoutTag == kAudioChannelLayoutTag_Mono, "mono layout %#x", (unsigned)layout.mChannelLayoutTag);
+            }
+            OK(AudioUnitInitialize(unit), "initialize mono");
+            float mono = 0;
+            for (int i = 0; i < 4; i++) mono = render(1);
+            CHECK(fabsf(mono - high) < 1e-5f, "mono output %g, stereo %g", mono, high);
+            OK(AudioUnitUninitialize(unit), "uninitialize");
+            setChannels(kAudioUnitScope_Input, 2);
+            setChannels(kAudioUnitScope_Output, 2);
+            OK(AudioUnitInitialize(unit), "initialize stereo");
+            printf("effect: mono configuration ok\n");
         }
         if (instrument) {
             CHECK(render(outChannels) == 0, "silent without notes");
@@ -388,11 +480,13 @@ int main(int argc, char** argv) {
             OK(AudioUnitSetProperty(unit, kAudioUnitProperty_PresentPreset, kAudioUnitScope_Global, 0, pluck, sizeof(AUPreset)), "select Pluck");
             CFRelease(presets);
             AudioUnitParameterID release = findParam(list, @"Release");
-            for (int i = 0; i < 20 && fabsf(getParam(release) - 80) > 0.01f; i++) {
+            // Release is logarithmic (1 to 2000 ms): the AU carries its normalized value.
+            float pluckRelease = logf(80.0f) / logf(2000.0f);
+            for (int i = 0; i < 20 && fabsf(getParam(release) - pluckRelease) > 1e-4f; i++) {
                 render(outChannels);
                 run(0.02);
             }
-            CHECK(getParam(kProgramParam) == 1 && fabsf(getParam(release) - 80) < 0.01f, "Pluck loaded: program %g, release %g", getParam(kProgramParam), getParam(release));
+            CHECK(getParam(kProgramParam) == 1 && fabsf(getParam(release) - pluckRelease) < 1e-4f, "Pluck loaded: program %g, release %g", getParam(kProgramParam), getParam(release));
             AUPreset current;
             size = sizeof(current);
             OK(AudioUnitGetProperty(unit, kAudioUnitProperty_PresentPreset, kAudioUnitScope_Global, 0, &current, &size), "present preset");
@@ -400,15 +494,49 @@ int main(int argc, char** argv) {
             CFRelease(current.presetName);
         }
         if (midifx) {
-            CHECK(outChannels == 0 && elementCount(kAudioUnitScope_Input) == 0, "MIDI processor without audio");
+            // An AUv3 MIDI processor has a silent stereo output, which
+            // out-of-process rendering needs.
+            CHECK(outChannels == (v3 ? 2 : 0) && elementCount(kAudioUnitScope_Input) == 0, "MIDI processor without audio: %u output channels", (unsigned)outChannels);
             AUMIDIOutputCallbackStruct callback = { midiOutput, NULL };
             OK(AudioUnitSetProperty(unit, kAudioUnitProperty_MIDIOutputCallback, kAudioUnitScope_Global, 0, &callback, sizeof(callback)), "MIDI output callback");
             AudioUnitParameterID transpose = findParam(list, @"Transpose");
             setParam(transpose, 36);  // step 36 of -24..24: +12 semitones
             OK(MusicDeviceMIDIEvent(unit, 0x90, 60, 100, 10), "note on");
-            render(0);
+            CHECK(render(outChannels) == 0, "MIDI processor output silent");
             CHECK(midiOutNotes == 1 && midiOutKey == 72, "transposed note out: %d notes, key %d", midiOutNotes, midiOutKey);
             printf("midifx: note 60 came out as %d\n", midiOutKey);
+
+            // MIDI 2.0: a host that asks for it before initializing gets
+            // MIDI 2.0 messages through the event list callback, with
+            // 16-bit velocities intact.
+            OK(AudioUnitUninitialize(unit), "uninitialize");
+            SInt32 protocol = kMIDIProtocol_2_0;
+            OK(AudioUnitSetProperty(unit, kAudioUnitProperty_HostMIDIProtocol, kAudioUnitScope_Global, 0, &protocol, sizeof(protocol)), "host MIDI protocol");
+            AUMIDIEventListBlock block = ^OSStatus(AUEventSampleTime time, uint8_t cable, const MIDIEventList* events) {
+                (void)time; (void)cable;
+                CHECK(events->protocol == kMIDIProtocol_2_0, "output protocol %d", (int)events->protocol);
+                const MIDIEventPacket* packet = &events->packet[0];
+                for (UInt32 i = 0; i < events->numPackets; i++) {
+                    if (packet->wordCount >= 2 && (packet->words[0] & 0xFFF00000u) == 0x40900000u) {
+                        ump2Notes++;
+                        ump2Key = (packet->words[0] >> 8) & 0x7F;
+                        ump2Velocity = packet->words[1] >> 16;
+                    }
+                    packet = MIDIEventPacketNext(packet);
+                }
+                return noErr;
+            };
+            OK(AudioUnitSetProperty(unit, kAudioUnitProperty_MIDIOutputEventListCallback, kAudioUnitScope_Global, 0, &block, sizeof(block)), "MIDI event list callback");
+            OK(AudioUnitInitialize(unit), "initialize");
+            const uint32_t noteOn2[2] = { 0x40903E00, 0x12340000 };  // key 62, velocity 0x1234
+            sendUMP(5, kMIDIProtocol_2_0, noteOn2, 2);
+            render(outChannels);
+            CHECK(ump2Notes == 1 && ump2Key == 74 && ump2Velocity == 0x1234, "MIDI 2.0 note out: %d notes, key %d, velocity %#x", ump2Notes, ump2Key, ump2Velocity);
+            printf("midifx: MIDI 2.0 velocity %#x kept\n", ump2Velocity);
+            const uint32_t noteOn1 = 0x20904064;  // MIDI 1.0 in a packet: key 64, velocity 100
+            sendUMP(5, kMIDIProtocol_1_0, &noteOn1, 1);
+            render(outChannels);
+            CHECK(ump2Notes == 2 && ump2Key == 76, "MIDI 1.0 packet note out: %d notes, key %d", ump2Notes, ump2Key);
         }
         if (sidechain) {
             CHECK(elementCount(kAudioUnitScope_Input) == 2, "main and side chain inputs");
@@ -426,6 +554,33 @@ int main(int argc, char** argv) {
             for (int i = 0; i < 20; i++) peak = render(outChannels);
             CHECK(peak > 0 && peak < 0.5f, "loud side chain ducks the output: peak %g", peak);
             printf("sidechain: latency %g s, ducked peak %g\n", latency, peak);
+        }
+
+        if (stall) {
+            // The deadline guard: the output is the input times one plus
+            // the note events received; Stall (ms) sleeps on the guard's
+            // thread, whose deadline is half a block (5.3 ms).
+            AudioUnitParameterID stallParam = findParam(list, @"Stall");
+            inputLevel = 0.25f;
+            float peak = render(outChannels);
+            CHECK(peak == 0.25f, "in-time block passes the input: peak %g", peak);
+            setParam(stallParam, 60);
+            double t0 = nowMs();
+            peak = render(outChannels);
+            double late = nowMs() - t0;
+            CHECK(late < 6.5 && peak == 0, "stalled block: %.1f ms, peak %g", late, peak);
+            // Skipped while the stalled block still runs; the notes and
+            // Stall 0 are kept for later.
+            OK(MusicDeviceMIDIEvent(unit, 0x90, 60, 100, 10), "note on");
+            OK(MusicDeviceMIDIEvent(unit, 0x80, 60, 0, 300), "note off");
+            setParam(stallParam, 0);
+            t0 = nowMs();
+            peak = render(outChannels);
+            CHECK(nowMs() - t0 < 5 && peak == 0, "skipped block: %.1f ms, peak %g", nowMs() - t0, peak);
+            run(0.08);
+            peak = render(outChannels);
+            CHECK(peak == 0.75f, "after the stall the carried notes count: peak %g, want 0.75", peak);
+            printf("stall: late block returned after %.1f ms\n", late);
         }
 
         UInt32 size = 0;

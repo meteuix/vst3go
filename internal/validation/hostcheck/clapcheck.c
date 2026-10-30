@@ -1,19 +1,23 @@
 // clapcheck loads a validation plugin through its CLAP entry point and
 // checks behavior clap-validator does not: sample-accurate automation in the
 // plain parameter domain, note and note-expression routing, raw MIDI, output
-// events, programs, latency, 64-bit audio and state with host rescans, and
-// preset discovery of the user preset folder with preset-load. The preset
-// check writes into $HOME, which scripts/validate_clap.sh points at a scratch
-// folder (clap-validator then crawls and loads the same presets).
+// events, programs, latency, 64-bit audio and state with host rescans, the
+// deadline guard (stall plugin), alone and with instances on several audio
+// threads, and preset discovery of the user preset folder with preset-load.
+// The preset check writes into $HOME (%USERPROFILE% on Windows), which
+// scripts/validate_clap.sh points at a scratch folder (clap-validator then
+// crawls and loads the same presets).
 #include "clap/clap.h"
 #include "vst3/vst3_c_api.h"
-#include <dlfcn.h>
+#include "portable.h"
 #include <errno.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #define CHECK(cond, ...) do { if (!(cond)) { fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); exit(1); } } while (0)
@@ -214,6 +218,9 @@ static void test_gain(const char* path) {
 #if defined(__APPLE__)
     CHECK(gui, "gui extension");
     const char* platformAPI = CLAP_WINDOW_API_COCOA;
+#elif defined(_WIN32)
+    CHECK(gui, "gui extension");
+    const char* platformAPI = CLAP_WINDOW_API_WIN32;
 #else
     const char* platformAPI = CLAP_WINDOW_API_X11;
 #endif
@@ -221,7 +228,7 @@ static void test_gain(const char* path) {
         const char* api = NULL;
         bool floating = true;
         CHECK(gui->get_preferred_api(p.plugin, &api, &floating) && api && !strcmp(api, platformAPI) && !floating, "preferred gui api");
-        CHECK(gui->is_api_supported(p.plugin, platformAPI, false) && !gui->is_api_supported(p.plugin, platformAPI, true), "embedded gui only");
+        CHECK(gui->is_api_supported(p.plugin, platformAPI, false) && gui->is_api_supported(p.plugin, platformAPI, true), "embedded and floating gui");
         CHECK(!gui->is_api_supported(p.plugin, CLAP_WINDOW_API_WIN32, false) || !strcmp(platformAPI, CLAP_WINDOW_API_WIN32), "foreign gui api");
         CHECK(p.plugin->get_extension(p.plugin, CLAP_EXT_TIMER_SUPPORT), "timer-support with the gui");
     } else {
@@ -270,7 +277,36 @@ static void test_gain(const char* path) {
     CHECK(p.state->load(p.plugin, &is), "state load");
     CHECK(fabs(param_value(&p, info.id) + 6) < 1e-9 && hostLog.rescanValues > rescans, "state restores -6 dB and requests a rescan");
     p.plugin->deactivate(p.plugin);
-    p.plugin->destroy(p.plugin);
+
+    // Configurable ports: the gain plugin runs in mono or stereo, the same
+    // on both sides.
+    const clap_plugin_configurable_audio_ports_t* config =
+        (const clap_plugin_configurable_audio_ports_t*)p.plugin->get_extension(p.plugin, CLAP_EXT_CONFIGURABLE_AUDIO_PORTS);
+    const clap_plugin_surround_t* surround = (const clap_plugin_surround_t*)p.plugin->get_extension(p.plugin, CLAP_EXT_SURROUND);
+    CHECK(config && surround, "configurable-audio-ports and surround");
+    uint8_t lcr[3] = { CLAP_SURROUND_FL, CLAP_SURROUND_FR, CLAP_SURROUND_FC };
+    clap_audio_port_configuration_request_t mono[2] = { { true, 0, 1, CLAP_PORT_MONO, NULL }, { false, 0, 1, CLAP_PORT_MONO, NULL } };
+    clap_audio_port_configuration_request_t mixed[2] = { { true, 0, 1, CLAP_PORT_MONO, NULL }, { false, 0, 2, CLAP_PORT_STEREO, NULL } };
+    clap_audio_port_configuration_request_t lcr3[2] = { { true, 0, 3, CLAP_PORT_SURROUND, lcr }, { false, 0, 3, CLAP_PORT_SURROUND, lcr } };
+    CHECK(config->can_apply_configuration(p.plugin, mono, 2), "mono accepted");
+    CHECK(!config->can_apply_configuration(p.plugin, mixed, 2) && !config->can_apply_configuration(p.plugin, lcr3, 2), "mono in, stereo out and LCR refused");
+    CHECK(surround->is_channel_mask_supported(p.plugin, 1 << CLAP_SURROUND_FL | 1 << CLAP_SURROUND_FR) &&
+          !surround->is_channel_mask_supported(p.plugin, 1 << CLAP_SURROUND_FL | 1 << CLAP_SURROUND_FR | 1 << CLAP_SURROUND_FC), "channel masks");
+    CHECK(p.audio->get(p.plugin, 0, true, &port) && port.channel_count == 2, "checking changes nothing");
+    CHECK(config->apply_configuration(p.plugin, mono, 2), "apply mono");
+    CHECK(p.audio->get(p.plugin, 0, true, &port) && port.channel_count == 1 && !strcmp(port.port_type, CLAP_PORT_MONO), "mono input port");
+    CHECK(p.audio->get(p.plugin, 0, false, &port) && port.channel_count == 1 && !strcmp(port.port_type, CLAP_PORT_MONO), "mono output port");
+    uint8_t map[8];
+    CHECK(surround->get_channel_map(p.plugin, false, 0, map, 8) == 0, "no channel map for a mono port");
+    start(&p);
+    float* ins1[1] = { inL }; float* outs1[1] = { outL };
+    clap_audio_buffer_t ib1 = { ins1, NULL, 1, 0, 0 }, ob1 = { outs1, NULL, 1, 0, 0 };
+    for (int i = 0; i < N; i++) { inL[i] = 0.5f; outL[i] = 0; }
+    in_init(&in); out_init(&out);
+    proc = make_process(&ib1, 1, &ob1, 1, N, &in, &out);
+    CHECK(p.plugin->process(p.plugin, &proc) == CLAP_PROCESS_CONTINUE, "process mono");
+    CHECK(fabsf(outL[N - 1] - 0.5f * g) < 1e-6f, "mono gain %f", outL[N - 1]);
+    stop(&p);
     printf("gain ok\n");
 }
 
@@ -319,9 +355,13 @@ static void test_synth(const char* path) {
     add_midi(&in, 20, 0x90, 60, 100);
     CHECK(p.plugin->process(p.plugin, &proc) == CLAP_PROCESS_CONTINUE, "process");
     CHECK(outL[19] == 0 && outL[20] != 0, "MIDI note on at offset 20");
+
+    // A reset on the audio thread (through the deadline guard: it runs
+    // before the next block) ends the note at once.
     in_init(&in);
-    add_midi(&in, 0, 0x80, 60, 0);
+    p.plugin->reset(p.plugin);
     CHECK(p.plugin->process(p.plugin, &proc) == CLAP_PROCESS_CONTINUE, "process");
+    for (int i = 0; i < N; i++) CHECK(outL[i] == 0, "reset silences the synth: [%d]=%f", i, outL[i]);
 
     // Selecting a program by automation loads its values and asks the host
     // to re-read them on the main thread.
@@ -331,7 +371,9 @@ static void test_synth(const char* path) {
     add_param(&in, 0, program.id, 1); // Pluck: release 80 ms
     int callbacks = hostLog.callbacks, rescans = hostLog.rescanValues;
     CHECK(p.plugin->process(p.plugin, &proc) == CLAP_PROCESS_CONTINUE, "process");
-    CHECK(fabs(param_value(&p, release.id) - 80) < 1e-6, "Pluck release %g", param_value(&p, release.id));
+    // Release is logarithmic (1 to 2000 ms): CLAP carries its normalized value.
+    double pluckRelease = log(80.0) / log(2000.0);
+    CHECK(fabs(param_value(&p, release.id) - pluckRelease) < 1e-6, "Pluck release %g, want %g", param_value(&p, release.id), pluckRelease);
     CHECK(hostLog.callbacks > callbacks, "program change requests a main-thread callback");
     p.plugin->on_main_thread(p.plugin);
     CHECK(hostLog.rescanValues > rescans, "program change rescans values");
@@ -480,19 +522,27 @@ static Receiver metadata(const clap_preset_discovery_provider_t* provider, const
 static void mkdirs(const char* path) {
     char buf[1024];
     snprintf(buf, sizeof(buf), "%s", path);
-    for (char* p = buf + 1; *p; p++) {
-        if (*p == '/') { *p = 0; CHECK(mkdir(buf, 0755) == 0 || errno == EEXIST, "mkdir %s", buf); *p = '/'; }
+    // Past the root: "/" or a drive's "C:\".
+    for (char* p = buf + (buf[0] && buf[1] == ':' ? 3 : 1); *p; p++) {
+        if (*p == SEP[0]) { *p = 0; CHECK(make_dir(buf) == 0 || errno == EEXIST, "mkdir %s", buf); *p = SEP[0]; }
     }
-    CHECK(mkdir(buf, 0755) == 0 || errno == EEXIST, "mkdir %s", buf);
+    CHECK(make_dir(buf) == 0 || errno == EEXIST, "mkdir %s", buf);
 }
 
 // write_vstpreset writes a .vstpreset with one component state chunk
-// (Steinberg::Vst::PresetFile layout).
+// (Steinberg::Vst::PresetFile layout). The class ID is printed like
+// FUID::toString: byte by byte, but on Windows in GUID order (Data1, Data2
+// and Data3 of the in-memory COM GUID are little-endian).
 static void write_vstpreset(const char* path, const Steinberg_TUID cid, const uint8_t* state, size_t size) {
     FILE* f = fopen(path, "wb");
     CHECK(f, "create %s", path);
+#if defined(_WIN32)
+    static const int order[16] = { 3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15 };
+#else
+    static const int order[16] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+#endif
     char hex[33];
-    for (int i = 0; i < 16; i++) snprintf(hex + 2 * i, 3, "%02X", (unsigned char)cid[i]);
+    for (int i = 0; i < 16; i++) snprintf(hex + 2 * i, 3, "%02X", (unsigned char)cid[order[i]]);
     int32_t version = 1, count = 1;
     int64_t dataOffset = 48, dataSize = (int64_t)size, listOffset = 48 + (int64_t)size;
     fwrite("VST3", 1, 4, f); fwrite(&version, 4, 1, f); fwrite(hex, 1, 32, f); fwrite(&listOffset, 8, 1, f);
@@ -503,8 +553,8 @@ static void write_vstpreset(const char* path, const Steinberg_TUID cid, const ui
 }
 
 static void test_presets(const char* path) {
-    const char* home = getenv("HOME");
-    CHECK(home && strstr(home, "clapcheck"), "HOME must be a scratch folder for the preset check, got %s", home ? home : "(unset)");
+    const char* home = getenv(HOME_ENV);
+    CHECK(home && strstr(home, "clapcheck"), HOME_ENV " must be a scratch folder for the preset check, got %s", home ? home : "(unset)");
     Plugin p = load(path);
     void* lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     const clap_plugin_entry_t* entry = (const clap_plugin_entry_t*)dlsym(lib, "clap_entry");
@@ -517,6 +567,8 @@ static void test_presets(const char* path) {
     char dir[1024];
 #if defined(__APPLE__)
     snprintf(dir, sizeof(dir), "%s/Library/Audio/Presets/%s/%s", home, desc->vendor, desc->name);
+#elif defined(_WIN32)
+    snprintf(dir, sizeof(dir), "%s\\Documents\\VST3 Presets\\%s\\%s", home, desc->vendor, desc->name);
 #else
     snprintf(dir, sizeof(dir), "%s/.vst3/presets/%s/%s", home, desc->vendor, desc->name);
 #endif
@@ -548,9 +600,9 @@ static void test_presets(const char* path) {
     CHECK(vst3->lpVtbl->getClassInfo(vst3, 0, &ci) == Steinberg_kResultOk, "vst3 class info");
     mkdirs(dir);
     char file[1200], foreign[1200], missing[1200];
-    snprintf(file, sizeof(file), "%s/Check.vstpreset", dir);
-    snprintf(foreign, sizeof(foreign), "%s/Foreign.vstpreset", dir);
-    snprintf(missing, sizeof(missing), "%s/Missing.vstpreset", dir);
+    snprintf(file, sizeof(file), "%s" SEP "Check.vstpreset", dir);
+    snprintf(foreign, sizeof(foreign), "%s" SEP "Foreign.vstpreset", dir);
+    snprintf(missing, sizeof(missing), "%s" SEP "Missing.vstpreset", dir);
     write_vstpreset(file, ci.cid, st.data, st.size);
     Steinberg_TUID other;
     memcpy(other, ci.cid, sizeof(other));
@@ -578,12 +630,179 @@ static void test_presets(const char* path) {
     printf("presets ok\n");
 }
 
+static double now_ms(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
+}
+
+// The deadline guard (stall plugin): the output is the input times one
+// plus the note events received; Stall (0..100 ms) sleeps on the guard's
+// thread, whose deadline is half a block.
+
+// ManyNotes is an input list of count note ons at offset 0.
+typedef struct { clap_input_events_t list; clap_event_note_t note; uint32_t count; } ManyNotes;
+static uint32_t many_size(const clap_input_events_t* l) { return ((const ManyNotes*)l->ctx)->count; }
+static const clap_event_header_t* many_get(const clap_input_events_t* l, uint32_t i) {
+    const ManyNotes* m = (const ManyNotes*)l->ctx;
+    return i < m->count ? &m->note.header : NULL;
+}
+
+// Instances on several audio threads at once, the binary's deadline guards
+// sharing their worker threads, while the main thread creates and destroys
+// more: every block passes its input through (in time) or is silent (late
+// or skipped), never another instance's audio.
+enum { THREADS = 4, PER_THREAD = 8, BLOCKS = 400, TB = 64 };
+typedef struct { const clap_plugin_t* plugins[PER_THREAD]; int index; atomic_int* wrong; atomic_int* right; } AudioThread;
+static atomic_int threadsDone;
+
+static void* audio_thread(void* arg) {
+    AudioThread* a = (AudioThread*)arg;
+    float inL[TB], inR[TB], outL[TB], outR[TB];
+    float* ins[2] = { inL, inR }; float* outs[2] = { outL, outR };
+    clap_audio_buffer_t ib = { ins, NULL, 2, 0, 0 }, ob = { outs, NULL, 2, 0, 0 };
+    InEvents in; OutEvents out;
+    in_init(&in);
+    clap_process_t proc = make_process(&ib, 1, &ob, 1, TB, &in, &out);
+    for (int b = 0; b < BLOCKS; b++) {
+        for (int k = 0; k < PER_THREAD; k++) {
+            // A signal unique to the thread, instance and block.
+            float v = (float)(1 + a->index * PER_THREAD + k) / 64 + (float)b / 65536;
+            for (int i = 0; i < TB; i++) { inL[i] = v; inR[i] = -v; }
+            out_init(&out);
+            a->plugins[k]->process(a->plugins[k], &proc);
+            int pass = 1, silent = 1;
+            for (int i = 0; i < TB; i++) {
+                pass = pass && outL[i] == v && outR[i] == -v;
+                silent = silent && outL[i] == 0 && outR[i] == 0;
+            }
+            if (pass) atomic_fetch_add(a->right, 1);
+            else if (!silent) atomic_fetch_add(a->wrong, 1);
+        }
+    }
+    atomic_fetch_add(&threadsDone, 1);
+    return NULL;
+}
+
+static const clap_plugin_t* create_started(const clap_plugin_factory_t* factory, const char* id) {
+    const clap_plugin_t* plugin = factory->create_plugin(factory, &host, id);
+    CHECK(plugin && plugin->init(plugin), "create %s", id);
+    CHECK(plugin->activate(plugin, 48000, 1, TB) && plugin->start_processing(plugin), "activate %s", id);
+    return plugin;
+}
+
+static void test_threads(const char* path) {
+    void* lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    CHECK(lib, "dlopen %s: %s", path, dlerror());
+    const clap_plugin_entry_t* entry = (const clap_plugin_entry_t*)dlsym(lib, "clap_entry");
+    CHECK(entry && entry->init(path), "clap_entry");
+    const clap_plugin_factory_t* factory = (const clap_plugin_factory_t*)entry->get_factory(CLAP_PLUGIN_FACTORY_ID);
+    const char* id = factory->get_plugin_descriptor(factory, 0)->id;
+    atomic_int wrong = 0, right = 0;
+    AudioThread threads[THREADS];
+    pthread_t handles[THREADS];
+    for (int t = 0; t < THREADS; t++) {
+        threads[t].index = t; threads[t].wrong = &wrong; threads[t].right = &right;
+        for (int k = 0; k < PER_THREAD; k++) threads[t].plugins[k] = create_started(factory, id);
+    }
+    atomic_store(&threadsDone, 0);
+    for (int t = 0; t < THREADS; t++) CHECK(pthread_create(&handles[t], NULL, audio_thread, &threads[t]) == 0, "start audio thread");
+    int churned = 0;
+    while (atomic_load(&threadsDone) < THREADS) {
+        const clap_plugin_t* p = create_started(factory, id);
+        p->stop_processing(p); p->deactivate(p); p->destroy(p);
+        churned++;
+    }
+    for (int t = 0; t < THREADS; t++) pthread_join(handles[t], NULL);
+    for (int t = 0; t < THREADS; t++) {
+        for (int k = 0; k < PER_THREAD; k++) {
+            const clap_plugin_t* p = threads[t].plugins[k];
+            p->stop_processing(p); p->deactivate(p); p->destroy(p);
+        }
+    }
+    int total = THREADS * PER_THREAD * BLOCKS;
+    CHECK(atomic_load(&wrong) == 0, "%d of %d blocks on %d threads had another block's audio", atomic_load(&wrong), total, THREADS);
+    CHECK(atomic_load(&right) > 0, "no block of %d passed in time", total);
+    printf("threads ok (%d of %d blocks in time, %d instances created meanwhile)\n", atomic_load(&right), total, churned);
+}
+
+static void test_stall(const char* path) {
+    enum { B = 480 }; // 10 ms at 48 kHz: a 5 ms deadline
+    Plugin p = load(path);
+    clap_param_info_t info;
+    CHECK(find_param(&p, "Stall", &info) && info.min_value == 0 && info.max_value == 100, "Stall parameter");
+    start(&p);
+    float inL[B], inR[B], outL[B], outR[B];
+    for (int i = 0; i < B; i++) { inL[i] = 0.25f; inR[i] = -0.25f; }
+    float* ins[2] = { inL, inR }; float* outs[2] = { outL, outR };
+    clap_audio_buffer_t ib = { ins, NULL, 2, 0, 0 }, ob = { outs, NULL, 2, 0, 0 };
+    InEvents in; OutEvents out;
+    clap_process_t proc = make_process(&ib, 1, &ob, 1, B, &in, &out);
+
+    // In time: the input passes.
+    in_init(&in); out_init(&out);
+    CHECK(p.plugin->process(p.plugin, &proc) == CLAP_PROCESS_CONTINUE, "process");
+    CHECK(outL[0] == 0.25f && outR[B - 1] == -0.25f, "in-time block: %f %f", outL[0], outR[B - 1]);
+
+    // Stalled for 60 ms: process returns at the deadline with silence.
+    in_init(&in);
+    add_param(&in, 0, info.id, 60);
+    double t0 = now_ms();
+    CHECK(p.plugin->process(p.plugin, &proc) == CLAP_PROCESS_CONTINUE, "process stalled");
+    double late = now_ms() - t0;
+    CHECK(late < 6.5, "stalled block took %.1f ms, deadline 5 ms", late);
+    for (int i = 0; i < B; i++) CHECK(outL[i] == 0 && outR[i] == 0, "stalled block not silent at %d", i);
+    CHECK(ob.constant_mask == 3, "stalled block constant mask %llx", (unsigned long long)ob.constant_mask);
+
+    // While the stalled block still runs: skipped, its notes and Stall 0
+    // kept for later.
+    in_init(&in);
+    add_note(&in, CLAP_EVENT_NOTE_ON, 100, 60, 1, 1);
+    add_param(&in, 100, info.id, 0);
+    add_note(&in, CLAP_EVENT_NOTE_OFF, 300, 60, 1, 0);
+    t0 = now_ms();
+    CHECK(p.plugin->process(p.plugin, &proc) == CLAP_PROCESS_CONTINUE, "process skipped");
+    CHECK(now_ms() - t0 < 5, "skipped block took %.1f ms", now_ms() - t0);
+    for (int i = 0; i < B; i++) CHECK(outL[i] == 0, "skipped block not silent at %d", i);
+
+    // After the stall: in time again, with the two carried notes (gain 3).
+    struct timespec wait = { 0, 80 * 1000000 };
+    nanosleep(&wait, NULL);
+    in_init(&in);
+    ob.constant_mask = 0;
+    t0 = now_ms();
+    CHECK(p.plugin->process(p.plugin, &proc) == CLAP_PROCESS_CONTINUE, "process after stall");
+    CHECK(now_ms() - t0 < 5, "block after the stall took %.1f ms", now_ms() - t0);
+    for (int i = 0; i < B; i++) CHECK(outL[i] == 0.75f && outR[i] == -0.75f, "after stall [%d] %f %f, want 0.75 (carried notes)", i, outL[i], outR[i]);
+    CHECK(fabs(param_value(&p, info.id)) < 1e-9, "carried Stall value %g", param_value(&p, info.id));
+
+    // More events than a job holds (4096): the rest arrive with the next
+    // block.
+    ManyNotes many = { { &many, many_size, many_get }, { header(CLAP_EVENT_NOTE_ON, sizeof(clap_event_note_t), 0), 1, 0, 0, 60, 1 }, 5000 };
+    proc.in_events = &many.list;
+    CHECK(p.plugin->process(p.plugin, &proc) == CLAP_PROCESS_CONTINUE, "process 5000 notes");
+    CHECK(outL[0] == 0.25f * 4099 && outL[B - 1] == 0.25f * 4099, "first 4096 notes: %f, want %f", outL[0], 0.25f * 4099);
+    in_init(&in);
+    proc.in_events = &in.list;
+    CHECK(p.plugin->process(p.plugin, &proc) == CLAP_PROCESS_CONTINUE, "process after 5000 notes");
+    CHECK(outL[0] == 0.25f * 5003, "the other 904 notes: %f, want %f", outL[0], 0.25f * 5003);
+
+    // Stopping and deactivating while a block is late waits for it.
+    in_init(&in);
+    add_param(&in, 0, info.id, 30);
+    CHECK(p.plugin->process(p.plugin, &proc) == CLAP_PROCESS_CONTINUE, "process stalled again");
+    stop(&p);
+    printf("stall ok (late block returned after %.1f ms)\n", late);
+    test_threads(path);
+}
+
 int main(int argc, char** argv) {
-    CHECK(argc == 3, "usage: clapcheck gain|synth|midifx|ducker <binary>");
+    CHECK(argc == 3, "usage: clapcheck gain|synth|midifx|ducker|stall <binary>");
     if (!strcmp(argv[1], "gain")) test_gain(argv[2]);
     else if (!strcmp(argv[1], "synth")) test_synth(argv[2]);
     else if (!strcmp(argv[1], "midifx")) test_midifx(argv[2]);
     else if (!strcmp(argv[1], "ducker")) test_ducker(argv[2]);
+    else if (!strcmp(argv[1], "stall")) test_stall(argv[2]);
     else CHECK(0, "unknown test %s", argv[1]);
     test_presets(argv[2]);
     return 0;

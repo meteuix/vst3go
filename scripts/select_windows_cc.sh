@@ -36,11 +36,11 @@ for candidate in "${candidate_list[@]}"; do
     continue
   fi
 
-  if "$candidate_path" "$tmpdir/check.c" -lWebView2Loader -o "$tmpdir/check" >/dev/null 2>&1; then
+  if "$candidate_path" "$tmpdir/check.c" -lole32 -luser32 -o "$tmpdir/check" >/dev/null 2>&1; then
     printf '%s\n' "$candidate_path"
     exit 0
   fi
-  failures+=("$candidate_path: cannot link with -lWebView2Loader")
+  failures+=("$candidate_path: cannot link with -lole32 -luser32")
 done
 
 echo "no Windows-capable C compiler found" >&2

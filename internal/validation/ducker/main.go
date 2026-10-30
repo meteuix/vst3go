@@ -161,7 +161,7 @@ func (p *duckerProcessor) ProcessAudio(ctx *process.Context) {
 	threshold := math.Pow(10, ctx.ParamPlain(paramThreshold)/20)
 	depth := ctx.Smoothed(paramDepth)
 	bypass := ctx.Param(paramBypass) >= 0.5 // keeps the lookahead delay so bypass stays latency-aligned
-	releaseCoeff := math.Exp(-1 / (math.Max(ctx.ParamPlain(paramRelease), 1) / 1000 * p.SampleRate()))
+	releaseCoeff := math.Exp(-1 / (max(ctx.ParamPlain(paramRelease), 1) / 1000 * p.SampleRate()))
 	size := len(p.delay[0])
 	maxReduction := 0.0
 	peak := 0.0
@@ -170,9 +170,9 @@ func (p *duckerProcessor) ProcessAudio(ctx *process.Context) {
 		// Detect on the sidechain; without one the ducker stays open.
 		level := 0.0
 		for _, ch := range sidechain {
-			level = math.Max(level, math.Abs(float64(ch[i])))
+			level = max(level, math.Abs(float64(ch[i])))
 		}
-		peak = math.Max(peak, level)
+		peak = max(peak, level)
 		target := 0.0
 		if level > threshold {
 			target = 1
@@ -186,7 +186,7 @@ func (p *duckerProcessor) ProcessAudio(ctx *process.Context) {
 		if bypass {
 			reduction = 0
 		}
-		maxReduction = math.Max(maxReduction, reduction)
+		maxReduction = max(maxReduction, reduction)
 		gain := float32(math.Pow(10, -reduction/20))
 
 		readPos := (p.writePos + 1) % size

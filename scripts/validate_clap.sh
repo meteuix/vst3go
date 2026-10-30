@@ -22,7 +22,7 @@ mkdir -p "$output_root"
 output_root="$(cd "$output_root" && pwd)"
 
 clapcheck="${output_root}/clapcheck"
-cc -O1 -Wall -I"${repo_root}/include" "${repo_root}/internal/validation/hostcheck/clapcheck.c" -o "$clapcheck" -ldl -lm
+cc -O1 -Wall -I"${repo_root}/include" "${repo_root}/internal/validation/hostcheck/clapcheck.c" -o "$clapcheck" -ldl -lm -lpthread
 
 case "$(go env GOOS)" in
   darwin) binary_path() { echo "${output_root}/$1.clap/Contents/MacOS/$1"; } ;;

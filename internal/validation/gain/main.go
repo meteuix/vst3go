@@ -92,7 +92,7 @@ func (p *gainProcessor) ProcessAudio(ctx *process.Context) {
 	// Meter in dB, mapped onto the meter parameter's range.
 	db := -60.0
 	if peak > 0 {
-		db = math.Max(-60, 20*math.Log10(float64(peak)))
+		db = max(-60, 20*math.Log10(float64(peak)))
 	}
 	if meter, ok := p.Parameters().GetOK(paramLevel); ok {
 		ctx.SetOutputParameter(paramLevel, meter.Normalize(db))
@@ -110,7 +110,7 @@ func applyGain[T float32 | float64](in, out [][]T, gain T) float64 {
 		for i, x := range in[ch] {
 			y := x * gain
 			out[ch][i] = y
-			peak = math.Max(peak, math.Abs(float64(y)))
+			peak = max(peak, math.Abs(float64(y)))
 		}
 	}
 	return peak

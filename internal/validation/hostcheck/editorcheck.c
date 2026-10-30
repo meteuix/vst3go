@@ -218,7 +218,8 @@ static bool h_request_resize(const clap_host_t* h, uint32_t w, uint32_t hh) {
 }
 static bool h_request_show(const clap_host_t* h) { (void)h; return true; }
 static bool h_request_hide(const clap_host_t* h) { (void)h; return true; }
-static void h_closed(const clap_host_t* h, bool destroyed) { (void)h; (void)destroyed; }
+static int guiClosed;
+static void h_closed(const clap_host_t* h, bool destroyed) { (void)h; CHECK(!destroyed, "closed with destroyed"); guiClosed++; }
 static const clap_host_gui_t hostGui = { h_resize_hints_changed, h_request_resize, h_request_show, h_request_hide, h_closed };
 static void h_rescan(const clap_host_t* h, clap_param_rescan_flags f) { (void)h; (void)f; }
 static void h_clear(const clap_host_t* h, clap_id id, clap_param_clear_flags f) { (void)h; (void)id; (void)f; }
@@ -271,6 +272,59 @@ static void clap_flush(const clap_plugin_t* plugin, const clap_plugin_params_t* 
     params->flush(plugin, &in->list, &out->list);
 }
 
+// find_titled returns the top-level window with a title, 0 when none.
+static Window find_titled(Display* display, const char* title) {
+    Window root, parent, *children = NULL, found = 0;
+    unsigned int count = 0;
+    XQueryTree(display, DefaultRootWindow(display), &root, &parent, &children, &count);
+    for (unsigned int i = 0; i < count && !found; i++) {
+        char* name = NULL;
+        if (XFetchName(display, children[i], &name) && name) {
+            if (!strcmp(name, title)) found = children[i];
+            XFree(name);
+        }
+    }
+    if (children) XFree(children);
+    return found;
+}
+
+static bool viewable(Display* display, Window window) {
+    XWindowAttributes attributes;
+    return XGetWindowAttributes(display, window, &attributes) && attributes.map_state == IsViewable;
+}
+
+// check_floating opens the editor in its own window, which the user can
+// close; closing hides it and tells the host.
+static void check_floating(Display* display, Window parent, const clap_plugin_t* plugin, const clap_plugin_gui_t* gui, const clap_plugin_timer_support_t* timer) {
+    CHECK(gui->create(plugin, CLAP_WINDOW_API_X11, true), "floating create");
+    clap_window_t window = { CLAP_WINDOW_API_X11, { .x11 = parent } };
+    CHECK(!gui->set_parent(plugin, &window), "no parent for a floating gui");
+    CHECK(gui->set_transient(plugin, &window), "set_transient");
+    gui->suggest_title(plugin, "editorcheck floating");
+    CHECK(gui->show(plugin), "floating show");
+    clap_run(display, plugin, timer, 1500);
+    Window floating = find_titled(display, "editorcheck floating");
+    CHECK(floating && viewable(display, floating), "floating window shown");
+    CHECK(child_count(display, floating) >= 1, "editor embedded into the floating window");
+    Window owner = 0;
+    CHECK(XGetTransientForHint(display, floating, &owner) && owner == parent, "transient for the host window");
+    Atom protocols = XInternAtom(display, "WM_PROTOCOLS", False), del = XInternAtom(display, "WM_DELETE_WINDOW", False);
+    XEvent close = { .xclient = { .type = ClientMessage, .window = floating, .message_type = protocols, .format = 32 } };
+    close.xclient.data.l[0] = (long)del;
+    close.xclient.data.l[1] = CurrentTime;
+    XSendEvent(display, floating, False, NoEventMask, &close);
+    XFlush(display);
+    clap_run(display, plugin, timer, 300);
+    CHECK(guiClosed == 1 && !viewable(display, floating), "closing hides the window and tells the host (%d)", guiClosed);
+    CHECK(gui->show(plugin), "shown again");
+    clap_run(display, plugin, timer, 200);
+    CHECK(viewable(display, floating), "visible again");
+    gui->destroy(plugin);
+    clap_run(display, plugin, timer, 100);
+    CHECK(active_timers() == 0 && !find_titled(display, "editorcheck floating"), "floating window destroyed");
+    printf("clap floating editor ok\n");
+}
+
 static int check_clap(Display* display, Window parent, const char* path) {
     void* lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     CHECK(lib, "dlopen: %s", dlerror());
@@ -289,7 +343,7 @@ static int check_clap(Display* display, Window parent, const char* path) {
     bool floating = true;
     CHECK(gui->get_preferred_api(plugin, &api, &floating) && api && !strcmp(api, CLAP_WINDOW_API_X11) && !floating, "preferred api x11 embedded");
     CHECK(gui->is_api_supported(plugin, CLAP_WINDOW_API_X11, false), "x11 supported");
-    CHECK(!gui->is_api_supported(plugin, CLAP_WINDOW_API_X11, true), "floating unsupported");
+    CHECK(gui->is_api_supported(plugin, CLAP_WINDOW_API_X11, true), "floating supported");
     CHECK(!gui->is_api_supported(plugin, CLAP_WINDOW_API_WIN32, false), "win32 unsupported");
     CHECK(gui->create(plugin, CLAP_WINDOW_API_X11, false), "gui create");
     CHECK(!gui->create(plugin, CLAP_WINDOW_API_X11, false), "second gui create refused");
@@ -356,6 +410,7 @@ static int check_clap(Display* display, Window parent, const char* path) {
     CHECK(active_timers() == 0, "timer unregistered on destroy");
     XSync(display, False);
     CHECK(child_count(display, parent) == 0, "editor window destroyed on destroy");
+    check_floating(display, parent, plugin, gui, timer);
     plugin->destroy(plugin);
     entry->deinit();
     printf("clap editor ok\n");

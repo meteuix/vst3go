@@ -231,7 +231,7 @@ func (p *synthProcessor) ProcessAudio(ctx *process.Context) {
 
 	sampleRate := p.SampleRate()
 	volume := float32(math.Pow(10, ctx.ParamPlain(paramVolume)/20))
-	releaseSec := math.Max(ctx.ParamPlain(paramRelease)/1000, 0.001)
+	releaseSec := max(ctx.ParamPlain(paramRelease)/1000, 0.001)
 	releaseStep := float32(1 / (releaseSec * sampleRate))
 	square := ctx.Param(paramShape) >= 0.5
 

@@ -6,7 +6,7 @@
 // the garbage collector busy. It prints the distribution of call times
 // against the block's real-time budget and exits 1 when a call misses it.
 //
-//	go run ./internal/validation/rtcheck -seconds 30 -block 128 -garbage 200
+//	go run ./internal/rtcheck -seconds 30 -block 128 -garbage 200
 package main
 
 /*
@@ -146,13 +146,13 @@ func churn(bytesPerSecond, live int, stop <-chan struct{}) {
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()
 	perTick := bytesPerSecond / 1000
-	for i := 0; ; {
+	for i, due := 0, 0; ; {
 		select {
 		case <-stop:
 			return
 		case <-tick.C:
 		}
-		for b := 0; b < perTick; b += chunk {
+		for due += perTick; due >= chunk; due -= chunk {
 			keep[i%len(keep)] = make([]byte, chunk)
 			i++
 		}

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Runs the Go tests, scripts/validate_vst3.sh, scripts/validate_clap.sh,
-# scripts/validate_lv2.sh and scripts/check_cli.sh on Linux inside a Docker
-# container: builds the Steinberg validator from a VST3 SDK checkout and
-# clap-validator and lv2lint from source, builds every validation plugin as
-# a VST3 bundle, a .clap file and an LV2 bundle, runs the validators and host
-# checks, and scaffolds and builds plugin modules with the vst3go command.
+# scripts/validate_ara.sh, scripts/validate_lv2.sh and scripts/check_cli.sh
+# on Linux inside a Docker container: builds the Steinberg validator from a
+# VST3 SDK checkout and clap-validator and lv2lint from source, builds every
+# validation plugin as a VST3 bundle, a .clap file and an LV2 bundle, runs
+# the validators and host checks, and scaffolds and builds plugin modules
+# with the vst3go command.
 #
 # usage: scripts/docker_validate_linux.sh <vst3sdk-dir> [docker-platform]
 #   scripts/docker_validate_linux.sh ~/vst3sdk               # native arch
@@ -93,7 +94,8 @@ docker run --rm ${platform_args[@]+"${platform_args[@]}"} \
     rm -rf /cache/out /cache/out-clap
     VST3_SDK=/sdk VST3_SDK_BUILD=/cache/sdk-build scripts/validate_vst3.sh /cache/validator /cache/out
     scripts/validate_clap.sh "/cache/clap-validator-${CLAP_VALIDATOR_REV}/bin/clap-validator" /cache/out-clap
-    rm -rf /cache/out-lv2 /cache/out-cli
+    rm -rf /cache/out-ara /cache/out-lv2 /cache/out-cli
+    scripts/validate_ara.sh /cache/out-ara
     scripts/validate_lv2.sh /cache/out-lv2
     VST3_VALIDATOR=/cache/validator CLAP_VALIDATOR="/cache/clap-validator-${CLAP_VALIDATOR_REV}/bin/clap-validator" \
       scripts/check_cli.sh /cache/out-cli

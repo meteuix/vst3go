@@ -20,14 +20,14 @@ lint-fix:
   env GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache GOLANGCI_LINT_CACHE=/tmp/golangci-lint-cache golangci-lint run --fix ./pkg/...
 
 test-go:
-  env GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache go test ./pkg/... ./examples/... ./cmd/vst3go
+  env GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache go test ./pkg/... ./examples/... ./internal/... ./cmd/vst3go
 
 test: fmt-check test-go
 
 # Measure per-block processing time from a native real-time thread while other goroutines keep the GC busy (macOS/Linux).
 # Fails when a block misses its real-time budget.
 rtcheck seconds='20' block='128' garbage='200':
-  go run ./internal/validation/rtcheck -seconds {{seconds}} -block {{block}} -garbage {{garbage}}
+  go run ./internal/rtcheck -seconds {{seconds}} -block {{block}} -garbage {{garbage}}
 
 # Build a macOS/Linux VST3 bundle from a main package, e.g. `just vst3 ./myplugin MyPlugin`.
 vst3 package name out='dist':
@@ -54,6 +54,10 @@ au package name out='dist':
 # Build the validation plugins as Audio Units, install them temporarily and run auval (strict) and aucheck.
 validate-au out='dist/validation-au':
   bash scripts/validate_au.sh "{{out}}"
+
+# Build examples/araclip as VST3, CLAP and (macOS) Audio Unit and check its ARA runtime with aracheck, a minimal ARA 2 host.
+validate-ara out='dist/validation-ara':
+  bash scripts/validate_ara.sh "{{out}}"
 
 # Build a Linux LV2 bundle from a main package, e.g. `just lv2 ./myplugin MyPlugin`.
 lv2 package name out='dist':
@@ -100,6 +104,10 @@ docker-check-linux-standalone platform='':
 # Cross-compile every validation plugin for Windows with mingw-w64 in Docker.
 docker-build-windows out='dist/windows-cross':
   bash scripts/docker_build_windows.sh "{{out}}"
+
+# Run the Windows builds under Wine in Docker: hostcheck, clapcheck and the standalone applications.
+docker-check-windows-wine out='dist/windows-cross':
+  bash scripts/docker_check_windows_wine.sh "{{out}}"
 
 windows-package plugin_dll bundle_root='dist/windows' plugin_name='vst3go':
   bash scripts/package_windows_vst3.sh "{{plugin_dll}}" "{{bundle_root}}" "{{plugin_name}}"

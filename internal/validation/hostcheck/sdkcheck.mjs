@@ -1,7 +1,7 @@
 // sdkcheck runs the editor SDK (pkg/plugin/editor_assets/vst3go.js) in a
 // fake page and checks its protocol: messages posted for edits, gestures,
-// presets, custom messages and resizing, and the handling of the plugin's
-// messages. scripts/check_editor_sdk.sh runs it with node.
+// presets, custom messages, resizing and file dialogs, and the handling of
+// the plugin's messages. scripts/check_editor_sdk.sh runs it with node.
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import assert from "node:assert/strict";
@@ -34,6 +34,8 @@ const bootstrap = {
       control(1, "Gain", { unit: "dB", min: -24, max: 24, defaultValue: 0.5, normalized: 0.5, text: "0.0 dB" }),
       control(2, "Mode", { kind: "choice", min: 0, max: 3, stepCount: 3 }),
       control(3, "Level", { kind: "meter", readOnly: true }),
+      control(4, "Cutoff", { unit: "Hz", min: 20, max: 20000, scale: "log" }),
+      control(5, "Time", { unit: "ms", min: 0, max: 1000, scale: "power", exponent: 3 }),
     ] }],
   },
   editor: { width: 600, height: 400, minWidth: 300, minHeight: 200, maxWidth: 0, maxHeight: 0, resizable: true },
@@ -45,7 +47,7 @@ const bootstrap = {
   posted.length = 0;
   assert.equal(sdk.version, 1);
   assert.equal(sdk.plugin.name, "Example");
-  assert.equal(sdk.params.length, 3);
+  assert.equal(sdk.params.length, 5);
   assert.equal(sdk.sections[0].params[1], sdk.param(2));
   assert.equal(sdk.param("Gain"), sdk.param(1));
   assert.equal(sdk.param("nope"), undefined);
@@ -62,6 +64,17 @@ const bootstrap = {
   // Stepped parameters snap like the plugin: min(steps, floor(n * (steps + 1))).
   const mode = sdk.param(2);
   assert.deepEqual([0, 0.24, 0.25, 0.5, 0.74, 0.75, 1].map((n) => mode.toPlain(n)), [0, 0, 1, 2, 2, 3, 3]);
+
+  // Logarithmic and power scales map like the plugin.
+  const near = (a, b) => Math.abs(a - b) < 1e-9 * Math.max(1, Math.abs(b));
+  const cutoff = sdk.param(4);
+  assert.ok(near(cutoff.toPlain(0.5), Math.sqrt(20 * 20000)), "log midpoint is the geometric mean");
+  assert.ok(near(cutoff.toNormalized(632.4555320336759), 0.5));
+  assert.equal(cutoff.toNormalized(10), 0);
+  assert.equal(cutoff.toNormalized(30000), 1);
+  const time = sdk.param(5);
+  assert.ok(near(time.toPlain(0.5), 125));
+  assert.ok(near(time.toNormalized(125), 0.5));
 
   // Edits and nested gestures.
   const seen = [];
@@ -137,6 +150,23 @@ const bootstrap = {
   assert.equal(sdk.size.width, 600);
   sdk.resize(700.4, 500.6);
   assert.deepEqual(posted, [{ type: "resize", width: 700, height: 501 }]);
+
+  // chooseFile: one request per call, answered by its id.
+  posted.length = 0;
+  const first = sdk.chooseFile({ title: "Model", extensions: ["nam", 7] });
+  const second = sdk.chooseFile();
+  assert.deepEqual(posted, [
+    { type: "choose-file", id: 1, name: "Model", data: { extensions: ["nam", "7"] } },
+    { type: "choose-file", id: 2, name: "", data: { extensions: [] } },
+  ]);
+  window.__vst3goReceive({ type: "file-chosen", id: 2, path: "" });
+  window.__vst3goReceive({ type: "file-chosen", id: 1, path: "/models/amp.nam" });
+  window.__vst3goReceive({ type: "file-chosen", id: 1, path: "/again" }); // answered already
+  assert.equal(await first, "/models/amp.nam");
+  assert.equal(await second, null, "cancelled");
+  const failed = sdk.chooseFile({ extensions: ["a/b"] });
+  window.__vst3goReceive({ type: "file-chosen", id: 3, path: "", error: "choose-file: invalid extension" });
+  await assert.rejects(failed, /invalid extension/);
 }
 
 {

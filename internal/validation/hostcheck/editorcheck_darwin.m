@@ -4,7 +4,8 @@
 // into the host view, that a slider edit in the page reaches the parameters
 // through the JS -> Go bridge (and, under CLAP, the host's output events),
 // that host parameter changes reach the page, the vst3go SDK in the page
-// (edits with gestures, values and text from the host), resizing, and that
+// (edits with gestures, values and text from the host, the open file
+// dialog of vst3go.chooseFile), resizing, and that
 // closing the editor removes its view. With --custom it checks the synth's
 // custom editor instead of the built-in one: its startup vst3go.resize
 // request and a vst3go.send/on round trip with the processor. Needs a window
@@ -12,6 +13,7 @@
 //
 // usage: editorcheck_darwin [--clap] [--custom] <plugin-binary>
 #import <Cocoa/Cocoa.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <WebKit/WebKit.h>
 #include "vst3/vst3_c_api.h"
 #include "clap/clap.h"
@@ -82,6 +84,32 @@ static bool waitFor(WKWebView* web, NSString* script) {
     return false;
 }
 
+// checkChooseFile opens the open file dialog through vst3go.chooseFile,
+// checks its prompt and file types, and cancels it, which resolves the
+// promise to null; a malformed extension rejects it.
+static void checkChooseFile(WKWebView* web) {
+    eval(web, @"window.__chosen = undefined;"
+        "vst3go.chooseFile({ extensions: ['a/b'] }).then((p) => { window.__chosen = 'resolved'; }, (e) => { window.__chosen = e.message; }); 'ok'");
+    CHECK(waitFor(web, @"String(typeof window.__chosen === 'string' && window.__chosen.includes('invalid extension'))"), "malformed extension rejected: %s", eval(web, @"String(window.__chosen)").UTF8String);
+    eval(web, @"window.__chosen = undefined;"
+        "vst3go.chooseFile({ title: 'Pick a sample', extensions: ['wav', '.FLAC'] }).then((p) => { window.__chosen = p === null ? 'cancelled' : p; }, (e) => { window.__chosen = 'error: ' + e.message; }); 'ok'");
+    NSOpenPanel* panel = nil;
+    for (int i = 0; i < 100 && !panel; i++) {
+        run(0.02);
+        for (NSWindow* window in NSApp.windows) {
+            if ([window isKindOfClass:[NSOpenPanel class]] && window.visible) panel = (NSOpenPanel*)window;
+        }
+    }
+    CHECK(panel, "open panel shown");
+    CHECK([panel.message isEqualToString:@"Pick a sample"], "panel prompt %s", panel.message.UTF8String);
+    NSMutableArray<NSString*>* exts = [NSMutableArray array];
+    for (UTType* type in panel.allowedContentTypes) [exts addObject:type.preferredFilenameExtension ?: @"?"];
+    CHECK(panel.allowedContentTypes.count == 2 && [exts containsObject:@"wav"] && [exts containsObject:@"flac"], "panel types %s", [exts componentsJoinedByString:@","].UTF8String);
+    CHECK(panel.canChooseFiles && !panel.canChooseDirectories && !panel.allowsMultipleSelection, "panel picks one file");
+    [panel cancel:nil];
+    CHECK(waitFor(web, @"String(window.__chosen === 'cancelled')"), "cancel resolved to null: %s", eval(web, @"String(window.__chosen)").UTF8String);
+}
+
 typedef double (^GetNormalized)(uint32_t id);
 typedef void (^HostSet)(uint32_t id, double normalized);
 
@@ -102,6 +130,7 @@ static void checkSDK(WKWebView* web, GetNormalized get, HostSet set) {
     set(id, 0.25);
     NSString* check = [NSString stringWithFormat:@"String(vst3go.param(%u).normalized === 0.25 && vst3go.param(%u).text !== '' && window.__changes >= 3)", (unsigned)id, (unsigned)id];
     CHECK(waitFor(web, check), "host change reached the SDK: %s", eval(web, [NSString stringWithFormat:@"JSON.stringify([vst3go.param(%u).normalized, vst3go.param(%u).text, window.__changes])", (unsigned)id, (unsigned)id]).UTF8String);
+    checkChooseFile(web);
 }
 
 // checkCustom checks the synth editor: it asks for 720x420 at startup and
@@ -223,7 +252,8 @@ static bool h_request_resize(const clap_host_t* h, uint32_t w, uint32_t hh) {
 }
 static bool h_true(const clap_host_t* h) { (void)h; return true; }
 static void h_hints(const clap_host_t* h) { (void)h; }
-static void h_closed(const clap_host_t* h, bool destroyed) { (void)h; (void)destroyed; }
+static int guiClosed;
+static void h_closed(const clap_host_t* h, bool destroyed) { (void)h; CHECK(!destroyed, "closed with destroyed"); guiClosed++; }
 static const clap_host_gui_t hostGui = { h_hints, h_request_resize, h_true, h_true, h_closed };
 static void h_rescan(const clap_host_t* h, clap_param_rescan_flags f) { (void)h; (void)f; }
 static void h_clear(const clap_host_t* h, clap_id id, clap_param_clear_flags f) { (void)h; (void)id; (void)f; }
@@ -338,6 +368,34 @@ static void checkCLAP(NSView* parent, const char* path) {
     CHECK(gui->hide(clapPlugin), "hide");
     gui->destroy(clapPlugin);
     CHECK(parent.subviews.count == 0, "editor view removed on destroy");
+
+    // A floating editor: the plugin's own window, which the user can
+    // resize and close.
+    CHECK(gui->is_api_supported(clapPlugin, CLAP_WINDOW_API_COCOA, true), "floating supported");
+    CHECK(gui->create(clapPlugin, CLAP_WINDOW_API_COCOA, true), "floating create");
+    CHECK(!gui->set_parent(clapPlugin, &window), "no parent for a floating gui");
+    CHECK(gui->set_transient(clapPlugin, &window), "set_transient");
+    gui->suggest_title(clapPlugin, "editorcheck floating");
+    NSUInteger before = NSApp.windows.count;
+    CHECK(gui->show(clapPlugin), "floating show");
+    NSWindow* floating = nil;
+    for (NSWindow* w in NSApp.windows) {
+        if ([w.title isEqualToString:@"editorcheck floating"]) floating = w;
+    }
+    CHECK(floating && floating.visible && floating.parentWindow == parent.window, "floating window shown above the host window");
+    waitForControls(floating.contentView);
+    if (gui->can_resize(clapPlugin)) {
+        [floating setContentSize:NSMakeSize(700, 500)];
+        run(0.1);
+        CHECK(gui->get_size(clapPlugin, &width, &height) && width == 700 && height == 500, "user resize reaches the view: %ux%u", width, height);
+    }
+    [floating performClose:nil];
+    run(0.1);
+    CHECK(guiClosed == 1 && !floating.visible, "closing the window hides it and tells the host");
+    CHECK(gui->show(clapPlugin) && floating.visible, "shown again");
+    gui->destroy(clapPlugin);
+    run(0.1);
+    CHECK(NSApp.windows.count < before + 1 || !floating.visible, "floating window gone");
     clapPlugin->destroy(clapPlugin);
     clapPlugin = NULL;
     entry->deinit();

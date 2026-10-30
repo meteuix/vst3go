@@ -5,7 +5,9 @@
 # internal/validation/hostcheck/editorcheck.c, which also drives the page
 # with XTest keyboard input to check the JS -> Go parameter bridge: as a
 # VST3, through the CLAP gui extension, and as the X11 UI of the LV2 bundle
-# (hostcheck/lv2check.c --ui, loaded with lilv).
+# (hostcheck/lv2check.c --ui, loaded with lilv); then opens a standalone
+# application window with its toolbar and settings panels (pkg/standalone
+# gui_test.go).
 #
 # usage: scripts/docker_check_linux_editor.sh [docker-platform]
 set -euo pipefail
@@ -26,7 +28,7 @@ docker run --rm ${platform_args[@]+"${platform_args[@]}"} \
   -e GOFLAGS="-buildvcs=false -tags=webkitgtk" \
   "$image" bash -euo pipefail -c '
     apt-get update -qq
-    apt-get install -y -qq --no-install-recommends pkg-config libwebkit2gtk-4.1-dev libx11-dev libxtst-dev xvfb xauth liblilv-dev >/dev/null
+    apt-get install -y -qq --no-install-recommends pkg-config libwebkit2gtk-4.1-dev libx11-dev libxtst-dev xvfb xauth liblilv-dev libasound2-dev >/dev/null
     mkdir -p /work
     cp -a /src/. /work/
     cd /work
@@ -50,4 +52,5 @@ docker run --rm ${platform_args[@]+"${platform_args[@]}"} \
     xvfb-run -a /tmp/editorcheck --clap --custom /tmp/out/Synth.clap
     xvfb-run -a /tmp/lv2check --ui /tmp/out/Gain.lv2
     xvfb-run -a /tmp/lv2check --ui --custom /tmp/out/Synth.lv2
+    VST3GO_STANDALONE_GUI_CHECK=1 xvfb-run -a go test -v -count=1 -tags standalone,webkitgtk ./pkg/standalone
   '

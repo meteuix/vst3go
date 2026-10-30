@@ -2,7 +2,8 @@
 // hosts do, and checks what the generic validators cannot: the generated
 // ports and their properties, sample-accurate audio through the control
 // ports, MIDI in and out through the atom ports, state round trips,
-// factory programs as presets, latency reporting and side chains.
+// factory programs as presets, latency reporting, side chains and the
+// deadline guard.
 //
 // Built with -DLV2CHECK_UI (and X11/XTest), "lv2check --ui [--custom]
 // <bundle.lv2>" opens the X11 UI of a webkitgtk build in an X window the
@@ -12,7 +13,7 @@
 // close cleanly. --custom expects the synth's page, which asks for 720x420.
 // Run it under an X server (e.g. xvfb-run).
 //
-// usage: lv2check gain|synth|midifx|ducker <bundle.lv2>
+// usage: lv2check gain|synth|midifx|ducker|stall <bundle.lv2>
 //        lv2check --ui [--custom] <bundle.lv2>
 #include <lilv/lilv.h>
 #include <lv2/atom/forge.h>
@@ -29,6 +30,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define CHECK(cond, ...) do { if (!(cond)) { fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); exit(1); } } while (0)
 #define N 256
@@ -246,6 +248,20 @@ static void check_common(Plugin* p) {
     LilvNode* stateIface = uri(p, "http://lv2plug.in/ns/ext/state#interface");
     CHECK(lilv_plugin_has_extension_data(p->plugin, stateIface), "state:interface");
     lilv_node_free(stateIface);
+    // run goes through the deadline guard (on by default).
+    LilvNode* hardRT = uri(p, LV2_CORE__hardRTCapable);
+    LilvNodes* optional = lilv_plugin_get_optional_features(p->plugin);
+    CHECK(optional && lilv_nodes_contains(optional, hardRT), "hardRTCapable");
+    lilv_nodes_free(optional);
+    lilv_node_free(hardRT);
+    uint32_t freewheel = port_index(p, "freewheel");
+    designation = uri(p, LV2_CORE__designation);
+    LilvNode* freeWheeling = uri(p, LV2_CORE__freeWheeling);
+    d = lilv_port_get_value(p->plugin, lilv_plugin_get_port_by_index(p->plugin, freewheel), designation);
+    CHECK(d && lilv_node_equals(lilv_nodes_get_first(d), freeWheeling) && port_has(p, freewheel, LV2_CORE__toggled), "freewheel port");
+    lilv_nodes_free(d);
+    lilv_node_free(designation);
+    lilv_node_free(freeWheeling);
 }
 
 // ---- tests ----
@@ -254,7 +270,7 @@ static void test_gain(const char* bundle) {
     Plugin p = load(bundle);
     check_common(&p);
     CHECK(plugin_is_a(&p, LV2_CORE__UtilityPlugin), "gain is a utility plugin");
-    CHECK(lilv_plugin_get_num_ports(p.plugin) == 8, "gain has 8 ports, got %u", lilv_plugin_get_num_ports(p.plugin));
+    CHECK(lilv_plugin_get_num_ports(p.plugin) == 9, "gain has 9 ports, got %u", lilv_plugin_get_num_ports(p.plugin));
     uint32_t gain = param_port(&p, "Gain"), bypass = param_port(&p, "Bypass");
     float def, min, max;
     range(&p, gain, &def, &min, &max);
@@ -362,7 +378,9 @@ static void test_synth(const char* bundle) {
     instantiate(&p);
     uint32_t release = param_port(&p, "Release");
     lilv_state_restore(pluck, p.instance, set_port_value, &p, 0, NULL);
-    CHECK(p.controls[release] == 80, "Pluck release %f", p.controls[release]);
+    // Release is logarithmic (1 to 2000 ms): its port carries the normalized value.
+    float pluckRelease = logf(80.0f) / logf(2000.0f);
+    CHECK(fabsf(p.controls[release] - pluckRelease) < 1e-4f, "Pluck release %f, want %f", p.controls[release], pluckRelease);
     lilv_state_free(pluck);
 
     static float out[2][N];
@@ -454,6 +472,90 @@ static void test_ducker(const char* bundle) {
     printf("ducker ok\n");
 }
 
+static double now_ms(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
+}
+
+// run_timed runs one block and returns how long it took in milliseconds.
+static double run_timed(Plugin* p) {
+    double t0 = now_ms();
+    lilv_instance_run(p->instance, N);
+    return now_ms() - t0;
+}
+
+// The deadline guard (stall plugin): the output is the input times one
+// plus the note events received; Stall (ms) sleeps on the guard's thread,
+// whose deadline is half a block (2.7 ms).
+static void test_stall(const char* bundle) {
+    Plugin p = load(bundle);
+    check_common(&p);
+    uint32_t stall = param_port(&p, "Stall");
+    instantiate(&p);
+    static float in[2][N], out[2][N];
+    for (int i = 0; i < N; i++) { in[0][i] = 0.25f; in[1][i] = -0.25f; }
+    lilv_instance_connect_port(p.instance, port_index(&p, "in_1_1"), in[0]);
+    lilv_instance_connect_port(p.instance, port_index(&p, "in_1_2"), in[1]);
+    lilv_instance_connect_port(p.instance, port_index(&p, "out_1_1"), out[0]);
+    lilv_instance_connect_port(p.instance, port_index(&p, "out_1_2"), out[1]);
+    lilv_instance_activate(p.instance);
+
+    // In time: the input passes.
+    events_begin(&p);
+    events_end(&p);
+    lilv_instance_run(p.instance, N);
+    CHECK(out[0][0] == 0.25f && out[1][N - 1] == -0.25f, "in-time block: %f %f", out[0][0], out[1][N - 1]);
+
+    // Stalled for 60 ms: run returns at the deadline with silence.
+    p.controls[stall] = 60;
+    events_begin(&p);
+    events_end(&p);
+    double late = run_timed(&p);
+    CHECK(late < 4.2, "stalled block took %.1f ms, deadline 2.7 ms", late);
+    CHECK(peak(out[0], N) == 0 && peak(out[1], N) == 0, "stalled block not silent");
+
+    // While the stalled block still runs: skipped, its notes and Stall 0
+    // kept for later.
+    p.controls[stall] = 0;
+    events_begin(&p);
+    const uint8_t on[] = { 0x90, 60, 100 }, off[] = { 0x80, 60, 0 };
+    events_midi(&p, 10, on, 3);
+    events_midi(&p, 100, off, 3);
+    events_end(&p);
+    double ms = run_timed(&p);
+    CHECK(ms < 3 && peak(out[0], N) == 0, "skipped block: %.1f ms, peak %f", ms, peak(out[0], N));
+
+    // After the stall: in time again, with the two carried notes (gain 3).
+    struct timespec wait = { 0, 80 * 1000000 };
+    nanosleep(&wait, NULL);
+    events_begin(&p);
+    events_end(&p);
+    ms = run_timed(&p);
+    CHECK(ms < 3, "block after the stall took %.1f ms", ms);
+    for (int i = 0; i < N; i++) CHECK(out[0][i] == 0.75f && out[1][i] == -0.75f, "after stall [%d] %f %f, want 0.75 (carried notes)", i, out[0][i], out[1][i]);
+
+    // Freewheeling renders offline: no deadline, the stalled block runs to
+    // its end and outputs the input.
+    uint32_t freewheel = port_index(&p, "freewheel");
+    p.controls[freewheel] = 1;
+    p.controls[stall] = 20;
+    events_begin(&p);
+    events_end(&p);
+    ms = run_timed(&p);
+    CHECK(ms >= 20 && out[0][0] == 0.75f && out[1][N - 1] == -0.75f, "freewheeling block: %.1f ms, out %f", ms, out[0][0]);
+    p.controls[freewheel] = 0;
+
+    // Deactivating while a block is late waits for it.
+    p.controls[stall] = 30;
+    events_begin(&p);
+    events_end(&p);
+    lilv_instance_run(p.instance, N);
+    lilv_instance_deactivate(p.instance);
+    lilv_instance_free(p.instance);
+    printf("stall ok (late block returned after %.1f ms)\n", late);
+}
+
 #ifdef LV2CHECK_UI
 #include <X11/Xlib.h>
 #include <X11/extensions/XTest.h>
@@ -461,7 +563,6 @@ static void test_ducker(const char* bundle) {
 #include <dlfcn.h>
 #include <lv2/instance-access/instance-access.h>
 #include <lv2/ui/ui.h>
-#include <time.h>
 
 static struct {
     int writes, touches, resizes;
@@ -618,12 +719,15 @@ static void test_ui(const char* bundle, bool custom) {
         events_midi(&p, 0, program, sizeof(program));
         events_end(&p);
         lilv_instance_run(p.instance, N);
-        for (int i = 0; i < 20 && p.controls[release] != 80; i++) {
+        // Release is logarithmic (1 to 2000 ms): its port carries the
+        // normalized value, like the CLAP parameter it comes from.
+        const float pluckRelease = logf(80.0f) / logf(2000.0f);
+        for (int i = 0; i < 20 && fabsf(p.controls[release] - pluckRelease) > 1e-4f; i++) {
             CHECK(idle->idle(ui) == 0, "UI closed itself");
             struct timespec tick = { 0, 16 * 1000 * 1000 };
             nanosleep(&tick, NULL);
         }
-        CHECK(p.controls[release] == 80, "program values reach the host ports: release %f", p.controls[release]);
+        CHECK(fabsf(p.controls[release] - pluckRelease) < 1e-4f, "program values reach the host ports: release %f, want %f", p.controls[release], pluckRelease);
     }
     CHECK(uiResize->ui_resize(ui, 640, 480) == 0, "host resize");
     ui_run(display, &p, idle, ui, 200);
@@ -653,11 +757,12 @@ int main(int argc, char** argv) {
         return 0;
     }
 #endif
-    CHECK(argc == 3, "usage: lv2check gain|synth|midifx|ducker <bundle.lv2>");
+    CHECK(argc == 3, "usage: lv2check gain|synth|midifx|ducker|stall <bundle.lv2>");
     if (!strcmp(argv[1], "gain")) test_gain(argv[2]);
     else if (!strcmp(argv[1], "synth")) test_synth(argv[2]);
     else if (!strcmp(argv[1], "midifx")) test_midifx(argv[2]);
     else if (!strcmp(argv[1], "ducker")) test_ducker(argv[2]);
+    else if (!strcmp(argv[1], "stall")) test_stall(argv[2]);
     else CHECK(0, "unknown test %s", argv[1]);
     return 0;
 }

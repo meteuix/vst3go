@@ -31,8 +31,8 @@ trap cleanup EXIT
 clang -fobjc-arc -Wall "${repo_root}/internal/validation/hostcheck/aucheck_darwin.m" -o "${out}/aucheck" \
   -framework Cocoa -framework WebKit -framework AudioToolbox -framework CoreAudio -framework CoreMIDI
 
-names=(gain synth midifx ducker)
-kinds=(effect instrument midifx sidechain)
+names=(gain synth midifx ducker stall)
+kinds=(effect instrument midifx sidechain stall)
 for name in "${names[@]}"; do
   bash "${script_dir}/build_au.sh" "internal/validation/${name}" "$name" "$out" >/dev/null
   rm -rf "${components}/vst3go-check-${name}.component"

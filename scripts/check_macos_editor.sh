@@ -3,7 +3,9 @@
 # plugins as VST3 and CLAP and opens their editors in an NSWindow with
 # internal/validation/hostcheck/editorcheck_darwin.m, which drives the pages
 # and the vst3go SDK and checks the JS <-> Go bridge in both directions,
-# resizing and custom messages. Needs a logged-in window server session.
+# resizing, the open file dialog and custom messages; then opens a standalone application window
+# with its toolbar and settings panels (pkg/standalone gui_test.go). Needs a
+# logged-in window server session.
 #
 # usage: scripts/check_macos_editor.sh [output-dir]
 set -euo pipefail
@@ -19,8 +21,10 @@ for name in Gain Synth; do
   bash "${script_dir}/build_clap.sh" "$package" "$name" "$out" >/dev/null
 done
 clang -fobjc-arc -Wall -I"${repo_root}/include" "${repo_root}/internal/validation/hostcheck/editorcheck_darwin.m" \
-  -o "${out}/editorcheck_darwin" -framework Cocoa -framework WebKit
+  -o "${out}/editorcheck_darwin" -framework Cocoa -framework WebKit -framework UniformTypeIdentifiers
 "${out}/editorcheck_darwin" "${out}/Gain.vst3/Contents/MacOS/Gain"
 "${out}/editorcheck_darwin" --clap "${out}/Gain.clap/Contents/MacOS/Gain"
 "${out}/editorcheck_darwin" --custom "${out}/Synth.vst3/Contents/MacOS/Synth"
 "${out}/editorcheck_darwin" --clap --custom "${out}/Synth.clap/Contents/MacOS/Synth"
+# The standalone application window with its toolbar and settings panels.
+(cd "$repo_root" && VST3GO_STANDALONE_GUI_CHECK=1 go test -v -count=1 -tags standalone ./pkg/standalone)

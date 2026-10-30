@@ -2,8 +2,9 @@
 # Checks the standalone applications on Linux in a Docker container: the
 # pkg/standalone tests, every validation plugin as a headless application on
 # the null audio device, and the synth with the WebKitGTK editor under Xvfb,
-# whose window must follow the editor's startup vst3go.resize to 720x420 and
-# which must quit cleanly on SIGTERM. Containers have no sound card or ALSA
+# whose window must follow the editor's startup vst3go.resize to 720x420 (a
+# 720x456 window with the 36-pixel toolbar above the editor) and which must
+# quit cleanly on SIGTERM. Containers have no sound card or ALSA
 # sequencer, so MIDI ports are not exercised here
 # (internal/validation/hostcheck/standalonecheck covers MIDI on macOS);
 # with SOUND=1 the container gets the Docker VM's /dev/snd (OrbStack has a
@@ -38,7 +39,7 @@ docker run --rm ${platform_args[@]+"${platform_args[@]}"} \
     go vet -tags standalone ./pkg/standalone/ ./internal/...
     go test -count=1 -tags standalone ./internal/midiport/
     go test -race -count=1 -tags standalone ./pkg/standalone/
-    for dir in gain synth midifx ducker; do
+    for dir in gain synth midifx ducker stall; do
       scripts/build_standalone.sh "internal/validation/$dir" "$dir" /tmp/headless >/dev/null
       /tmp/headless/$dir -headless -backend null -config "/tmp/cfg-$dir" -duration 500ms 2>&1 | tee "/tmp/$dir.log"
       grep -q "audio null" "/tmp/$dir.log"
@@ -61,13 +62,13 @@ docker run --rm ${platform_args[@]+"${platform_args[@]}"} \
       for i in \$(seq 1 100); do
         sleep 0.1
         size=\$(xwininfo -name \"VST3Go Synth\" 2>/dev/null | awk \"/Width:/{w=\\\$2} /Height:/{h=\\\$2} END{if (w) print w \\\"x\\\" h}\") || true
-        [[ \"\$size\" == 720x420 ]] && break
+        [[ \"\$size\" == 720x456 ]] && break
       done
       kill -TERM \$app
       wait \$app
       cat /tmp/gui.log
       grep -q \"editor 640x400\" /tmp/gui.log
-      [[ \"\$size\" == 720x420 ]] || { echo \"window size \$size, want 720x420\"; exit 1; }
+      [[ \"\$size\" == 720x456 ]] || { echo \"window size \$size, want 720x456 (720x420 editor, toolbar)\"; exit 1; }
       test -s /tmp/cfg-gui/standalone.state
       echo \"window \$size\"
     "
