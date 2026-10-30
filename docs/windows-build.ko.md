@@ -11,7 +11,7 @@
 - Windows CGO 툴체인
 - Microsoft WebView2 SDK 헤더와 로더 라이브러리
 - 대상 머신에 설치된 WebView2 런타임
-- 비 Windows host에서는 빌드 스크립트가 컴파일러가 `<windows.h>`와 `<WebView2.h>`를 전처리하고 `WebView2Loader`를 링크할 수 있는지 사전 점검합니다.
+- 비 Windows host에서는 빌드 스크립트가 컴파일러가 `<windows.h>`와 `<WebView2.h>`를 전처리하고 `ole32`와 `user32`를 링크할 수 있는지 사전 점검합니다.
 
 ## 현재 계약
 
@@ -38,7 +38,7 @@
 
 - Linux에서의 크로스 컴파일은 Windows C 툴체인과 WebView2 헤더가 있을 때에만 가능합니다.
 - `scripts/docker_build_windows.sh [out]`(`just docker-build-windows`)는 어떤 Docker host에서든 이를 수행합니다. mingw-w64와 WebView2 NuGet 패키지(`WEBVIEW2_VERSION`, `vst3go-windows-cross` 볼륨에 캐시됨)를 설치하고, `windows/amd64`에 대해 `go vet`을 실행하고, 모든 검증용 플러그인을 `.vst3` DLL로 빌드한 뒤 이를 `<name>.clap`으로 복사하며(Windows에서 CLAP 플러그인은 일반 DLL입니다), `GetPluginFactory`/`InitDll`/`ExitDll`/`clap_entry` export를 확인하고, 각 플러그인을 스탠드얼론 애플리케이션(`<name>.exe`, console 서브시스템, miniaudio와 `internal/midiport`를 통한 WASAPI/WinMM)으로 빌드합니다. 플러그인이나 애플리케이션을 실행하지는 않습니다.
-- WebView2 에디터는 `WebView2Loader`, `ole32`, `user32`를 링크합니다.
+- WebView2 에디터는 `ole32`와 `user32`를 링크합니다. `WebView2Loader.dll`은 에디터를 열 때 플러그인 바이너리 폴더(번들이 이 파일을 넣어 두는 곳입니다. host는 플러그인을 `LoadLibraryW`로 로드하는데, 이 함수는 그 폴더를 찾지 않습니다)에서, 없으면 일반 검색 경로에서 로드합니다. 그래서 로더가 없으면 에디터만 쓸 수 없습니다.
 - 크로스 빌드는 `moduleinfo.json`을 생성하지 않습니다. 이 파일을 만들려면 대상 플랫폼에서 바이너리를 로드해야 합니다.
 - 현재 Windows 패키징은 `amd64`와 `x86_64-win` 번들 레이아웃을 대상으로 합니다.
 - Windows 스크립트는 상대 경로로 주어진 번들 루트, 번들 입력, 빌드 헬퍼를 저장소 루트 기준으로 해석하므로 어느 작업 디렉터리에서든 호출할 수 있습니다.

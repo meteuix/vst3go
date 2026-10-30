@@ -39,10 +39,13 @@ vst3,clap,au,app] [-install] <package> <Name>` builds it, from any module:
 - `clap`, `au`, `lv2`: the same binary as a CLAP plugin, a (macOS) Audio
   Unit and a (Linux) LV2 bundle with its Turtle files.
 - `app`: the standalone application.
+- `auv3`: an AUv3 app extension in a container application (macOS, iOS).
+  See [AUv3](#auv3).
 
 `-install` copies the plugins into the user folders
 (`~/Library/Audio/Plug-Ins/{VST3,CLAP,Components}`, `~/.vst3`, `~/.clap`,
-`~/.lv2`).
+`~/.lv2`, and the AUv3 container into `~/Applications`, registered with
+`pluginkit`).
 `-id` (the bundle identifier), `-version` and `-tags` set the bundle details
 and build tags; tags in `GOFLAGS` are kept. In this repository
 `scripts/build_{vst3,clap,au,standalone}.sh` (`just vst3`, `just clap`, ...)
@@ -151,8 +154,8 @@ afconvert on macOS and with `flac -t` and sox on Linux.
 
 | Package | Contents | Used by |
 | --- | --- | --- |
-| `filter` | `Biquad` (lowpass, highpass, bandpass, notch, peaking, shelves), `SVF`, `MultiModeSVF` | `filter`, `auto_params`, `mastercompressor`, `drumbus`, `surround`, `vocalstrip` |
-| `dynamics` | `Compressor` (soft/hard knee, lookahead, sidechain), `Limiter` (true-peak lookahead brick wall), `Gate` (hysteresis, hold, key filter), `Expander`, `TransientShaper` | `mastercompressor`, `masterlimiter`, `studiogate`, `sidechain`, `transientshaper`, `drumbus`, `vocalstrip`, `auto_params`, `chain_fx` |
+| `filter` | `Biquad` (lowpass, highpass, bandpass, notch, peaking, shelves), `SVF`, `MultiModeSVF`, phase-aligned Linkwitz-Riley `Crossover` (any number of bands, summing flat) | `filter`, `auto_params`, `mastercompressor`, `drumbus`, `surround`, `vocalstrip`, `multiband` |
+| `dynamics` | `Compressor` (soft/hard knee, lookahead, sidechain), `Limiter` (true-peak lookahead brick wall), `Gate` (hysteresis, hold, key filter), `Expander`, `TransientShaper` | `mastercompressor`, `masterlimiter`, `studiogate`, `sidechain`, `transientshaper`, `drumbus`, `vocalstrip`, `auto_params`, `chain_fx`, `multiband` |
 | `envelope` | ADSR/AR envelopes, peak/RMS `Detector`, `Follower` | `wavetablesynth`, `fmsynth`, `pkg/dsp/dynamics`, `pkg/dsp/sampler` |
 | `delay` | `Line`, `MultiTap`, `Comb`, `Allpass`, `Modulated` | `delay` |
 | `modulation` | `LFO`, `Chorus`, `Flanger`, `Phaser`, `Tremolo`, `RingModulator` | `vintagechorus`, `jetflanger` |
@@ -160,13 +163,15 @@ afconvert on macOS and with `flac -t` and sox on Linux.
 | `reverb` | `Schroeder`, `Freeverb`, `FDN` | |
 | `oscillator` | basic waveforms, `BLIT`, band-limited saw, mipmapped `Wavetable`/`WavetableBank`, FM `Operator` | `wavetablesynth`, `fmsynth` |
 | `utility`, `gain`, `pan`, `mix`, `interpolation` | noise, DC blockers, dB/pan laws, mixing, interpolation | `gain`, `delay`, `filter`, `chain_fx` |
-| `fft` | complex and packed real radix-2 FFT | `pkg/dsp/convolution`, `pkg/dsp/spectral`, `pkg/dsp/pitch` |
+| `fastmath` | `Sin2Pi`/`Cos2Pi`: sine and cosine of turns, within 1e-13 and faster than `math.Sin` (no argument reduction for large inputs) | `pkg/dsp/oscillator`, `pkg/dsp/modulation`, `pkg/dsp/delay`, `pkg/dsp/reverb` |
+| `fft` | complex radix-4 Stockham FFT and a packed real FFT on it | `pkg/dsp/convolution`, `pkg/dsp/spectral`, `pkg/dsp/pitch` |
 | `spectral` | `STFT`: windowed overlap-add frame processing | `pkg/dsp/pitch` |
-| `resample` | `Oversampler` (2x to 16x halfband cascade), streaming `Resampler` and `Convert` (Kaiser-windowed sinc, any ratio), shared sinc `Kernel` | `saturator`, `pkg/dsp/sampler` |
-| `convolution` | `Convolver`: zero-latency uniformly partitioned convolution | `convreverb` |
-| `pitch` | delay-line `Shifter`, phase-vocoder `SpectralShifter`, offline time `Stretch`, YIN `Detector` | `pitchshifter`, `tuner` |
+| `resample` | `Oversampler` (2x to 16x halfband cascade), streaming `Resampler` and `Convert` (Kaiser-windowed sinc, any ratio), shared sinc kernels (`SincKernel`, flat to 0.9 of Nyquist and 80 dB down from 1.11; `ShortSincKernel`, about twice as fast, flat to 0.75) | `saturator`, `pkg/dsp/sampler` |
+| `convolution` | `Convolver`: zero-latency non-uniformly partitioned convolution (block sizes growing 8× per stage, work spread evenly over blocks) | `convreverb` |
+| `pitch` | delay-line `Shifter`, phase-vocoder `SpectralShifter`, streaming time `Stretcher` (factor changes on the fly) and offline `Stretch`, YIN `Detector` | `pitchshifter`, `tuner` |
 | `granular` | `Granulator`: granular delay and freeze with spray, pitch and stereo spread | `granulator` |
-| `sampler` | `Sample` (loop, half-rate copies), key/velocity `Map`, band-limited `Voice` | `sampler` |
+| `sampler` | `Sample` (loop, half-rate copies), key/velocity `Map` with round robin and random layers, `Zone` tuning, gain, pan, offset and loop modes, layered band-limited `Voice` (`QualityHigh` or the faster `QualityStandard` kernel), `LoadSample` (WAV/AIFF/FLAC/MP3/Ogg with the root note and first loop), `LoadSFZ` (headers with inheritance, `#define`/`#include`, the common opcodes), `Streamer` (disk streaming: the start and loops of each sample in memory, the rest read ahead of the voices from a decoded cache, so instruments larger than memory play) | `sampler` |
+| `nam` | Neural Amp Modeler models (`.nam`, WaveNet, LSTM and Linear): `Load`/`Parse`, an allocation-free `Model` matching NeuralAmpModelerCore, `Runner` resampling between the model's and the host's rate (with its latency) | `namamp` |
 | `analysis` | FFT, spectrum, peak/RMS/LUFS (BS.1770-4, EBU R 128 LRA) meters, correlation, phase scopes | |
 
 `pkg/framework/dsp` chains processors (`NewChain`, `NewParallelChain`,
@@ -250,6 +255,14 @@ Two ways to receive them:
   moves in the host's MIDI learn mode (`IMidiLearn`/`IMidiLearn2`). Update the
   mapping and call `Host.RestartComponent(RestartMidiCCAssignmentChange)`.
 
+MIDI 2.0 from CLAP hosts (the `midi2` note dialect) and Audio Unit hosts
+(MIDI event lists) arrives at its resolution: 16-bit velocities (with the
+pitch 7.9 attribute as `Tuning`), 32-bit controllers, pressure and pitch
+bend through the same controller mapping, per-note pitch bend and the
+registered per-note controllers that match a note expression (volume, pan,
+expression, brightness, vibrato, pitch) as note expressions. MIDI 1.0
+messages in packets are read as MIDI 1.0.
+
 MIDI program changes reach the plugin through the program list (see below),
 not as events.
 
@@ -314,7 +327,12 @@ versa (`just validate-vst3`).
 - Accept other layouts from the host by implementing
   `BusArrangementProcessor.AcceptBusArrangements(inputs, outputs) bool`.
   When it returns true the runtime updates the bus configuration and channel
-  counts before processing starts.
+  counts before processing starts. CLAP hosts reach it through the
+  `configurable-audio-ports` and `surround` extensions (channel counts or
+  speaker masks of the main ports), Audio Unit hosts through the channel
+  counts and layouts of the main elements (`SupportedNumChannels` lists
+  every main-bus configuration from 1 to 8 channels the processor accepts,
+  `SupportedChannelLayoutTags` the matching layouts).
 
 ## Latency and tail
 
@@ -382,7 +400,8 @@ real window in both formats and check the page <-> Go bridge both ways.
 Processors replace the built-in page with their own (`EditorProcessor`,
 `plugin.Editor{HTML, Width, Height, Min/Max sizes, FixedSize}`). Every page
 gets the `window.vst3go` SDK: live parameters with edit gestures, presets,
-`resize`, and custom messages with the processor (`vst3go.send` ->
+`resize`, the platform's open file dialog (`vst3go.chooseFile`), and
+custom messages with the processor (`vst3go.send` ->
 `EditorMessageProcessor`, `Host.PostEditorMessage` -> `vst3go.on`).
 `plugin.EditorBindings` / `WriteEditorBindings` generate typed TypeScript
 parameter bindings, and `plugintest.EditorBindings` keeps them current. See
@@ -396,6 +415,14 @@ parameter bindings, and `plugintest.EditorBindings` keeps them current. See
   bypass switch.
 - Without a custom parser, string-to-value parsing accepts the formatted
   display text ("-6.0 dB", "Q: 0.71", "-∞ dB").
+- A parameter's knob travel is linear by default; `.Logarithmic()` (positive
+  ranges: equal travel per octave or decade) and `.Center(v)` (a power curve
+  that puts `v` at mid travel) change how the normalized value maps to the
+  plain one. `FrequencyParameter` is logarithmic and `TimeParameter` is
+  logarithmic or centered at an eighth of its range. VST3 hosts and the
+  editor follow the curve through the normalized value; CLAP, AU and LV2 have
+  no curve hints, so a curved parameter shows them its 0 to 1 normalized
+  value (CLAP and AU display it as the plain value's text).
 - Parameter values are persisted automatically. Implement `StatefulProcessor`
   for extra state (sample paths, wavetables, sequencer patterns).
 
@@ -414,7 +441,9 @@ processors need no CLAP-specific code.
   meters are not exposed: CLAP hosts treat values that change on their own
   as errors. They still reach the editor and VST3 hosts.
 - Audio buses are audio ports (64-bit when the processor supports double
-  precision); event buses are note ports with the CLAP and MIDI dialects.
+  precision); event buses are note ports with the CLAP, MIDI and MIDI 2.0
+  dialects. `configurable-audio-ports` and `surround` change the main
+  ports through `BusArrangementProcessor` (see [Bus layouts](#bus-layouts)).
 - CLAP notes become `midi.Event` notes. Notes without a host note ID get a
   generated one, and wildcard note-offs and expressions (key, channel or
   note ID -1) resolve against the sounding notes. CLAP note expressions map to
@@ -427,9 +456,11 @@ processors need no CLAP-specific code.
   parameter rescans, latency changes and restart requests. Track name and
   color reach `ChannelInfoProcessor`; program pitch names are CLAP note names.
 - Output constant flags come from `ctx.SetOutputSilenceFlags`.
-- The editor is the `gui` extension, embedded only, with the platform's
-  window API (`cocoa`, `win32`, `x11` in `webkitgtk` builds); builds without
-  an editor view do not offer it. On Linux the view's timer runs on the host's
+- The editor is the `gui` extension with the platform's window API
+  (`cocoa`, `win32`, `x11` in `webkitgtk` builds), embedded in the host's
+  window or floating in a window of its own, which follows the host's
+  `set_transient` and `suggest_title` and reports the user closing it
+  (`gui.closed`); builds without an editor view do not offer it. On Linux the view's timer runs on the host's
   `timer-support`. Host automation reaches the open page from the main thread
   (`request_callback`), as do state loads, preset loads and program changes.
 - Presets: the preset discovery factory has one provider per plugin that
@@ -481,8 +512,16 @@ runtime and threading as a CLAP host; processors need no AU-specific code.
 - State: `kAudioUnitProperty_ClassInfo` holds the plugin state under the
   standard preset keys; factory programs are the factory presets
   (`kAudioUnitProperty_FactoryPresets`, `PresentPreset`).
-- MIDI: `MusicDeviceMIDIEvent`/`SysEx` with sample offsets in; the
-  plugin's MIDI and note output go to the host's MIDI output callback.
+- Channels: hosts choose the main elements' channel counts among
+  `SupportedNumChannels` (the configurations the processor accepts, see
+  [Bus layouts](#bus-layouts)); initializing with another one fails with
+  `kAudioUnitErr_FormatNotSupported`.
+- MIDI: `MusicDeviceMIDIEvent`/`SysEx` and MIDI event lists
+  (`MusicDeviceMIDIEventList`, MIDI 1.0 or 2.0 packets) with sample offsets
+  in; the plugin's MIDI and note output go to the host's MIDI output
+  callback, or as MIDI 2.0 packets to its event list callback when the host
+  set `kAudioUnitProperty_HostMIDIProtocol` to 2.0 before initializing.
+  The program parameter is flagged as a meta parameter (it changes others).
 - Host transport (`HostCallbacks`: tempo, beat, time signature, play,
   record, cycle) becomes `ProcessContext` transport. Latency and tail are
   reported in seconds; a latency change while initialized reactivates the
@@ -494,6 +533,47 @@ runtime and threading as a CLAP host; processors need no AU-specific code.
   the bundle (`VST3GO_AU_VIEW_CLASS`) so several vst3go Audio Units can share
   a host process; Audio Units built without it share the default class
   name.
+
+### AUv3
+
+`vst3go build -format auv3` builds the plugin as an AUv3 app extension in
+a container application. The extension's principal class (an
+`AUViewController`) runs the Audio Unit above inside the extension's process
+through `AUAudioUnitV2Bridge`, registered there under private codes, and
+shows its editor as the extension's view; the host loads it out of
+process. MIDI processors get a silent stereo output, which out-of-process
+rendering (and Logic Pro) needs.
+
+- `-platform macos` (default; macOS 11 or later), `ios` (iOS 14 or later)
+  or `ios-simulator`. Other platforms build only `auv3`. The container is
+  the standalone application when `app` is built too (macOS), else a
+  minimal one that says what it contains.
+- `-sign` is the code signing identity (default `-`, ad hoc). An iOS
+  device needs a development or distribution identity and a provisioning
+  profile, which `vst3go build` does not create; install on a device with
+  Xcode. The simulator runs ad-hoc signed builds:
+  `xcrun simctl install booted <Name>.app`, then launch the container once
+  to register the extension.
+- On macOS the extension is sandboxed, as app extensions must be. It reads
+  the files the user picks with `vst3go.chooseFile` and keeps
+  security-scoped bookmarks of them, so a saved state naming one reads it
+  again in later sessions; typed paths elsewhere are not readable. On iOS
+  `vst3go.chooseFile` copies the file into the extension's container.
+  User presets and caches go to the extension's container.
+- The view's size is the editor's size when the host opens it; editor
+  resizes after that change the extension's `preferredContentSize`, which
+  hosts may or may not follow.
+
+`scripts/validate_auv3.sh [out]` builds every validation plugin as an
+AUv3 extension, registers them (`lsregister`, `pluginkit -a`; unregistered
+on exit), runs `auval -strict -r 2`, which loads them out of process, the
+`aucheck` checks below through the extension (`AudioComponentInstantiate`;
+the editor check is the next tool's), and
+`internal/validation/hostcheck/auv3check_darwin.m` through the AUv3 API:
+parameter tree, `fullState` round trip, rendering through the render block
+and the extension's view controller at the editor's size. With
+`IOS_SIMULATOR=<udid>` it also builds them for the iOS simulator,
+installs them and runs `auv3check` there.
 
 `scripts/validate_au.sh [out]` builds every validation plugin as a
 `.component`, installs them as `vst3go-check-*.component` into
@@ -541,8 +621,13 @@ ports, UIs) and `presets.ttl`.
   beat, time signature, play state, advanced between position events) and,
   for note input, MIDI and SysEx with frame offsets; plugins with note
   output get a `midi_out` atom output. The `latency` port reports the
-  latency (`lv2:reportsLatency`); a latency change reactivates the plugin
-  inside `run`.
+  latency (`lv2:reportsLatency`), updated as soon as the plugin changes
+  it; `run` never reactivates the plugin.
+- Real time: with the deadline guard (on by default, see
+  `docs/runtime-contracts.md`) `run` never enters Go and the plugin
+  declares `lv2:hardRTCapable`. The `freewheel` port
+  (`lv2:freeWheeling`) renders offline, without the deadline, while the
+  host freewheels.
 - UI: `webkitgtk` builds add an X11 UI (`ui:X11UI`) that opens the editor
   in the host window. It needs `instance-access` (the editor talks to the
   processor directly) and `ui:parent`; `ui:resize` and `ui:touch` are used
@@ -558,13 +643,101 @@ Turtle, lv2lint when installed, and
 the ports and their properties, gain applied in place and across split
 blocks, state saved through Turtle and restored into a new instance, the
 synth's presets (Pluck sets the release to 80) and notes at their frames,
-the transposed MIDI and SysEx output of the MIDI effect, and the ducker's
-latency port and unconnected side chain. `scripts/docker_validate_linux.sh`
+the transposed MIDI and SysEx output of the MIDI effect, the ducker's
+latency port and unconnected side chain, and the deadline guard
+(`lv2:hardRTCapable`, a stalled block cut off at the deadline, a
+freewheeling one run to its end). `scripts/docker_validate_linux.sh`
 builds lv2lint and runs it there; `scripts/docker_check_linux_editor.sh`
 opens the LV2 UI under Xvfb (`lv2check --ui`): keyboard input in the page
 reaches the host as a port write with touch gestures, the synth page asks
 for 720x420, a MIDI program change reaches the host ports, and the UI
 resizes, closes and reopens.
+
+## ARA
+
+ARA 2 (Audio Random Access, Celemony) lets a plugin edit and render the
+host's clips from the whole recording instead of the live signal: pitch
+and timing editors, audio-to-MIDI analysis, clip-based effects. A plugin
+supports it by implementing `plugin.ARAPlugin`; `pkg/ara` is the document
+model, `pkg/plugin/ara.{c,h,go}` the C API glue (headers vendored in
+`include/ara`, Apache 2.0). `examples/araclip` is a complete ARA plugin.
+
+```go
+func (myPlugin) ARA() ara.Config {
+	return ara.Config{
+		ArchiveID:     "com.example.myplugin.1",
+		ContentTypes:  []ara.ContentType{ara.ContentNotes},
+		NewController: func(d *ara.Document) ara.Controller { return &controller{} },
+	}
+}
+
+// BindARA switches the instance to rendering the host's regions.
+func (p *processor) BindARA(b *ara.Binding) { p.binding.Store(b) }
+
+func (p *processor) ProcessAudio(ctx *process.Context) {
+	ctx.Clear()
+	b := p.binding.Load()
+	if b == nil || !ctx.Transport.IsPlaying {
+		return
+	}
+	at := ctx.Transport.ProjectTimeSamples + int64(ctx.BlockOffset())
+	pb := b.Playback()
+	for i := range pb.Regions {
+		pb.Regions[i].Mix(ctx.Output, at, ctx.SampleRate, 1)
+	}
+}
+```
+
+- Formats: VST3 (an "ARA Main Factory Class" with `IMainFactory`, and
+  `IPlugInEntryPoint`/`IPlugInEntryPoint2` on the component), CLAP (the
+  `ara.factory` factory, the `ara.pluginextension` extension and the
+  `ara:supported` feature, draft IDs too) and Audio Units
+  (`kAudioUnitProperty_ARAFactory`,
+  `kAudioUnitProperty_ARAPlugInExtensionBindingWithRoles` and the `ARA`
+  component tag). API generations 2.0 to 2.3; the ARA 1 archiving calls
+  map to editing and storing. Up to 16 ARA plugins per binary.
+- Document: for every ARA document of the host the runtime creates an
+  `ara.Document` and the plugin's controller, and mirrors the host's
+  musical contexts (with their tempo and bar signatures read from the
+  host), region sequences, audio sources, audio modifications and
+  playback regions in it. The controller implements what it needs:
+  `ModificationArchiver`, `SourceArchiver` and `DocumentArchiver` store
+  its data in the host's song (restored with the host's filters and ID
+  maps), `Analyzer` finds `Config.ContentTypes` (notes, tempo, bar
+  signatures), `SignalPreserver`, `HeadTailer`, `EditObserver` and
+  `ModificationContentProvider` answer the rest. Model calls run on the
+  host's main thread.
+- Audio: when the host enables access, the runtime reads a source's
+  samples into memory on a goroutine (`AudioSource.Audio`), then runs the
+  analyzer; progress and content changes reach the host on
+  `notifyModelUpdates`. Rendering never calls the host's audio reader.
+- Rendering: `ARAProcessor.BindARA` gets the instance's `ara.Binding` when
+  the host binds it, before activation. On the audio thread `Binding.Playback` returns a
+  lock-free snapshot of the regions the host assigned, each with its
+  modification's state (`AudioModification.SetState`, set by the
+  editor); `RegionPlayback.Mix` renders one at the block's song position,
+  `Span` and `MixSpan` give the source range for custom time maps (the
+  example plays reversed clips that way). Editor renderer and editor view
+  roles are available through the binding (`EditorRegions`, `Selection`,
+  `HiddenSequences`, `OnChange`).
+- Tests: `plugin.OfflineSetup{ARA: doc}` binds an offline instance to an
+  `ara.Document`; `plugintest.NewARAHost` supplies audio, tempo and bars
+  and records the notifications, `plugintest.WaitARA` waits for reading
+  and analysis.
+
+`scripts/validate_ara.sh [out]` builds `examples/araclip` and checks it
+with `internal/validation/hostcheck/aracheck.c`, a minimal ARA 2 host,
+through VST3, CLAP and (macOS, installed temporarily, after `auval
+-strict`) the Audio Unit: factory, document controller with the host's
+audio access, archiving, content access and model update interfaces
+(the musical context's tempo and bars are read), note analysis of a recorded
+A4 read back through content readers, store and restore through the
+archive, binding as playback renderer, region rendering at its song
+position, and teardown in both orders. On Apple silicon it also checks
+an x86_64 build under Rosetta, where ARA's structs are packed to one
+byte. `scripts/docker_validate_linux.sh` runs it on Linux, and
+`scripts/docker_check_windows_wine.sh` runs `aracheck` on the Windows
+build under Wine.
 
 ## Standalone applications
 
@@ -578,9 +751,11 @@ tags in `GOFLAGS`, e.g. `-tags=webkitgtk` for the Linux editor): a macOS
 the Windows cross build writes `<name>.exe`.
 
 The application hosts the plugin through the plugin's own CLAP entry, so
-it runs the same runtime and threading a CLAP host does.
+it runs the same runtime and threading a CLAP host does, deadline guard
+included. The audio device callback is C, so the device thread never
+enters Go.
 
-- Audio: miniaudio (`github.com/gen2brain/malgo`) with Core Audio, WASAPI,
+- Audio: miniaudio (vendored `miniaudio.h`) with Core Audio, WASAPI,
   DirectSound, ALSA, PulseAudio, JACK or the `null` device (a timer, for
   tests and servers). One duplex device: the main input bus reads the input
   device (a mono device feeds every channel; `-input none` opens none), the
@@ -604,6 +779,17 @@ it runs the same runtime and threading a CLAP host does.
   SIGTERM, `-duration` elapsed).
 - Restarts: a plugin that changes its latency or ports while active is
   deactivated and reactivated with the device stopped.
+- Toolbar and settings: windowed applications show a toolbar above the
+  editor with the transport (play/stop, rewind, bar and beat, tempo, time
+  signature), the audio devices and MIDI ports in use, and a Settings button
+  (Cmd+, on macOS) that opens the audio and MIDI settings window: driver,
+  output and input device, sample rate, buffer size, MIDI inputs and
+  output. Applying reopens the devices (the previous ones come back when
+  the new ones fail) and saves the choice.
+- Transport: the plugin gets tempo, time signature, play state and the
+  musical position, advancing while playing. It starts stopped at 120 BPM
+  in 4/4; `-tempo`, `-time-signature` and `-play` set it at launch, and
+  tempo and time signature are saved with the settings.
 
 ```text
 -list                 list audio devices and MIDI ports
@@ -615,6 +801,9 @@ it runs the same runtime and threading a CLAP host does.
 -midi-in list         all (default), none, or comma-separated port names
 -midi-out name        MIDI output port
 -virtual-midi=false   no virtual MIDI input
+-tempo bpm            transport tempo (default 120)
+-time-signature n/d   transport time signature (default 4/4)
+-play                 start the transport playing
 -headless             no editor window
 -config dir, -reset, -duration d
 ```
@@ -625,36 +814,67 @@ and state files), every validation plugin as an application on the null
 device, `internal/validation/hostcheck/standalonecheck` (a MIDI round trip
 through the transpose plugin over virtual MIDI ports: in, plugin, out) and
 on macOS the synth's editor window following its page's resize.
+`scripts/check_macos_editor.sh` also opens an application window with its
+toolbar and settings window (`VST3GO_STANDALONE_GUI_CHECK=1`).
+
+The toolbar and settings window are `plugin.Panel`s: web pages in the
+platform's editor views that are not plugin editors. A panel shows HTML
+in a native parent (`Attach`) or in a floating window of its own
+(`OpenWindow`, `ShowWindow`), exchanges JSON with the page (the page's
+`window.vst3goPanel.post` and `onMessage`; `Panel.Post`), and runs on the
+main thread.
 `scripts/docker_check_linux_standalone.sh` covers Linux: headless apps,
 the synth editor under Xvfb (window resized to 720x420 by the page) and,
 with `SOUND=1`, playback through ALSA.
 
+`scripts/docker_check_windows_wine.sh` (`just docker-check-windows-wine`)
+runs the Windows cross build under Wine: hostcheck and clapcheck, built
+with mingw-w64, load every validation plugin as a Windows VST3 and CLAP
+host would, and every application runs on the null device. The stall
+plugin keeps the deadline guard; the others run with it off, because
+emulated amd64 on Apple silicon runs a block of cold code past the
+deadline of a 64-sample block.
+
 ## Known limits
 
-- Windows builds are compile- and export-checked (`scripts/docker_build_windows.sh`);
-  they are not run through the validator in CI. Follow `docs/windows-validation.md`
-  on a real machine.
+- Windows builds are compile- and export-checked
+  (`scripts/docker_build_windows.sh`) and run under Wine
+  (`scripts/docker_check_windows_wine.sh`), not on Windows or through the
+  VST3 validator. Follow `docs/windows-validation.md` on a real machine for
+  hosts, the WebView2 editor and devices.
 - `moduleinfo.json` is generated by native builds only, not by Windows cross
   builds.
 - In distributed mode, program data written by the host through
   `IProgramListData` updates the processor side only.
 - Chord and scale events are input-only; the Linux editor needs an X11 host
   (no Wayland embedding exists in VST3).
-- There is no AAX format: AAX plugins are built against Avid's AAX SDK and
-  need PACE signing to load in release Pro Tools, neither of which vst3go
-  wraps.
-- Audio Units are AUv2 only (no AUv3 app extension), with the channel
-  configuration of the CLAP ports (no host-negotiated layouts) and no
-  MIDI 2.0 event lists.
+- There is no AAX format: AAX plugins are built against Avid's AAX SDK,
+  which needs an Avid developer account, and need PACE signing to load in
+  release Pro Tools; vst3go wraps neither.
+- ARA: sources are read into memory whole, so very long recordings cost
+  their size in RAM. The plugin offers no processing algorithms, does not
+  store audio file chunks, needs ARA 2 hosts (API generation 2.0 or
+  later) and is not exposed through AUv3. It has run against
+  `aracheck` only, not in a commercial ARA host (Studio One, Cubase,
+  Logic, REAPER).
+- AUv3: the editor's size reaches the host when it opens the view, later
+  resizes only through `preferredContentSize`. In the macOS sandbox a
+  plugin reads only the files picked through `vst3go.chooseFile`, so an
+  SFZ instrument's samples next to the picked `.sfz` are not readable, and
+  on iOS only the picked file is copied. iOS builds have run in the
+  simulator only. A MIDI processor runs at 44.1 kHz whatever the host's
+  rate, as in AUv2.
+- The open file dialog ran in tests on macOS (cancelled by the check);
+  the Windows, Linux and iOS dialogs are built but have not run here.
 - LV2 is Linux only. Without an open UI, values the plugin changes itself
   (a program selected by MIDI) do not reach the host's control ports. The
-  plugins do not claim `lv2:hardRTCapable` (Go processing has no
-  real-time guarantee) and have no `doap:license`.
-- Standalone applications have no in-app audio settings dialog (devices are
-  chosen with flags and remembered), no transport (the plugin gets no
-  tempo or position), and Windows builds are compile-checked only; the
-  Linux MIDI and Windows MIDI/audio paths have not run on real hardware
-  here (Core MIDI, Core Audio and ALSA playback have).
-- CLAP editors cannot float in a plugin-owned window, and CLAP hosts have no MIDI learn mode,
+  plugins have no `doap:license`, and a plugin that turns the deadline
+  guard off does not claim `lv2:hardRTCapable`.
+- Standalone applications follow no external clock (MIDI clock, Ableton
+  Link). The Windows applications have run under Wine on the null device
+  only; the Linux MIDI and Windows MIDI/audio paths have not
+  run on real hardware here (Core MIDI, Core Audio and ALSA playback
+  have).
+- CLAP hosts have no MIDI learn mode,
   keyswitch or note expression metadata queries; distributed plugins run as
   one CLAP object, so `Host.SendMessage` returns an error there.

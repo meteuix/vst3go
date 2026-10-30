@@ -11,7 +11,7 @@ For the real-host validation checklist and required evidence, see `docs/windows-
 - A Windows CGO toolchain
 - The Microsoft WebView2 SDK headers and loader library
 - The WebView2 runtime installed on the target machine
-- On non-Windows hosts, the build script preflights the compiler by checking that it can preprocess `<windows.h>` and `<WebView2.h>` and link `WebView2Loader`.
+- On non-Windows hosts, the build script preflights the compiler by checking that it can preprocess `<windows.h>` and `<WebView2.h>` and link against `ole32` and `user32`.
 
 ## Current Contract
 
@@ -38,7 +38,7 @@ For the real-host validation checklist and required evidence, see `docs/windows-
 
 - Cross-compiling from Linux is possible only when the Windows C toolchain and WebView2 headers are available.
 - `scripts/docker_build_windows.sh [out]` (`just docker-build-windows`) does this on any Docker host: it installs mingw-w64 and the WebView2 NuGet package (`WEBVIEW2_VERSION`, cached in the `vst3go-windows-cross` volume), runs `go vet` for `windows/amd64`, builds every validation plugin as a `.vst3` DLL, copies it as `<name>.clap` (a CLAP plugin on Windows is the plain DLL), checks the `GetPluginFactory`/`InitDll`/`ExitDll`/`clap_entry` exports and builds each plugin as a standalone application (`<name>.exe`, console subsystem, WASAPI/WinMM through miniaudio and `internal/midiport`). It does not run the plugins or the applications.
-- The WebView2 editor links `WebView2Loader`, `ole32` and `user32`.
+- The WebView2 editor links `ole32` and `user32`. It loads `WebView2Loader.dll` when an editor opens, from the plugin binary's folder (where the bundle ships it; hosts load plugins with `LoadLibraryW`, which does not search that folder), else from the usual search path, so a missing loader only disables the editor.
 - Cross builds do not generate `moduleinfo.json`; it needs to load the binary on the target platform.
 - Current Windows packaging targets `amd64` and the `x86_64-win` bundle layout.
 - The Windows scripts resolve relative bundle roots, bundle inputs, and build helpers against the repository root, so they can be called from any working directory.

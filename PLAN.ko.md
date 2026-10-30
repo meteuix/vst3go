@@ -128,7 +128,9 @@
   - [x] Windows 전용 플래그는 필요한 곳에만 추가합니다.
   - [x] 플랫폼 간 차이를 최소화합니다.
 - [ ] 실제 툴체인과 host에서 검증합니다.
-  - [ ] MinGW-w64부터 시작합니다.
+  - [x] MinGW-w64부터 시작합니다: 크로스 빌드, Wine에서 실행하는 hostcheck, clapcheck,
+        스탠드얼론 애플리케이션(`docker_check_windows_wine.sh`).
+  - [ ] 실제 Windows host에서 실행합니다(`docs/windows-validation.md`).
   - [ ] MSVC는 타당한 경우 이후의 개선 사항으로 둡니다.
 - [x] Windows 특유의 위험 요소를 기록합니다.
   - [x] Go와 함께 쓸 때의 공유 라이브러리 동작.
@@ -191,6 +193,33 @@ DSP를 포함해, 플러그인 작업에서 JUCE를 대체할 수 있는 플러�
       타임 스트레치와 피치 검출, 웨이브테이블과 FM 오실레이터, 그래뉼러 합성과 샘플 재생,
       각각 쇼케이스 플러그인 포함(`saturator`, `convreverb`, `pitchshifter`, `tuner`,
       `wavetablesynth`, `fmsynth`, `granulator`, `sampler`).
+- [x] 파라미터 곡선(`Logarithmic`, `Center`), 위상이 맞춰진 Linkwitz-Riley 크로스오버와
+      `multiband` 컴프레서, 스트리밍 타임 스트레치, 레이어·라운드 로빈·루프 모드를
+      지원하는 샘플러의 SFZ 악기.
+- [x] 데드라인 가드(기본으로 켜짐): 블록을 전용 실시간 스레드에서 실행해 Go가
+      멈추더라도 host 오버런 대신 무음 블록 하나로 끝나게 하고(VST3, CLAP, AU, LV2,
+      standalone), host의 오디오 스레드는 Go에 들어가지 않습니다(flush와 reset은 가드
+      작업으로 실행, 들어가지 않는 입력은 다음 블록으로 넘김, LV2는
+      `lv2:hardRTCapable`을 선언하고 `lv2:freeWheeling`을 따름, standalone 오디오
+      콜백은 C). 모든 host 검사에서 `stall` 검증 플러그인으로 확인하며, Audio Unit
+      렌더링은 메인 스레드를 기다리지 않습니다.
+- [x] 가비지 컬렉션 여유분: 컬렉터가 Go의 힙 두 배 페이싱 대신 64 MB의 가비지가 쌓인
+      뒤에 실행되고, 활성화할 때 첫 블록 전에 수집합니다(`plugin.SetGCHeadroom`).
+- [x] 포맷별 빈틈: MIDI 2.0 입력(CLAP `midi2` dialect, AU MIDI 이벤트 리스트, 요청하는
+      AU host로의 MIDI 2.0 출력), host와 협상하는 레이아웃(CLAP
+      `configurable-audio-ports`와 `surround`, AU 채널 구성과 레이아웃 태그), 플로팅
+      CLAP 에디터, 트랜스포트와 오디오·MIDI 설정 창이 있는 standalone 툴바
+      (`plugin.Panel`).
+- [x] 샘플러의 디스크 스트리밍(`sampler.Streamer`)과 Neural Amp Modeler 모델
+      (`pkg/dsp/nam`, `examples/namamp`), NeuralAmpModelerCore의 출력과 대조해 검사.
+- [x] macOS와 iOS용 AUv3 앱 확장(`-format auv3`, `-platform`, `-sign`), auval,
+      `aucheck`, `auv3check`로 프로세스 밖과 iOS 시뮬레이터에서 검사.
+      `vst3go.chooseFile`은 플랫폼의 파일 대화상자를 열고 고른 파일에 대한 샌드박스 접근을
+      유지합니다.
+- [x] VST3, CLAP, Audio Units를 통한 ARA 2(`pkg/ara`, `plugin.ARAPlugin`,
+      `examples/araclip`), 최소 ARA host인 `aracheck`로 ARM과 x86(패킹된 구조체)에서 검사.
+- [ ] AAX: 막힘. Avid SDK(개발자 계정)와 PACE 서명이 필요합니다
+      (`docs/plugin-capabilities.ko.md`의 알려진 제한 사항 참고).
 - [x] 현재 런타임에 맞춘 `examples/`의 쇼케이스 플러그인(`standalone.Main`, 메모리 할당 없는
       처리, `ctx.SetOutputParameter`를 통한 읽기 전용 미터), 각각 오프라인 `pkg/plugintest`
       테스트 포함.

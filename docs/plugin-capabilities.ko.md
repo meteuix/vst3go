@@ -40,9 +40,12 @@ vst3,clap,au,app] [-install] <package> <Name>` 명령은 어떤 모듈에서든 
 - `clap`, `au`, `lv2`: 같은 바이너리를 CLAP 플러그인, (macOS) Audio Unit,
   Turtle 파일이 포함된 (Linux) LV2 번들로 패키징합니다.
 - `app`: 스탠드얼론 애플리케이션.
+- `auv3`: 컨테이너 애플리케이션에 담긴 AUv3 앱 확장(macOS, iOS).
+  [AUv3](#auv3)를 참고하십시오.
 
 `-install`은 플러그인을 사용자 폴더(`~/Library/Audio/Plug-Ins/{VST3,CLAP,Components}`,
-`~/.vst3`, `~/.clap`, `~/.lv2`)에 복사합니다.
+`~/.vst3`, `~/.clap`, `~/.lv2`)에 복사하고, AUv3 컨테이너는 `~/Applications`에 복사해
+`pluginkit`에 등록합니다.
 `-id`(번들 식별자), `-version`, `-tags`는 번들 세부 정보와 빌드 태그를 설정하며,
 `GOFLAGS`에 지정된 태그는 유지됩니다. 이 저장소에서는
 `scripts/build_{vst3,clap,au,standalone}.sh` 스크립트(`just vst3`, `just clap` 등)가
@@ -149,8 +152,8 @@ afconvert로, Linux에서는 `flac -t`와 sox로 검사합니다.
 
 | 패키지 | 내용 | 사용하는 예제 |
 | --- | --- | --- |
-| `filter` | `Biquad`(로우패스, 하이패스, 밴드패스, 노치, 피킹, 셸프), `SVF`, `MultiModeSVF` | `filter`, `auto_params`, `mastercompressor`, `drumbus`, `surround`, `vocalstrip` |
-| `dynamics` | `Compressor`(소프트/하드 니, 룩어헤드, 사이드체인), `Limiter`(트루 피크 룩어헤드 브릭월), `Gate`(히스테리시스, 홀드, 키 필터), `Expander`, `TransientShaper` | `mastercompressor`, `masterlimiter`, `studiogate`, `sidechain`, `transientshaper`, `drumbus`, `vocalstrip`, `auto_params`, `chain_fx` |
+| `filter` | `Biquad`(로우패스, 하이패스, 밴드패스, 노치, 피킹, 셸프), `SVF`, `MultiModeSVF`, 위상이 맞춰진 Linkwitz-Riley `Crossover`(밴드 수 제한 없음, 합치면 평탄) | `filter`, `auto_params`, `mastercompressor`, `drumbus`, `surround`, `vocalstrip`, `multiband` |
+| `dynamics` | `Compressor`(소프트/하드 니, 룩어헤드, 사이드체인), `Limiter`(트루 피크 룩어헤드 브릭월), `Gate`(히스테리시스, 홀드, 키 필터), `Expander`, `TransientShaper` | `mastercompressor`, `masterlimiter`, `studiogate`, `sidechain`, `transientshaper`, `drumbus`, `vocalstrip`, `auto_params`, `chain_fx`, `multiband` |
 | `envelope` | ADSR/AR 엔벨로프, 피크/RMS `Detector`, `Follower` | `wavetablesynth`, `fmsynth`, `pkg/dsp/dynamics`, `pkg/dsp/sampler` |
 | `delay` | `Line`, `MultiTap`, `Comb`, `Allpass`, `Modulated` | `delay` |
 | `modulation` | `LFO`, `Chorus`, `Flanger`, `Phaser`, `Tremolo`, `RingModulator` | `vintagechorus`, `jetflanger` |
@@ -158,13 +161,15 @@ afconvert로, Linux에서는 `flac -t`와 sox로 검사합니다.
 | `reverb` | `Schroeder`, `Freeverb`, `FDN` | |
 | `oscillator` | 기본 파형, `BLIT`, 대역 제한 톱니파, 밉맵 `Wavetable`/`WavetableBank`, FM `Operator` | `wavetablesynth`, `fmsynth` |
 | `utility`, `gain`, `pan`, `mix`, `interpolation` | 노이즈, DC 블로커, dB/팬 법칙, 믹싱, 보간 | `gain`, `delay`, `filter`, `chain_fx` |
-| `fft` | 복소수 및 packed real radix-2 FFT | `pkg/dsp/convolution`, `pkg/dsp/spectral`, `pkg/dsp/pitch` |
+| `fastmath` | `Sin2Pi`/`Cos2Pi`: 회전 단위 사인·코사인, 오차 1e-13 이내, 큰 인자의 범위 축소가 없어 `math.Sin`보다 빠름 | `pkg/dsp/oscillator`, `pkg/dsp/modulation`, `pkg/dsp/delay`, `pkg/dsp/reverb` |
+| `fft` | 복소수 radix-4 Stockham FFT와 그 위의 packed real FFT | `pkg/dsp/convolution`, `pkg/dsp/spectral`, `pkg/dsp/pitch` |
 | `spectral` | `STFT`: 윈도 overlap-add 프레임 처리 | `pkg/dsp/pitch` |
-| `resample` | `Oversampler`(2x~16x 하프밴드 캐스케이드), 스트리밍 `Resampler`와 `Convert`(카이저 윈도 sinc, 임의 비율), 공유 sinc `Kernel` | `saturator`, `pkg/dsp/sampler` |
-| `convolution` | `Convolver`: 지연 없는 균일 분할 컨볼루션 | `convreverb` |
-| `pitch` | 딜레이 라인 `Shifter`, 페이즈 보코더 `SpectralShifter`, 오프라인 타임 `Stretch`, YIN `Detector` | `pitchshifter`, `tuner` |
+| `resample` | `Oversampler`(2x~16x 하프밴드 캐스케이드), 스트리밍 `Resampler`와 `Convert`(카이저 윈도 sinc, 임의 비율), 공유 sinc 커널(`SincKernel`: 나이퀴스트의 0.9까지 평탄, 1.11부터 80 dB 감쇠; `ShortSincKernel`: 약 두 배 빠르고 0.75까지 평탄) | `saturator`, `pkg/dsp/sampler` |
+| `convolution` | `Convolver`: 지연 없는 비균일 분할 컨볼루션(단계마다 블록 크기가 8배로 커지고, 작업을 블록마다 고르게 나눔) | `convreverb` |
+| `pitch` | 딜레이 라인 `Shifter`, 페이즈 보코더 `SpectralShifter`, 실시간으로 배율을 바꿀 수 있는 스트리밍 타임 `Stretcher`와 오프라인 `Stretch`, YIN `Detector` | `pitchshifter`, `tuner` |
 | `granular` | `Granulator`: 스프레이, 피치, 스테레오 확산을 갖춘 그래뉼러 딜레이와 프리즈 | `granulator` |
-| `sampler` | `Sample`(루프, 절반 레이트 사본), 키/벨로시티 `Map`, 대역 제한 `Voice` | `sampler` |
+| `sampler` | `Sample`(루프, 절반 레이트 사본), 라운드 로빈과 랜덤 레이어를 지원하는 키/벨로시티 `Map`, `Zone`의 튜닝·게인·팬·오프셋·루프 모드, 레이어를 겹치는 대역 제한 `Voice`(`QualityHigh` 또는 더 빠른 `QualityStandard` 커널), `LoadSample`(WAV/AIFF/FLAC/MP3/Ogg, 루트 음과 첫 루프 포함), `LoadSFZ`(상속되는 헤더, `#define`/`#include`, 일반적인 opcode), `Streamer`(디스크 스트리밍: 각 샘플의 앞부분과 루프만 메모리에 두고 나머지는 디코딩된 캐시에서 보이스보다 앞서 읽으므로, 메모리보다 큰 악기도 연주됨) | `sampler` |
+| `nam` | Neural Amp Modeler 모델(`.nam`, WaveNet, LSTM, Linear): `Load`/`Parse`, NeuralAmpModelerCore와 같은 결과를 내는 할당 없는 `Model`, 모델과 host의 샘플레이트 사이를 리샘플링하는 `Runner`(레이턴시 포함) | `namamp` |
 | `analysis` | FFT, 스펙트럼, 피크/RMS/LUFS(BS.1770-4, EBU R 128 LRA) 미터, 상관도, 위상 스코프 | |
 
 `pkg/framework/dsp`는 프로세서를 체인으로 묶고(`NewChain`, `NewParallelChain`,
@@ -247,6 +252,13 @@ VST3 host는 MIDI CC, 피치 벤드, 채널 애프터터치를 이벤트로 보�
   움직인 컨트롤러를 받습니다(`IMidiLearn`/`IMidiLearn2`). 매핑을 갱신한 뒤
   `Host.RestartComponent(RestartMidiCCAssignmentChange)`를 호출합니다.
 
+CLAP host(`midi2` 노트 dialect)와 Audio Unit host(MIDI 이벤트 리스트)가 보내는
+MIDI 2.0은 그 해상도대로 도착합니다. 16비트 벨로시티(pitch 7.9 속성은 `Tuning`),
+같은 컨트롤러 매핑을 거치는 32비트 컨트롤러·프레셔·피치 벤드, 그리고 노트별 피치
+벤드와 노트 익스프레션에 해당하는 등록된 노트별 컨트롤러(볼륨, 팬, 익스프레션,
+브라이트니스, 비브라토, 피치)는 노트 익스프레션이 됩니다. 패킷에 담긴 MIDI 1.0
+메시지는 MIDI 1.0으로 읽습니다.
+
 MIDI 프로그램 체인지는 이벤트가 아니라 프로그램 목록(아래 참고)을 통해 플러그인에
 전달됩니다.
 
@@ -311,7 +323,11 @@ MIDI 프로그램 체인지는 이벤트가 아니라 프로그램 목록(아래
   지정합니다.
 - `BusArrangementProcessor.AcceptBusArrangements(inputs, outputs) bool`을 구현하면
   host가 제안하는 다른 레이아웃을 받아들일 수 있습니다. true를 반환하면 런타임이
-  처리 시작 전에 버스 구성과 채널 수를 갱신합니다.
+  처리 시작 전에 버스 구성과 채널 수를 갱신합니다. CLAP host는
+  `configurable-audio-ports`와 `surround` 확장(메인 포트의 채널 수나 스피커 마스크)으로,
+  Audio Unit host는 메인 element의 채널 수와 레이아웃으로 여기에 도달합니다
+  (`SupportedNumChannels`는 프로세서가 받아들이는 1~8채널의 모든 메인 버스 구성을,
+  `SupportedChannelLayoutTags`는 그에 맞는 레이아웃을 나열합니다).
 
 ## 레이턴시와 테일
 
@@ -375,7 +391,8 @@ GTK는 host의 `IRunLoop` 타이머에서 구동됩니다. 이 태그 없이 빌
 프로세서는 내장 페이지를 자체 페이지로 대체할 수 있습니다(`EditorProcessor`,
 `plugin.Editor{HTML, Width, Height, Min/Max sizes, FixedSize}`). 모든 페이지는
 `window.vst3go` SDK를 받습니다: 편집 제스처를 지원하는 실시간 파라미터, 프리셋,
-`resize`, 프로세서와의 커스텀 메시지(`vst3go.send` -> `EditorMessageProcessor`,
+`resize`, 플랫폼의 파일 열기 대화상자(`vst3go.chooseFile`), 프로세서와의 커스텀
+메시지(`vst3go.send` -> `EditorMessageProcessor`,
 `Host.PostEditorMessage` -> `vst3go.on`). `plugin.EditorBindings` / `WriteEditorBindings`는
 타입이 지정된 TypeScript 파라미터 바인딩을 생성하고, `plugintest.EditorBindings`는
 이를 최신 상태로 유지합니다. [`web-editor-bridge.ko.md`](web-editor-bridge.ko.md)를
@@ -389,6 +406,13 @@ GTK는 host의 `IRunLoop` 타이머에서 구동됩니다. 이 태그 없이 빌
   스위치에 연결합니다.
 - 커스텀 파서가 없으면 문자열에서 값으로의 파싱은 포맷팅된 표시 텍스트("-6.0 dB",
   "Q: 0.71", "-∞ dB")를 받아들입니다.
+- 파라미터 노브의 이동은 기본적으로 선형입니다. `.Logarithmic()`(양수 범위에서
+  옥타브나 데케이드마다 같은 이동 거리)과 `.Center(v)`(노브 중앙에 `v`가 오는 거듭제곱
+  곡선)는 정규화 값이 실제 값으로 바뀌는 방식을 바꿉니다. `FrequencyParameter`는
+  로그 스케일이고, `TimeParameter`는 로그 스케일이거나 범위의 1/8 지점이 중앙에
+  옵니다. VST3 host와 에디터는 정규화 값을 통해 이 곡선을 따릅니다. CLAP, AU, LV2에는
+  곡선 힌트가 없으므로 곡선이 있는 파라미터는 0~1 정규화 값으로 보입니다(CLAP과
+  AU는 이를 실제 값의 텍스트로 표시합니다).
 - 파라미터 값은 자동으로 저장됩니다. 추가 상태(샘플 경로, 웨이브테이블, 시퀀서
   패턴)가 필요하면 `StatefulProcessor`를 구현합니다.
 
@@ -407,7 +431,9 @@ CLAP 전용 코드가 필요하지 않습니다.
   host는 스스로 바뀌는 값을 오류로 취급하기 때문입니다. 이 값들은 여전히 에디터와
   VST3 host에는 전달됩니다.
 - 오디오 버스는 오디오 포트가 되고(프로세서가 배정밀도를 지원하면 64비트), 이벤트
-  버스는 CLAP 및 MIDI dialect를 지원하는 노트 포트가 됩니다.
+  버스는 CLAP, MIDI, MIDI 2.0 dialect를 지원하는 노트 포트가 됩니다.
+  `configurable-audio-ports`와 `surround`는 `BusArrangementProcessor`를 거쳐 메인
+  포트를 바꿉니다([버스 레이아웃](#버스-레이아웃) 참고).
 - CLAP 노트는 `midi.Event` 노트가 됩니다. host 노트 ID가 없는 노트에는 ID가
   생성되며, 와일드카드 노트 오프와 익스프레션(키, 채널 또는 노트 ID가 -1)은 현재
   울리고 있는 노트를 기준으로 해석됩니다. CLAP 노트 익스프레션은 VST3 타입(볼륨,
@@ -420,8 +446,10 @@ CLAP 전용 코드가 필요하지 않습니다.
   재시작 요청에 매핑됩니다. 트랙 이름과 색상은 `ChannelInfoProcessor`로 전달되고,
   프로그램 피치 이름은 CLAP 노트 이름이 됩니다.
 - 출력 constant 플래그는 `ctx.SetOutputSilenceFlags`에서 옵니다.
-- 에디터는 `gui` 확장이며, 플랫폼의 창 API(`cocoa`, `win32`, `webkitgtk` 빌드의 `x11`)를
-  사용하는 임베드 방식만 지원합니다. 에디터 뷰가 없는 빌드는 이를 제공하지 않습니다.
+- 에디터는 플랫폼의 창 API(`cocoa`, `win32`, `webkitgtk` 빌드의 `x11`)를 사용하는
+  `gui` 확장이며, host 창에 임베드되거나 자체 창에 플로팅됩니다. 플로팅 창은 host의
+  `set_transient`와 `suggest_title`을 따르고, 사용자가 창을 닫으면 알립니다
+  (`gui.closed`). 에디터 뷰가 없는 빌드는 이를 제공하지 않습니다.
   Linux에서는 뷰의 타이머가 host의 `timer-support`에서 실행됩니다. host 오토메이션은
   메인 스레드(`request_callback`)에서 열려 있는 페이지에 전달되며, 상태 로드, 프리셋 로드,
   프로그램 변경도 마찬가지입니다.
@@ -469,8 +497,15 @@ CLAP 엔트리 인스턴스 하나를 호스팅하므로, CLAP host와 동일한
 - 상태: `kAudioUnitProperty_ClassInfo`는 표준 프리셋 키 아래에 플러그인 상태를
   담습니다. 팩토리 프로그램은 팩토리 프리셋이 됩니다
   (`kAudioUnitProperty_FactoryPresets`, `PresentPreset`).
-- MIDI: 샘플 오프셋을 포함한 `MusicDeviceMIDIEvent`/`SysEx`가 입력되고, 플러그인의
-  MIDI 및 노트 출력은 host의 MIDI 출력 콜백으로 전달됩니다.
+- 채널: host는 메인 element의 채널 수를 `SupportedNumChannels`(프로세서가 받아들이는
+  구성, [버스 레이아웃](#버스-레이아웃) 참고) 중에서 고르며, 다른 구성으로 초기화하면
+  `kAudioUnitErr_FormatNotSupported`로 실패합니다.
+- MIDI: 샘플 오프셋을 포함한 `MusicDeviceMIDIEvent`/`SysEx`와 MIDI 이벤트 리스트
+  (`MusicDeviceMIDIEventList`, MIDI 1.0 또는 2.0 패킷)가 입력됩니다. 플러그인의 MIDI 및
+  노트 출력은 host의 MIDI 출력 콜백으로 전달되며, host가 초기화 전에
+  `kAudioUnitProperty_HostMIDIProtocol`을 2.0으로 설정했다면 이벤트 리스트 콜백으로
+  MIDI 2.0 패킷이 됩니다. 프로그램 파라미터는 다른 파라미터를 바꾸므로 메타
+  파라미터로 표시됩니다.
 - host 트랜스포트(`HostCallbacks`: 템포, 비트, 박자표, 재생, 녹음, 사이클)는
   `ProcessContext` 트랜스포트가 됩니다. 레이턴시와 테일은 초 단위로 보고되며, 초기화된
   상태에서 레이턴시가 바뀌면 플러그인을 다시 활성화하고 host에 알립니다. 바이패스
@@ -481,6 +516,40 @@ CLAP 엔트리 인스턴스 하나를 호스팅하므로, CLAP host와 동일한
   `vst3go build`는 여러 vst3go Audio Unit이 하나의 host 프로세스를 공유할 수 있도록 그
   Objective-C 클래스 이름을 번들에 맞춰 지정합니다(`VST3GO_AU_VIEW_CLASS`). 이 과정
   없이 빌드한 Audio Unit은 기본 클래스 이름을 공유합니다.
+
+### AUv3
+
+`vst3go build -format auv3`는 플러그인을 컨테이너 애플리케이션에 담긴 AUv3 앱
+확장으로 빌드합니다. 확장의 principal class(`AUViewController`)는 위의 Audio Unit을
+확장 프로세스 안에서 비공개 코드로 등록해 `AUAudioUnitV2Bridge`로 실행하고, 그
+에디터를 확장의 뷰로 보여 줍니다. host는 이를 프로세스 밖에서 로드합니다. MIDI
+프로세서에는 무음 스테레오 출력이 붙는데, 프로세스 밖 렌더링(그리고 Logic Pro)에
+필요하기 때문입니다.
+
+- `-platform macos`(기본값, macOS 11 이상), `ios`(iOS 14 이상), `ios-simulator`.
+  다른 플랫폼에서는 `auv3`만 빌드합니다. 컨테이너는 `app`도 함께 빌드하면(macOS) 그
+  스탠드얼론 애플리케이션이고, 아니면 무엇이 들어 있는지 알려 주는 최소 앱입니다.
+- `-sign`은 코드 서명 identity입니다(기본값 `-`, ad hoc). iOS 기기에는 개발 또는 배포
+  identity와 provisioning profile이 필요한데 `vst3go build`는 이를 만들지 않으므로,
+  기기 설치는 Xcode로 하십시오. 시뮬레이터는 ad hoc 서명 빌드를 실행합니다:
+  `xcrun simctl install booted <Name>.app` 후 컨테이너를 한 번 실행하면 확장이
+  등록됩니다.
+- macOS에서 확장은 앱 확장의 요건대로 샌드박스 안에서 실행됩니다. 사용자가
+  `vst3go.chooseFile`로 고른 파일을 읽을 수 있고 그 security-scoped bookmark를 보관하므로,
+  저장된 상태가 그 파일을 가리키면 이후 세션에서도 다시 읽습니다. 그 밖의 위치를 직접
+  입력한 경로는 읽을 수 없습니다. iOS에서는 `vst3go.chooseFile`이 파일을 확장의
+  컨테이너로 복사합니다. 사용자 프리셋과 캐시는 확장의 컨테이너에 저장됩니다.
+- 뷰의 크기는 host가 뷰를 열 때의 에디터 크기입니다. 그 뒤의 에디터 크기 변경은
+  확장의 `preferredContentSize`를 바꾸며, host가 이를 따를지는 host에 달려 있습니다.
+
+`scripts/validate_auv3.sh [out]`는 모든 검증용 플러그인을 AUv3 확장으로 빌드해
+등록하고(`lsregister`, `pluginkit -a`; 종료 시 해제), 프로세스 밖에서 로드하는
+`auval -strict -r 2`, 확장을 거치는 아래 `aucheck` 검사(`AudioComponentInstantiate`;
+에디터 검사는 다음 도구가 맡음), 그리고 AUv3 API를 거치는
+`internal/validation/hostcheck/auv3check_darwin.m`(파라미터 트리, `fullState` 왕복,
+render block을 통한 렌더링, 에디터 크기로 열리는 확장의 view controller)을
+실행합니다. `IOS_SIMULATOR=<udid>`를 주면 iOS 시뮬레이터용으로도 빌드해 설치하고
+그 안에서 `auv3check`를 실행합니다.
 
 `scripts/validate_au.sh [out]`는 모든 검증용 플러그인을 `.component`로 빌드하고,
 `vst3go-check-*.component`라는 이름으로 `~/Library/Audio/Plug-Ins/Components`에 설치한
@@ -522,8 +591,12 @@ Linux에서는 모든 플러그인 바이너리가 `lv2_descriptor`와 `lv2ui_de
 - 이벤트: `control` atom 입력은 `time:Position`(템포, 마디, 비트, 박자표, 재생 상태,
   위치 이벤트 사이에서 진행됨)과, 노트 입력이 있는 경우 프레임 오프셋을 포함한 MIDI 및
   SysEx를 전달합니다. 노트 출력이 있는 플러그인은 `midi_out` atom 출력을 갖습니다.
-  `latency` 포트는 레이턴시를 보고하며(`lv2:reportsLatency`), 레이턴시가 바뀌면 `run`
-  안에서 플러그인을 다시 활성화합니다.
+  `latency` 포트는 레이턴시를 보고하며(`lv2:reportsLatency`), 플러그인이 레이턴시를
+  바꾸면 바로 갱신됩니다. `run`은 플러그인을 다시 활성화하지 않습니다.
+- 실시간: 데드라인 가드(기본으로 켜짐, `docs/runtime-contracts.ko.md` 참고)가 켜져
+  있으면 `run`은 Go에 들어가지 않으며 플러그인은 `lv2:hardRTCapable`을 선언합니다.
+  `freewheel` 포트(`lv2:freeWheeling`)는 host가 freewheel하는 동안 데드라인 없이
+  오프라인으로 렌더링합니다.
 - UI: `webkitgtk` 빌드는 host 창에서 에디터를 여는 X11 UI(`ui:X11UI`)를 추가합니다.
   이 UI에는 `instance-access`(에디터가 프로세서와 직접 통신)와 `ui:parent`가 필요하며,
   host가 제공하면 `ui:resize`와 `ui:touch`를 사용합니다. 에디터의 편집은 touch 제스처가
@@ -536,12 +609,88 @@ LV2 번들로 빌드하고, 그 Turtle에 대해 lv2_validate를, 설치되어 �
 `internal/validation/hostcheck/lv2check.c`를 실행합니다. lv2check에서는 lilv가 번들을
 로드하고 포트와 그 속성, in-place 및 분할된 블록에 걸쳐 적용되는 게인, Turtle로
 저장해 새 인스턴스에 복원한 상태, 신스의 프리셋(Pluck은 릴리스를 80으로 설정)과
-정해진 프레임의 노트, MIDI 이펙트의 조옥된 MIDI 및 SysEx 출력, 덕커의 레이턴시 포트와
-연결되지 않은 사이드체인을 검사합니다. `scripts/docker_validate_linux.sh`는 lv2lint를 빌드해
+정해진 프레임의 노트, MIDI 이펙트의 조옮김된 MIDI 및 SysEx 출력, 덕커의 레이턴시 포트와
+연결되지 않은 사이드체인, 데드라인 가드(`lv2:hardRTCapable`, 데드라인에서 끊기는 멈춘
+블록, 끝까지 실행되는 freewheel 블록)를 검사합니다. `scripts/docker_validate_linux.sh`는 lv2lint를 빌드해
 그 안에서 실행하고, `scripts/docker_check_linux_editor.sh`는 Xvfb에서 LV2 UI를 엽니다
 (`lv2check --ui`). 이때 페이지의 키보드 입력이 touch 제스처가 더해진 포트 쓰기로 host에
 도달하는지, 신스 페이지가 720x420을 요청하는지, MIDI 프로그램 체인지가 host 포트에
 도달하는지, UI가 크기 조절되고 닫혔다가 다시 열리는지 확인합니다.
+
+## ARA
+
+ARA 2(Audio Random Access, Celemony)를 쓰면 플러그인이 라이브 신호 대신 녹음 전체를
+보면서 host의 클립을 편집하고 렌더링할 수 있습니다. 피치·타이밍 에디터, 오디오→MIDI
+분석, 클립 단위 이펙트가 여기에 해당합니다. 플러그인은 `plugin.ARAPlugin`을 구현하면
+ARA를 지원합니다. `pkg/ara`가 문서 모델이고 `pkg/plugin/ara.{c,h,go}`가 C API
+연결부입니다(헤더는 `include/ara`에 포함, Apache 2.0). `examples/araclip`이 완성된
+ARA 플러그인 예제입니다.
+
+```go
+func (myPlugin) ARA() ara.Config {
+	return ara.Config{
+		ArchiveID:     "com.example.myplugin.1",
+		ContentTypes:  []ara.ContentType{ara.ContentNotes},
+		NewController: func(d *ara.Document) ara.Controller { return &controller{} },
+	}
+}
+
+// BindARA switches the instance to rendering the host's regions.
+func (p *processor) BindARA(b *ara.Binding) { p.binding.Store(b) }
+
+func (p *processor) ProcessAudio(ctx *process.Context) {
+	ctx.Clear()
+	b := p.binding.Load()
+	if b == nil || !ctx.Transport.IsPlaying {
+		return
+	}
+	at := ctx.Transport.ProjectTimeSamples + int64(ctx.BlockOffset())
+	pb := b.Playback()
+	for i := range pb.Regions {
+		pb.Regions[i].Mix(ctx.Output, at, ctx.SampleRate, 1)
+	}
+}
+```
+
+- 포맷: VST3("ARA Main Factory Class"와 `IMainFactory`, 컴포넌트의
+  `IPlugInEntryPoint`/`IPlugInEntryPoint2`), CLAP(`ara.factory` 팩토리,
+  `ara.pluginextension` 확장, `ara:supported` feature, draft ID 포함), Audio Units
+  (`kAudioUnitProperty_ARAFactory`,
+  `kAudioUnitProperty_ARAPlugInExtensionBindingWithRoles`, `ARA` 컴포넌트 태그).
+  API 세대는 2.0부터 2.3까지이고, ARA 1 아카이빙 호출은 편집과 저장으로 매핑됩니다.
+  바이너리 하나에 ARA 플러그인을 16개까지 둘 수 있습니다.
+- 문서: 런타임은 host의 ARA 문서마다 `ara.Document`와 플러그인 컨트롤러를 만들고,
+  host의 뮤지컬 컨텍스트(host에서 읽은 템포와 박자 포함), 영역 시퀀스, 오디오 소스,
+  오디오 모디피케이션, 재생 영역을 그 안에 그대로 반영합니다. 컨트롤러는 필요한 것만
+  구현합니다. `ModificationArchiver`, `SourceArchiver`, `DocumentArchiver`는 데이터를
+  host의 곡에 저장하고(복원할 때는 host의 필터와 ID 매핑을 따름), `Analyzer`는
+  `Config.ContentTypes`(노트, 템포, 박자)를 찾으며, `SignalPreserver`, `HeadTailer`,
+  `EditObserver`, `ModificationContentProvider`가 나머지 질의에 답합니다. 모델 호출은
+  host의 메인 스레드에서 실행됩니다.
+- 오디오: host가 접근을 허용하면 런타임이 goroutine에서 소스의 샘플을 메모리로
+  읽고(`AudioSource.Audio`) 분석기를 실행합니다. 진행 상황과 콘텐츠 변경은
+  `notifyModelUpdates` 때 host에 전달됩니다. 렌더링은 host의 오디오 리더를 호출하지
+  않습니다.
+- 렌더링: host가 활성화 전에 인스턴스를 바인딩하면 `ARAProcessor.BindARA`가 그
+  인스턴스의 `ara.Binding`을 받습니다. 오디오 스레드에서 `Binding.Playback`은 host가 맡긴 영역의 lock-free
+  스냅샷을 돌려주며, 각 영역에는 모디피케이션 상태(`AudioModification.SetState`,
+  에디터가 설정)가 들어 있습니다. `RegionPlayback.Mix`는 블록의 곡 위치에서 영역
+  하나를 렌더링하고, `Span`과 `MixSpan`은 사용자 정의 시간 매핑용 소스 구간을 줍니다
+  (예제는 이 방식으로 클립을 거꾸로 재생합니다). 에디터 렌더러와 에디터 뷰 역할은
+  바인딩(`EditorRegions`, `Selection`, `HiddenSequences`, `OnChange`)으로 다룹니다.
+- 테스트: `plugin.OfflineSetup{ARA: doc}`은 오프라인 인스턴스를 `ara.Document`에
+  바인딩합니다. `plugintest.NewARAHost`는 오디오, 템포, 박자를 제공하고 알림을
+  기록하며, `plugintest.WaitARA`는 읽기와 분석이 끝날 때까지 기다립니다.
+
+`scripts/validate_ara.sh [out]`은 `examples/araclip`을 빌드한 뒤 최소 ARA 2 host인
+`internal/validation/hostcheck/aracheck.c`로 VST3, CLAP, (macOS에서는 임시로
+설치하고 `auval -strict`를 거친) Audio Unit을 통해 검사합니다. 팩토리, host의 오디오 접근·아카이빙·콘텐츠
+접근·모델 업데이트 인터페이스를 갖춘 문서 컨트롤러(뮤지컬 컨텍스트의 템포와 박자 읽기 포함), 녹음된 A4의 노트 분석을 콘텐츠
+리더로 다시 읽기, 아카이브를 통한 저장과 복원, 재생 렌더러로 바인딩, 곡 위치에서
+영역 렌더링, 양쪽 순서의 해제를 확인합니다. Apple silicon에서는 ARA 구조체가 1바이트로
+패킹되는 x86_64 빌드도 Rosetta에서 검사합니다. `scripts/docker_validate_linux.sh`는
+Linux에서 이 스크립트를 실행하고, `scripts/docker_check_windows_wine.sh`는 Windows 빌드를
+Wine에서 `aracheck`로 검사합니다.
 
 ## 스탠드얼론 애플리케이션
 
@@ -554,9 +703,10 @@ LV2 번들로 빌드하고, 그 Turtle에 대해 lv2_validate를, 설치되어 �
 Linux 실행 파일이며, Windows 크로스 빌드는 `<name>.exe`를 기록합니다.
 
 애플리케이션은 플러그인 자체의 CLAP 엔트리를 통해 플러그인을 호스팅하므로, CLAP host와
-동일한 런타임과 스레딩으로 실행됩니다.
+동일한 런타임과 스레딩으로, 데드라인 가드까지 그대로 실행됩니다. 오디오 장치 콜백은 C라서
+장치 스레드는 Go에 들어가지 않습니다.
 
-- 오디오: miniaudio(`github.com/gen2brain/malgo`)로 Core Audio, WASAPI, DirectSound, ALSA,
+- 오디오: miniaudio(vendored `miniaudio.h`)로 Core Audio, WASAPI, DirectSound, ALSA,
   PulseAudio, JACK 또는 `null` 장치(테스트와 서버용 타이머)를 사용합니다. 하나의
   duplex 장치를 사용하며, 메인 입력 버스는 입력 장치를 읽고(모노 장치는 모든 채널에
   공급되며, `-input none`이면 입력 장치를 열지 않음), 메인 출력 버스는 출력 장치로
@@ -577,6 +727,15 @@ Linux 실행 파일이며, Windows 크로스 빌드는 `<name>.exe`를 기록합
   SIGINT, SIGTERM, `-duration` 경과).
 - 재시작: 활성 상태에서 레이턴시나 포트를 바꾼 플러그인은 장치를 멈춘 상태에서
   비활성화되었다가 다시 활성화됩니다.
+- 툴바와 설정: 창이 있는 애플리케이션은 에디터 위에 툴바를 보여 줍니다. 툴바에는
+  트랜스포트(재생/정지, 되감기, 마디와 박, 템포, 박자표), 사용 중인 오디오 장치와 MIDI
+  포트, 그리고 오디오·MIDI 설정 창을 여는 Settings 버튼(macOS에서는 Cmd+,)이 있습니다.
+  설정 창에서는 드라이버, 출력·입력 장치, 샘플레이트, 버퍼 크기, MIDI 입력과 출력을
+  고릅니다. 적용하면 장치를 다시 열고(새 장치가 실패하면 이전 장치로 돌아감) 선택을
+  저장합니다.
+- 트랜스포트: 플러그인은 템포, 박자표, 재생 상태, 음악적 위치를 받으며, 위치는 재생
+  중에 진행합니다. 120 BPM, 4/4, 정지 상태로 시작하며 `-tempo`, `-time-signature`,
+  `-play`로 시작 시 값을 정합니다. 템포와 박자표는 설정과 함께 저장됩니다.
 
 ```text
 -list                 list audio devices and MIDI ports
@@ -588,6 +747,9 @@ Linux 실행 파일이며, Windows 크로스 빌드는 `<name>.exe`를 기록합
 -midi-in list         all (default), none, or comma-separated port names
 -midi-out name        MIDI output port
 -virtual-midi=false   no virtual MIDI input
+-tempo bpm            transport tempo (default 120)
+-time-signature n/d   transport time signature (default 4/4)
+-play                 start the transport playing
 -headless             no editor window
 -config dir, -reset, -duration d
 ```
@@ -596,33 +758,59 @@ Linux 실행 파일이며, Windows 크로스 빌드는 `<name>.exe`를 기록합
 null 장치, 설정 및 상태 파일), null 장치에서 애플리케이션으로 실행하는 모든 검증용
 플러그인, `internal/validation/hostcheck/standalonecheck`(가상 MIDI 포트를 통해 transpose
 플러그인을 거치는 MIDI 왕복: 입력, 플러그인, 출력), 그리고 macOS에서는 페이지의 크기
-조절을 따르는 신스 에디터 창을 실행합니다. `scripts/docker_check_linux_standalone.sh`는
+조절을 따르는 신스 에디터 창을 실행합니다. `scripts/check_macos_editor.sh`는 툴바와
+설정 창이 있는 애플리케이션 창도 엽니다(`VST3GO_STANDALONE_GUI_CHECK=1`). `scripts/docker_check_linux_standalone.sh`는
 Linux를 다룹니다: headless 앱, Xvfb에서의 신스 에디터(페이지가 창을 720x420으로 크기
 조절), `SOUND=1`일 때 ALSA를 통한 재생.
 
+툴바와 설정 창은 `plugin.Panel`입니다. 패널은 플러그인 에디터가 아닌 웹 페이지를
+플랫폼의 에디터 뷰에 띄웁니다. 네이티브 부모(`Attach`)나 자체 플로팅 창(`OpenWindow`,
+`ShowWindow`)에 HTML을 보여 주고, 페이지와 JSON을 주고받으며(페이지의
+`window.vst3goPanel.post`와 `onMessage`; `Panel.Post`), 메인 스레드에서 실행됩니다.
+
+`scripts/docker_check_windows_wine.sh`(`just docker-check-windows-wine`)는 Windows
+크로스 빌드를 Wine에서 실행합니다. mingw-w64로 빌드한 hostcheck와 clapcheck가 모든
+검증용 플러그인을 Windows VST3·CLAP host처럼 로드하고, 모든 애플리케이션이 null
+장치에서 실행됩니다. stall 플러그인은 데드라인 가드를 켠 채로, 나머지는 끈 채로
+실행합니다. Apple silicon에서 에뮬레이션한 amd64는 처음 실행하는 코드 블록이 64샘플
+블록의 데드라인을 넘기기 때문입니다.
+
 ## 알려진 제한 사항
 
-- Windows 빌드는 컴파일과 export만 검사하며(`scripts/docker_build_windows.sh`), CI에서
-  validator를 실행하지는 않습니다. 실제 머신에서 `docs/windows-validation.md`
-  ([한국어](windows-validation.ko.md))를 따르세요.
+- Windows 빌드는 컴파일과 export를 검사하고(`scripts/docker_build_windows.sh`) Wine에서
+  실행하지만(`scripts/docker_check_windows_wine.sh`), Windows나 VST3 validator에서는
+  실행하지 않습니다. host, WebView2 에디터, 장치는 실제 머신에서
+  `docs/windows-validation.md`([한국어](windows-validation.ko.md))를 따르세요.
 - `moduleinfo.json`은 네이티브 빌드에서만 생성되며, Windows 크로스 빌드에서는 생성되지
   않습니다.
 - 분산 모드에서 host가 `IProgramListData`로 기록한 프로그램 데이터는 프로세서 쪽만
   갱신합니다.
 - 코드와 스케일 이벤트는 입력 전용이며, Linux 에디터에는 X11 host가 필요합니다(VST3에는
   Wayland 임베딩이 없습니다).
-- AAX 포맷은 없습니다. AAX 플러그인은 Avid의 AAX SDK로 빌드해야 하고 정식 Pro Tools에서
-  로드하려면 PACE 서명이 필요한데, vst3go는 둘 다 감싸지 않습니다.
-- Audio Unit은 AUv2만 지원하며(AUv3 앱 확장 없음), 채널 구성은 CLAP 포트의 구성을
-  따르고(host와 협상하는 레이아웃 없음), MIDI 2.0 이벤트 리스트는 없습니다.
+- AAX 포맷은 없습니다. AAX 플러그인은 Avid 개발자 계정이 있어야 받을 수 있는 AAX
+  SDK로 빌드해야 하고, 정식 Pro Tools에서 로드하려면 PACE 서명이 필요한데, vst3go는 둘
+  다 감싸지 않습니다.
+- ARA: 소스는 통째로 메모리에 읽히므로 아주 긴 녹음은 그 크기만큼 RAM을 씁니다.
+  플러그인은 처리 알고리즘을 제공하지 않고, 오디오 파일 청크를 저장하지 않으며, ARA 2
+  host(API 세대 2.0 이상)가 필요하고, AUv3로는 노출되지 않습니다. `aracheck`로만
+  실행해 봤고 상용 ARA host(Studio One, Cubase, Logic, REAPER)에서는 아직 실행해 보지
+  않았습니다.
+- AUv3: 에디터 크기는 host가 뷰를 열 때 host에 전달되고, 그 뒤의 크기 변경은
+  `preferredContentSize`로만 전달됩니다. macOS 샌드박스에서 플러그인은
+  `vst3go.chooseFile`로 고른 파일만 읽으므로, 고른 `.sfz` 옆에 있는 SFZ 악기의 샘플은
+  읽을 수 없고, iOS에서는 고른 파일만 복사됩니다. iOS 빌드는 시뮬레이터에서만
+  실행해 봤습니다. MIDI 프로세서는 AUv2와 마찬가지로 host의 샘플레이트와 관계없이
+  44.1kHz로 실행됩니다.
+- 파일 열기 대화상자는 macOS에서 테스트로 실행했습니다(검사가 취소함). Windows, Linux,
+  iOS 대화상자는 빌드되지만 여기서 실행해 보지는 않았습니다.
 - LV2는 Linux 전용입니다. UI가 열려 있지 않으면 플러그인이 스스로 바꾼 값(MIDI로
-  선택한 프로그램)은 host의 컨트롤 포트에 도달하지 않습니다. 플러그인은
-  `lv2:hardRTCapable`을 주장하지 않으며(Go 처리에는 실시간 보장이 없음)
-  `doap:license`도 없습니다.
-- 스탠드얼론 애플리케이션에는 앱 내 오디오 설정 대화상자가 없고(장치는 플래그로
-  선택하고 기억됨), 트랜스포트가 없으며(플러그인은 템포나 위치를 받지 못함), Windows
-  빌드는 컴파일만 검사합니다. Linux MIDI와 Windows MIDI/오디오 경로는 아직 실제
-  하드웨어에서 실행해 보지 않았습니다(Core MIDI, Core Audio, ALSA 재생은 확인함).
-- CLAP 에디터는 플러그인 소유 창에 플로팅할 수 없고, CLAP host에는 MIDI learn 모드,
+  선택한 프로그램)은 host의 컨트롤 포트에 도달하지 않습니다. 플러그인에는
+  `doap:license`가 없고, 데드라인 가드를 끈 플러그인은 `lv2:hardRTCapable`을
+  주장하지 않습니다.
+- 스탠드얼론 애플리케이션은 외부 클록(MIDI 클록, Ableton Link)을 따르지 않습니다.
+  Windows 애플리케이션은 Wine의 null 장치에서만 실행해 봤고, Linux MIDI와 Windows MIDI/오디오
+  경로는 아직 실제 하드웨어에서 실행해 보지 않았습니다(Core MIDI, Core Audio, ALSA
+  재생은 확인함).
+- CLAP host에는 MIDI learn 모드,
   키스위치, 노트 익스프레션 메타데이터 쿼리가 없습니다. 분산 플러그인은 하나의 CLAP
   객체로 실행되므로 그 경우 `Host.SendMessage`는 오류를 반환합니다.

@@ -10,13 +10,14 @@ It contains:
 
 - The official VST3 C API header (`include/vst3`), the CLAP headers (`include/clap`), the LV2 headers (`include/lv2`) and the C bridge glue in `pkg/plugin`
 - Go bindings for VST3 types and process structures
-- The plugin wrapper/runtime used to expose Go processors as VST3, CLAP, (on macOS) AUv2 and (on Linux) LV2 plugins (one binary serves every format), and the same package as a standalone application with audio/MIDI devices and its editor in a window (`pkg/standalone`)
-- A web editor SDK (`window.vst3go`, custom pages, typed TypeScript parameter bindings)
+- The plugin wrapper/runtime used to expose Go processors as VST3, CLAP, (on macOS) AUv2 and (on Linux) LV2 plugins (one binary serves every format), as AUv3 app extensions for macOS and iOS, and the same package as a standalone application with audio/MIDI devices, a transport, an audio settings window and its editor in a window (`pkg/standalone`)
+- ARA 2 support through VST3, CLAP and Audio Units (`pkg/ara`): plugins that edit and render the host's clips from the whole recording, with note analysis, archiving in the host's song and region rendering
+- A web editor SDK (`window.vst3go`, custom pages, typed TypeScript parameter bindings, the platform's open file dialog)
 - Generic plugin authoring primitives such as buses, parameters, process context, state, and MIDI/event transport
-- A DSP library (`pkg/dsp`): filters, dynamics (compressor, limiter, gate, expander, transient shaper), delay lines, modulation (LFOs, chorus, flanger, phaser, tremolo, ring modulation), reverbs (Schroeder, Freeverb, FDN), distortion (waveshaper, tube, tape, bitcrusher), oscillators (band-limited, wavetable, FM operators), envelopes, panning, mixing, interpolation, oversampling and sample-rate conversion, FFT and STFT processing, partitioned convolution, pitch shifting, time stretching and pitch detection, granular synthesis, sample playback and analysis (spectrum, peak/RMS/LUFS metering, phase correlation)
+- A DSP library (`pkg/dsp`): filters, dynamics (compressor, limiter, gate, expander, transient shaper), delay lines, modulation (LFOs, chorus, flanger, phaser, tremolo, ring modulation), reverbs (Schroeder, Freeverb, FDN), distortion (waveshaper, tube, tape, bitcrusher), oscillators (band-limited, wavetable, FM operators), envelopes, panning, mixing, interpolation, oversampling and sample-rate conversion, FFT and STFT processing, partitioned convolution, pitch shifting, time stretching and pitch detection, granular synthesis, sample playback with disk streaming, Neural Amp Modeler models (WaveNet, LSTM) and analysis (spectrum, peak/RMS/LUFS metering, phase correlation)
 - Processor chains (`pkg/framework/dsp`), polyphonic voice allocation (`pkg/framework/voice`) and debug/profiling helpers (`pkg/framework/debug`)
-- Showcase plugins (`examples/`): compressors, limiter, gate, transient shaper, drum bus, vocal strip, distortion, chorus, flanger, delay, filter, sidechain ducking, surround, an oversampled saturator, a convolution reverb, a pitch shifter, a tuner, a granulator, wavetable, FM and polyphonic synths, a sampler, a debug-logging example and more
-- Host features for effects, instruments and MIDI plugins: sample-accurate automation, 32/64-bit processing, sidechains and surround, MIDI CC/learn/MIDI 2.0 mapping, note expression and MPE, keyswitches, factory programs, `.vstpreset` presets, units, SysEx, parameter smoothing, edit gestures, distributed processor/controller, several plugins per binary, host-free plugin tests (`pkg/plugintest`), and audio file reading and writing (`pkg/audiofile`: WAV, AIFF, FLAC, Ogg Vorbis, MP3)
+- Showcase plugins (`examples/`): compressors, a multiband compressor, limiter, gate, transient shaper, drum bus, vocal strip, distortion, chorus, flanger, delay, filter, sidechain ducking, surround, an oversampled saturator, a convolution reverb, a pitch shifter, a tuner, a granulator, wavetable, FM and polyphonic synths, an SFZ sampler, a NAM amp, an ARA clip editor, a debug-logging example and more
+- Host features for effects, instruments and MIDI plugins: sample-accurate automation, 32/64-bit processing, sidechains and surround with host-negotiated layouts, MIDI CC/learn/MIDI 2.0 mapping and MIDI 2.0 input, note expression and MPE, keyswitches, factory programs, `.vstpreset` presets, units, SysEx, parameter smoothing, edit gestures, distributed processor/controller, several plugins per binary, host-free plugin tests (`pkg/plugintest`), and audio file reading and writing (`pkg/audiofile`: WAV, AIFF, FLAC, Ogg Vorbis, MP3)
 
 For what kinds of plugins you can build and how to use each host feature, see [`docs/plugin-capabilities.md`](docs/plugin-capabilities.md).
 For the web-rendered plugin editor flow, see [`docs/web-editor-bridge.md`](docs/web-editor-bridge.md).
@@ -111,6 +112,7 @@ just standalone ./path/to/plugin MyPlugin    # standalone application (.app / ex
 just check-standalone                         # standalone apps: null device, MIDI round trip, editor window
 just docker-check-linux-standalone            # standalone apps on Linux in Docker
 just docker-build-windows                     # mingw-w64 Windows cross build
+just docker-check-windows-wine                # the Windows build under Wine: hostcheck, clapcheck, apps
 ```
 
 ## Validation

@@ -65,6 +65,7 @@ with `vst3go.send("status")`, and a `vst3go.resize` at startup).
 | `presets` | `list`, `current`, `error`, `refresh()`, `save(name)`, `load(name)`, `onChange(fn)` (the user `.vstpreset` folder) |
 | `send(name, data)` / `on(name, fn)` | custom messages with the processor |
 | `size`, `resize(w, h)` | initial size and limits; ask the host for a new size (clamped to the limits) |
+| `chooseFile({ title, extensions })` | show the platform's open file dialog; resolves to the chosen path, or `null` when cancelled |
 
 A parameter (`Vst3goParam`) carries its `id`, `name`, `unit`, `kind`, plain
 `min`/`max`, `defaultValue` (plain) and `defaultNormalized`, `stepCount`,
@@ -107,6 +108,7 @@ the JSON to `GoEditorMessage`.
 | `{ type: "preset-load", name }` | load a preset from the user preset folder |
 | `{ type: "resize", width, height }` | ask the host for a new size (VST3 `IPlugFrame::resizeView`, CLAP `request_resize`), clamped to the limits |
 | `{ type: "message", name, data }` | `EditorMessageProcessor.EditorMessage(name, data)` |
+| `{ type: "choose-file", id, name, data: { extensions } }` | show the open file dialog with the prompt `name` for files with those extensions (any file for none); answered by `file-chosen` with the same `id` |
 
 Plugin to page: `VST3GoEditorViewPost` calls `window.__vst3goReceive(message)`
 (on Windows through `PostWebMessageAsJson` and the `message` event).
@@ -116,6 +118,16 @@ Plugin to page: `VST3GoEditorViewPost` calls `window.__vst3goReceive(message)`
 | `{ type: "param-change", id, normalized, plain, text }` | a parameter changed (host automation, preset, plugin edit) |
 | `{ type: "presets", presets: [names], current, error }` | the user presets after a preset message; `error` explains a failed save/load |
 | `{ type: "message", name, data }` | `Host.PostEditorMessage(name, data)` |
+| `{ type: "file-chosen", id, path, error }` | the answer to `choose-file`: the path, `""` when the user cancelled, or `error` |
+
+The open file dialog does not block: `NSOpenPanel` on macOS (with
+security-scoped bookmarks inside a sandbox, see AUv3 in
+[plugin-capabilities.md](plugin-capabilities.md#auv3)), a document picker
+on iOS (the file is copied into the extension's container),
+`IFileOpenDialog` on Windows (run from a timer of the UI thread, one at a
+time) and `GtkFileChooserNative` on Linux. Processors receive the path in
+their own message (`vst3go.send("load", { path })`) and read the file off
+the audio thread.
 
 ## Built-in Editor
 
@@ -139,7 +151,9 @@ and gestures on the sliders.
   VST3 and CLAP. On macOS `editorcheck_darwin.m` drives the SDK in the page:
   an edit gesture that must reach the plugin, a host change that must reach
   the SDK's value, text and listeners, the synth's startup resize, clamping to
-  its limits and a `send`/`on` round trip with the processor. On Linux
+  its limits, a `send`/`on` round trip with the processor and
+  `chooseFile` (the open panel's prompt and file types, cancelled to
+  `null`; a malformed extension rejected). On Linux
   `editorcheck.c` edits with XTest keyboard input and checks the startup
   resize.
 

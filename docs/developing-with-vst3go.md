@@ -1192,6 +1192,22 @@ That sequence produces one coherent plugin instead of a collection of unrelated 
 - do not make platform glue own business logic
 - do not hide important user controls behind undocumented behavior
 
+### 15.1 Measuring And Tuning Performance
+
+- Benchmark the processor with `go test -bench` on `plugintest` or
+  `plugin.NewOffline`, and keep `plugintest.AllocsPerProcess` at zero.
+- `go run ./internal/rtcheck` runs a processing chain on a real-time thread
+  while other goroutines allocate, and reports call times against the
+  block's budget.
+- Profile-guided optimization: a CPU profile of the processor under load,
+  saved as `default.pgo` in the plugin's main package directory (run
+  `go test -bench . -cpuprofile default.pgo` there), is used by every
+  `go build`, `vst3go build` included; DSP chains typically gain a few
+  percent.
+- Prefer `pkg/dsp` blocks where they fit: they convert dB with `math.Exp`
+  rather than `math.Pow`, use radix-4 FFTs and non-uniformly partitioned
+  convolution, and are benchmarked in the repository.
+
 ## 16. Validation Checklist For A New Plugin
 
 Before you call a plugin “done”, make sure:

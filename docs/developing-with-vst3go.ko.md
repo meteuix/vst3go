@@ -1191,6 +1191,19 @@ my-plugin/
 - 플랫폼 글루 코드가 비즈니스 로직을 소유하게 하지 마세요
 - 중요한 사용자 컨트롤을 문서화되지 않은 동작 뒤에 숨기지 마세요
 
+### 15.1 성능 측정과 튜닝
+
+- `plugintest`나 `plugin.NewOffline` 위에서 `go test -bench`로 프로세서를 벤치마크하고,
+  `plugintest.AllocsPerProcess`는 0으로 유지하세요.
+- `go run ./internal/rtcheck`는 다른 고루틴이 메모리를 할당하는 동안 실시간 스레드에서
+  처리 체인을 돌리고, 호출 시간을 블록 예산과 비교해 보고합니다.
+- 프로파일 기반 최적화(PGO): 부하를 건 프로세서의 CPU 프로파일을 플러그인 main 패키지
+  디렉터리에 `default.pgo`로 두면(그 디렉터리에서 `go test -bench . -cpuprofile default.pgo`
+  실행) `vst3go build`를 포함한 모든 `go build`가 이를 사용합니다. DSP 체인은 보통 몇
+  퍼센트 빨라집니다.
+- 맞는 블록이 있으면 `pkg/dsp`를 쓰세요. dB 변환에 `math.Pow` 대신 `math.Exp`를 쓰고,
+  radix-4 FFT와 비균일 분할 컨볼루션을 쓰며, 저장소에서 벤치마크됩니다.
+
 ## 16. 새 플러그인을 위한 검증 체크리스트
 
 플러그인이 “완성”되었다고 말하기 전에 다음을 확인하세요:

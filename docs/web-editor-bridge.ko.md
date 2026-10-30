@@ -63,6 +63,7 @@ func (p *Processor) Editor() plugin.Editor {
 | `presets` | `list`, `current`, `error`, `refresh()`, `save(name)`, `load(name)`, `onChange(fn)` (사용자 `.vstpreset` 폴더) |
 | `send(name, data)` / `on(name, fn)` | 프로세서와의 커스텀 메시지 |
 | `size`, `resize(w, h)` | 초기 크기와 제한. host에 새 크기를 요청(제한 범위로 고정됨) |
+| `chooseFile({ title, extensions })` | 플랫폼의 파일 열기 대화상자를 보여 주고, 고른 경로로(취소하면 `null`로) resolve |
 
 파라미터(`Vst3goParam`)는 `id`, `name`, `unit`, `kind`, plain `min`/`max`,
 `defaultValue`(plain)와 `defaultNormalized`, `stepCount`, `readOnly`, `hidden`, 그리고
@@ -103,6 +104,7 @@ SDK는 이 프로토콜을 감싸고 있으며, SDK를 쓰지 않는 페이지�
 | `{ type: "preset-load", name }` | 사용자 프리셋 폴더에서 프리셋을 로드 |
 | `{ type: "resize", width, height }` | host에 새 크기를 요청(VST3 `IPlugFrame::resizeView`, CLAP `request_resize`), 제한 범위로 고정됨 |
 | `{ type: "message", name, data }` | `EditorMessageProcessor.EditorMessage(name, data)` |
+| `{ type: "choose-file", id, name, data: { extensions } }` | 안내 문구 `name`과 그 확장자의 파일(없으면 모든 파일)로 파일 열기 대화상자를 보여 줌. 같은 `id`의 `file-chosen`으로 응답 |
 
 플러그인에서 페이지로: `VST3GoEditorViewPost`가 `window.__vst3goReceive(message)`를
 호출합니다(Windows에서는 `PostWebMessageAsJson`과 `message` 이벤트를 통해).
@@ -112,6 +114,14 @@ SDK는 이 프로토콜을 감싸고 있으며, SDK를 쓰지 않는 페이지�
 | `{ type: "param-change", id, normalized, plain, text }` | 파라미터가 바뀜(host 오토메이션, 프리셋, 플러그인 편집) |
 | `{ type: "presets", presets: [names], current, error }` | 프리셋 메시지 이후의 사용자 프리셋. `error`는 저장/로드 실패 사유를 설명 |
 | `{ type: "message", name, data }` | `Host.PostEditorMessage(name, data)` |
+| `{ type: "file-chosen", id, path, error }` | `choose-file`에 대한 응답: 경로, 사용자가 취소하면 `""`, 또는 `error` |
+
+파일 열기 대화상자는 블로킹하지 않습니다. macOS에서는 `NSOpenPanel`(샌드박스 안에서는
+security-scoped bookmark 사용, [plugin-capabilities.ko.md](plugin-capabilities.ko.md#auv3)의
+AUv3 참고), iOS에서는 document picker(파일을 확장의 컨테이너로 복사), Windows에서는
+`IFileOpenDialog`(UI 스레드의 타이머에서 한 번에 하나씩 실행), Linux에서는
+`GtkFileChooserNative`를 씁니다. 프로세서는 경로를 자체 메시지
+(`vst3go.send("load", { path })`)로 받아 오디오 스레드 밖에서 파일을 읽습니다.
 
 ## 내장 에디터
 
@@ -133,7 +143,8 @@ SDK는 이 프로토콜을 감싸고 있으며, SDK를 쓰지 않는 페이지�
   신스(커스텀) 에디터를 VST3와 CLAP으로 실제 창에서 엽니다. macOS에서는
   `editorcheck_darwin.m`이 페이지 안의 SDK를 구동합니다. 플러그인에 도달해야 하는 편집
   제스처, SDK의 값, 텍스트, 리스너에 도달해야 하는 host 변경, 신스의 시작 시 크기 조절,
-  제한 범위로의 고정, 프로세서와의 `send`/`on` 왕복을 검사합니다. Linux에서는
+  제한 범위로의 고정, 프로세서와의 `send`/`on` 왕복, `chooseFile`(open panel의 안내
+  문구와 파일 형식, 취소하면 `null`, 잘못된 확장자는 거부)을 검사합니다. Linux에서는
   `editorcheck.c`가 XTest 키보드 입력으로 편집하고 시작 시 크기 조절을 확인합니다.
 
 ## 왜 이런 구조인가

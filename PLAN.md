@@ -128,7 +128,9 @@ English | [한국어](PLAN.ko.md)
   - [x] Add Windows-specific flags only where necessary.
   - [x] Minimize platform divergence.
 - [ ] Validate on real toolchains and hosts.
-  - [ ] Start with MinGW-w64.
+  - [x] Start with MinGW-w64: cross build, hostcheck, clapcheck and the
+        standalone applications under Wine (`docker_check_windows_wine.sh`).
+  - [ ] Run in real Windows hosts (`docs/windows-validation.md`).
   - [ ] Keep MSVC as a later enhancement if justified.
 - [x] Capture Windows-specific risks.
   - [x] Shared-library behavior with Go.
@@ -199,9 +201,42 @@ work, DSP included.
       sample playback, each with showcase plugins (`saturator`,
       `convreverb`, `pitchshifter`, `tuner`, `wavetablesynth`, `fmsynth`,
       `granulator`, `sampler`).
+- [x] Parameter curves (`Logarithmic`, `Center`), a phase-aligned
+      Linkwitz-Riley crossover with a `multiband` compressor, streaming time
+      stretching, and SFZ instruments with layers, round robin and loop
+      modes in the sampler.
+- [x] Deadline guard, on by default: blocks run on a dedicated real-time
+      thread so a Go stall costs a silent block instead of a host overrun
+      (VST3, CLAP, AU, LV2, standalone), and the host's audio thread never
+      enters Go (flushes and resets are guarded jobs, input that does not
+      fit is carried, LV2 declares `lv2:hardRTCapable` and follows
+      `lv2:freeWheeling`, the standalone audio callback is C). Checked with
+      the `stall` validation plugin in every host check; Audio Unit
+      rendering never waits for the main thread.
 - [x] Showcase plugins in `examples/` on the current runtime
       (`standalone.Main`, allocation-free processing, read-only meters via
       `ctx.SetOutputParameter`), each with offline `pkg/plugintest` tests.
+- [x] Garbage collection headroom: the collector runs after 64 MB of
+      garbage instead of on Go's heap-doubling pacing, and activation
+      collects before the first block (`plugin.SetGCHeadroom`).
+- [x] Format gaps: MIDI 2.0 input (CLAP `midi2` dialect, AU MIDI event
+      lists, MIDI 2.0 output to AU hosts that ask for it), host-negotiated
+      layouts (CLAP `configurable-audio-ports` and `surround`, AU channel
+      configurations and layout tags), floating CLAP editors, and a
+      standalone toolbar with a transport and an audio and MIDI settings
+      window (`plugin.Panel`).
+- [x] Disk streaming in the sampler (`sampler.Streamer`) and Neural Amp
+      Modeler models (`pkg/dsp/nam`, `examples/namamp`), checked against
+      NeuralAmpModelerCore's output.
+- [x] AUv3 app extensions for macOS and iOS (`-format auv3`, `-platform`,
+      `-sign`), checked with auval, `aucheck` and `auv3check` out of process
+      and in the iOS simulator; `vst3go.chooseFile` opens the platform's file
+      dialog and keeps sandboxed access to the picked files.
+- [x] ARA 2 through VST3, CLAP and Audio Units (`pkg/ara`, `plugin.ARAPlugin`,
+      `examples/araclip`), checked by `aracheck`, a minimal ARA host, on
+      ARM and on x86 (packed structs).
+- [ ] AAX: blocked; it needs Avid's SDK (developer account) and PACE
+      signing (see Known limits in `docs/plugin-capabilities.md`).
 
 ## Ongoing Rules
 
