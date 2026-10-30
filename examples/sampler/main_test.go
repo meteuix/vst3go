@@ -51,11 +51,23 @@ func waitLoaded(t *testing.T, p *plugintest.Instance) loadStatus {
 	return loadStatus{}
 }
 
-// pitchOf plays a held note and measures its frequency.
+// pitchOf plays a held note and measures its frequency. The render runs
+// faster than real time, so it stays within the preloaded start of the
+// sample (sampler.DefaultPreload frames, 0.74 s at 44.1 kHz): a G4 from a C4
+// root recorded at 44.1 kHz reads 27,500 source frames in 20,000 output
+// frames at 48 kHz.
 func pitchOf(t *testing.T, p *plugintest.Instance, note uint8) float64 {
 	t.Helper()
-	p.Note(0, note, 1, 0, 23999)
-	out := p.RenderSilence(24000, 0, 2)
+	st, err := streamer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := st.Underruns()
+	p.Note(0, note, 1, 0, 19999)
+	out := p.RenderSilence(20000, 0, 2)
+	if u := st.Underruns() - before; u != 0 {
+		t.Fatalf("note %d: %d underruns", note, u)
+	}
 	return plugintest.ZeroCrossingFrequency(out[0][4800:], 48000)
 }
 
