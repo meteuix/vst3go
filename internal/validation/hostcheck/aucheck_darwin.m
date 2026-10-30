@@ -506,6 +506,34 @@ int main(int argc, char** argv) {
             CHECK(midiOutNotes == 1 && midiOutKey == 72, "transposed note out: %d notes, key %d", midiOutNotes, midiOutKey);
             printf("midifx: note 60 came out as %d\n", midiOutKey);
 
+            // Without audio elements the rate is the global scope's: the
+            // output device's until the host sets one before initializing.
+            if (!v3) {
+                Float64 rate = 0, device = 0;
+                UInt32 size = sizeof(rate);
+                OK(AudioUnitGetProperty(unit, kAudioUnitProperty_SampleRate, kAudioUnitScope_Global, 0, &rate, &size), "global sample rate");
+                AudioObjectPropertyAddress address = { kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
+                AudioObjectID output = kAudioObjectUnknown;
+                size = sizeof(output);
+                if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &address, 0, NULL, &size, &output) == noErr && output != kAudioObjectUnknown) {
+                    address.mSelector = kAudioDevicePropertyNominalSampleRate;
+                    size = sizeof(device);
+                    AudioObjectGetPropertyData(output, &address, 0, NULL, &size, &device);
+                }
+                CHECK(rate == (device > 0 ? device : 44100), "MIDI processor at %g Hz, output device at %g Hz", rate, device);
+                Float64 other = rate == 96000 ? 88200 : 96000;
+                CHECK(AudioUnitSetProperty(unit, kAudioUnitProperty_SampleRate, kAudioUnitScope_Global, 0, &other, sizeof(other)) == kAudioUnitErr_Initialized,
+                      "global sample rate changed while initialized");
+                OK(AudioUnitUninitialize(unit), "uninitialize");
+                OK(AudioUnitSetProperty(unit, kAudioUnitProperty_SampleRate, kAudioUnitScope_Global, 0, &other, sizeof(other)), "set the global sample rate");
+                OK(AudioUnitInitialize(unit), "initialize at the host's rate");
+                size = sizeof(rate);
+                OK(AudioUnitGetProperty(unit, kAudioUnitProperty_SampleRate, kAudioUnitScope_Global, 0, &rate, &size), "global sample rate");
+                CHECK(rate == other, "MIDI processor at %g Hz, host set %g Hz", rate, other);
+                CHECK(render(outChannels) == 0, "MIDI processor renders at the host's rate");
+                printf("midifx: %g Hz from the output device, %g Hz from the host\n", device > 0 ? device : 44100, rate);
+            }
+
             // MIDI 2.0: a host that asks for it before initializing gets
             // MIDI 2.0 messages through the event list callback, with
             // 16-bit velocities intact.

@@ -40,6 +40,8 @@ names=(gain synth midifx ducker stall)
 kinds=(effect instrument midifx sidechain stall)
 # Editor sizes: the synth's page, the generic editor's default for the rest.
 sizes=(900x640 640x400 900x640 900x640 900x640)
+# Their smallest sizes (0x0: unbounded), for the view configurations.
+minimums=(0x0 480x320 0x0 0x0 0x0)
 for name in "${names[@]}"; do
   (cd "$repo_root" && go run ./cmd/vst3go build -format auv3 -o "${out}/${name}" "./internal/validation/${name}" "$name" >/dev/null)
   app="${out}/${name}/${name}.app"
@@ -84,7 +86,7 @@ for i in "${!names[@]}"; do
     status=1
     continue
   fi
-  if ! "${out}/auv3check" "${codes[@]}" "${sizes[$i]}" > "${out}/${name}.auv3check.txt" 2>&1; then
+  if ! "${out}/auv3check" "${codes[@]}" "${sizes[$i]}" "${minimums[$i]}" > "${out}/${name}.auv3check.txt" 2>&1; then
     echo "FAIL ${name}: auv3check ($(tail -1 "${out}/${name}.auv3check.txt"))"
     status=1
     continue
@@ -112,7 +114,7 @@ if [[ -n "${IOS_SIMULATOR:-}" ]]; then
     fi
     sleep 2
     log="${out}/${name}.ios.auv3check.txt"
-    if ! xcrun simctl spawn "$IOS_SIMULATOR" "${out}/auv3check-ios" "${codes[@]}" "${sizes[$i]}" > "$log" 2>&1; then
+    if ! xcrun simctl spawn "$IOS_SIMULATOR" "${out}/auv3check-ios" "${codes[@]}" "${sizes[$i]}" "${minimums[$i]}" > "$log" 2>&1; then
       echo "FAIL ${name}: iOS simulator auv3check ($(tail -1 "$log"))"
       status=1
     else

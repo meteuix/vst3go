@@ -1,13 +1,15 @@
 // auv3check drives a registered vst3go AUv3 extension through the AUv3 API
 // the way an AUv3 host does: out-of-process instantiation, the parameter
 // tree, fullState round trips, rendering through the render block, and
-// the extension's view controller, whose preferred size is the editor's.
+// the extension's view controller, whose preferred size is the editor's,
+// and the host's view configurations, which the editor's limits answer.
 // It builds for macOS and for the iOS simulator, where it runs with
 // xcrun simctl spawn; there the view controller's view is loaded without
 // a window.
 //
-// usage: auv3check <type> <subtype> <manufacturer> [<width>x<height>]
-// The size, when given, is the editor's.
+// usage: auv3check <type> <subtype> <manufacturer> [<width>x<height> [<min width>x<min height>]]
+// The size, when given, is the editor's; the minimum, when given, is its
+// smallest size (0x0: unbounded) and enables the view configuration check.
 #include <TargetConditionals.h>
 #import <AudioToolbox/AudioToolbox.h>
 #import <CoreAudioKit/CoreAudioKit.h>
@@ -47,9 +49,13 @@ static void run(double seconds) {
 
 int main(int argc, char** argv) {
     @autoreleasepool {
-        CHECK(argc == 4 || argc == 5, "usage: auv3check <type> <subtype> <manufacturer> [<width>x<height>]");
-        double wantWidth = 0, wantHeight = 0;
+        CHECK(argc >= 4 && argc <= 6, "usage: auv3check <type> <subtype> <manufacturer> [<width>x<height> [<min width>x<min height>]]");
+        double wantWidth = 0, wantHeight = 0, minWidth = 0, minHeight = 0;
         CHECK(argc == 4 || sscanf(argv[4], "%lfx%lf", &wantWidth, &wantHeight) == 2, "editor size %s", argv[4]);
+        int minW = 0, minH = 0;  // %lf would read 0x0 as a hexadecimal number
+        CHECK(argc < 6 || sscanf(argv[5], "%dx%d", &minW, &minH) == 2, "editor minimum %s", argv[5]);
+        minWidth = minW;
+        minHeight = minH;
 #if TARGET_OS_OSX
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
@@ -161,6 +167,29 @@ int main(int argc, char** argv) {
         CHECK(size.width > 0 && size.height > 0, "editor size %gx%g", size.width, size.height);
         CHECK(argc == 4 || (size.width == wantWidth && size.height == wantHeight), "editor size %gx%g, want %s", size.width, size.height, argv[4]);
         printf("editor: %gx%g\n", size.width, size.height);
+
+        if (argc == 6) {
+            // A host's areas: one below the editor's minimum, one larger
+            // than the editor, any size. The editor takes the one it fits.
+            NSArray<AUAudioUnitViewConfiguration*>* configurations = @[
+                [[AUAudioUnitViewConfiguration alloc] initWithWidth:300 height:200 hostHasController:NO],
+                [[AUAudioUnitViewConfiguration alloc] initWithWidth:size.width + 100 height:size.height + 60 hostHasController:NO],
+                [[AUAudioUnitViewConfiguration alloc] initWithWidth:0 height:0 hostHasController:YES],
+            ];
+            NSIndexSet* supported = [unit supportedViewConfigurations:configurations];
+            BOOL small = minWidth <= 300 && minHeight <= 200;
+            CHECK([supported containsIndex:0] == small && [supported containsIndex:1] && [supported containsIndex:2] && supported.count == (small ? 3 : 2),
+                  "supported view configurations %s, minimum %gx%g", supported.description.UTF8String, minWidth, minHeight);
+            // The extension resizes its editor to the selected area. Hosts
+            // lay the view out at that size themselves; the extension's
+            // preferred size does not come back through the remote view
+            // controller once delivered, so the check is that the
+            // extension takes the call and keeps serving the unit.
+            [unit selectViewConfiguration:configurations[1]];
+            run(0.3);
+            CHECK(unit.fullState[@kAUPresetDataKey], "the unit answers after a view configuration was selected");
+            printf("view configurations: %s of 3 supported (minimum %gx%g), one selected\n", supported.description.UTF8String, minWidth, minHeight);
+        }
 #if TARGET_OS_OSX
         [window close];
 #endif

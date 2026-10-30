@@ -139,6 +139,11 @@ typedef struct AUInstance {
     clap_audio_buffer_t inBuffers[AU_MAX_PORTS], outBuffers[AU_MAX_PORTS];
     uint32_t inCount, outCount;
     UInt32 maxFrames;
+    // The rate of a unit without audio elements (a MIDI processor): the
+    // host's global sample rate, or the output device's at initialize
+    // while the host has set none.
+    Float64 globalRate;
+    bool globalRateSet;
     bool initialized;
     bool processing;  // render lock
     int64_t steadyTime;
@@ -241,7 +246,29 @@ static void schedule_main(AUInstance* a) {
 static Float64 au_sample_rate(AUInstance* a) {
     if (a->outCount) return a->outs[0].sampleRate;
     if (a->inCount) return a->ins[0].sampleRate;
-    return 44100;
+    return a->globalRate;
+}
+
+// output_device_rate is the default output device's nominal rate, which
+// the host renders at, or 0 (no device, iOS).
+static Float64 output_device_rate(void) {
+#if TARGET_OS_OSX
+    AudioObjectPropertyAddress address = { kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal,
+                                           kAudioObjectPropertyElementMain };
+    AudioObjectID device = kAudioObjectUnknown;
+    UInt32 size = sizeof(device);
+    if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &address, 0, NULL, &size, &device) != noErr ||
+        device == kAudioObjectUnknown) {
+        return 0;
+    }
+    address.mSelector = kAudioDevicePropertyNominalSampleRate;
+    Float64 rate = 0;
+    size = sizeof(rate);
+    if (AudioObjectGetPropertyData(device, &address, 0, NULL, &size, &rate) != noErr) return 0;
+    return rate;
+#else
+    return 0;
+#endif
 }
 
 static int32_t param_index(AUInstance* a, AudioUnitParameterID id) {
@@ -1098,6 +1125,20 @@ static AUElement* element(AUInstance* a, AudioUnitScope scope, AudioUnitElement 
     return NULL;
 }
 
+// rate_element is the element whose sample rate a scope's SampleRate
+// property is: the global scope's is output 0's (input 0's for a unit
+// without outputs), as in AUBase; NULL with status noErr for a unit
+// without audio elements, whose rate is globalRate.
+static AUElement* rate_element(AUInstance* a, AudioUnitScope scope, AudioUnitElement elem, OSStatus* status) {
+    if (scope != kAudioUnitScope_Global) return element(a, scope, elem, status);
+    if (elem != 0) {
+        *status = kAudioUnitErr_InvalidElement;
+        return NULL;
+    }
+    *status = noErr;
+    return a->outCount ? &a->outs[0] : a->inCount ? &a->ins[0] : NULL;
+}
+
 static bool is_effect(AUInstance* a) { return a->inCount > 0 && a->outCount > 0; }
 
 static AudioStreamBasicDescription stream_format(const AUElement* e) {
@@ -1230,7 +1271,7 @@ static OSStatus property_info(AUInstance* a, AudioUnitPropertyID id, AudioUnitSc
         *writable = true;
         return noErr;
     case kAudioUnitProperty_SampleRate:
-        if (!element(a, scope, elem, &status)) return status;
+        if (!rate_element(a, scope, elem, &status) && status != noErr) return status;
         *size = sizeof(Float64);
         *writable = true;
         return noErr;
@@ -1514,9 +1555,11 @@ static OSStatus get_property(AUInstance* a, AudioUnitPropertyID id, AudioUnitSco
     case kAudioUnitProperty_SetRenderCallback:
         *(AURenderCallbackStruct*)out = a->ins[elem].callback;
         return noErr;
-    case kAudioUnitProperty_SampleRate:
-        *(Float64*)out = element(a, scope, elem, &status)->sampleRate;
+    case kAudioUnitProperty_SampleRate: {
+        AUElement* e = rate_element(a, scope, elem, &status);
+        *(Float64*)out = e ? e->sampleRate : a->globalRate;
         return noErr;
+    }
     case kAudioUnitProperty_StreamFormat:
         *(AudioStreamBasicDescription*)out = stream_format(element(a, scope, elem, &status));
         return noErr;
@@ -1727,10 +1770,21 @@ static OSStatus set_property(AUInstance* a, AudioUnitPropertyID id, AudioUnitSco
     }
     case kAudioUnitProperty_SampleRate:
     case kAudioUnitProperty_StreamFormat: {
-        AUElement* e = element(a, scope, elem, &status);
+        AUElement* e = id == kAudioUnitProperty_SampleRate ? rate_element(a, scope, elem, &status) : element(a, scope, elem, &status);
         Float64 rate;
         if (id == kAudioUnitProperty_SampleRate) {
             rate = *(const Float64*)in;
+            if (!e) {
+                if (!(rate > 0)) return kAudioUnitErr_FormatNotSupported;
+                if (rate == a->globalRate) {
+                    a->globalRateSet = true;
+                    break;
+                }
+                if (a->initialized) return kAudioUnitErr_Initialized;
+                a->globalRate = rate;
+                a->globalRateSet = true;
+                break;
+            }
         } else {
             const AudioStreamBasicDescription* f = (const AudioStreamBasicDescription*)in;
             if (f->mFormatID != kAudioFormatLinearPCM || !(f->mFormatFlags & kAudioFormatFlagIsFloat) ||
@@ -1972,6 +2026,10 @@ static OSStatus au_initialize(void* self) {
     AUInstance* a = (AUInstance*)self;
     if (a->initialized) return noErr;
     if (a->outCount && !apply_channels(a)) return kAudioUnitErr_FormatNotSupported;
+    if (!a->inCount && !a->outCount && !a->globalRateSet) {
+        Float64 rate = output_device_rate();
+        if (rate > 0) a->globalRate = rate;
+    }
     if (!alloc_buffers(a)) {
         free_buffers(a);
         return kAudioUnitErr_FailedInitialization;
@@ -2278,6 +2336,7 @@ static void* new_instance(const AudioComponentDescription* desc, uint32_t index)
     a->iface.Lookup = au_lookup;
     a->desc = *desc;
     a->index = index;
+    a->globalRate = 44100;
     a->renderLock = a->queueLock = a->noticeLock = a->listenerLock = OS_UNFAIR_LOCK_INIT;
     return a;
 }
@@ -2338,11 +2397,42 @@ bool vst3go_au_register(const AudioComponentDescription* desc, AudioComponentDes
     return ok;
 }
 
+static AUInstance* unit_instance(AudioUnit unit) {
+    AUInstance* a = NULL;
+    UInt32 size = sizeof(a);
+    if (AudioUnitGetProperty(unit, kVST3GoAUProperty_Instance, kAudioUnitScope_Global, 0, &a, &size) != noErr) return NULL;
+    return a;
+}
+
 // vst3go_au_open_view opens the editor of a component instance, NULL
 // without one; the view is autoreleased.
 AUNativeView* vst3go_au_open_view(AudioUnit unit) {
-    AUInstance* a = NULL;
-    UInt32 size = sizeof(a);
-    if (AudioUnitGetProperty(unit, kVST3GoAUProperty_Instance, kAudioUnitScope_Global, 0, &a, &size) != noErr || !a) return nil;
-    return open_gui(a);
+    AUInstance* a = unit_instance(unit);
+    return a ? open_gui(a) : nil;
+}
+
+// vst3go_au_view_fits reports whether the open editor shows in an area of
+// width x height (0 x 0: any size), at that size or, when its limits or
+// fixed size keep it smaller, inside it: 1 yes, 0 no, -1 no editor is
+// open. Main thread.
+int vst3go_au_view_fits(AudioUnit unit, double width, double height) {
+    AUInstance* a = unit_instance(unit);
+    if (!a || !a->guiCreated) return -1;
+    if (width <= 0 && height <= 0) return 1;
+    if (width < 1 || height < 1) return 0;
+    uint32_t w = (uint32_t)width, h = (uint32_t)height;
+    if (!a->gui->can_resize(a->plugin) || !a->gui->adjust_size(a->plugin, &w, &h)) {
+        if (!a->gui->get_size(a->plugin, &w, &h)) return 0;
+    }
+    return w <= width && h <= height;
+}
+
+// vst3go_au_select_view resizes the open editor to the host's view
+// configuration, as far as its limits let it, and posts
+// VST3GoAUEditorResized. Main thread.
+void vst3go_au_select_view(AudioUnit unit, double width, double height) {
+    AUInstance* a = unit_instance(unit);
+    if (!a || !a->view || width < 1 || height < 1) return;
+    CGSize size = host_size(a, CGSizeMake(width, height));
+    resize_view(a, (uint32_t)size.width, (uint32_t)size.height);
 }
