@@ -30,7 +30,7 @@ func readF32(t testing.TB, path string) []float32 {
 // testdata/input.f32 in blocks of 64 frames, with fast tanh as the NAM
 // plugin runs it. wavenet.f32 and lstm.f32 are from NAM core v0.1.0; the
 // rest are from its main branch (0.7 files, with NAM_ENABLE_A2_FAST), made
-// by testdata/core/render.cpp:
+// by testdata/ref/render.cpp:
 //
 //	render model.nam testdata/input.f32 out.f32 64 [size]
 //
@@ -46,26 +46,26 @@ var coreCases = []struct {
 }{
 	{"wavenet.nam", "wavenet.f32", -1},
 	{"lstm.nam", "lstm.f32", -1},
-	{"core/A2.nam", "core/A2.f32", -1},
-	{"core/A2.nam", "core/A2@0.3.f32", 0.3},
-	{"core/slimmable_container.nam", "core/slimmable_container.f32", -1},
-	{"core/slimmable_container.nam", "core/slimmable_container@0.2.f32", 0.2},
-	{"core/slimmable_container.nam", "core/slimmable_container@0.5.f32", 0.5},
-	{"core/slimmable_wavenet.nam", "core/slimmable_wavenet.f32", -1},
-	{"core/slimmable_wavenet.nam", "core/slimmable_wavenet@0.1.f32", 0.1},
-	{"core/slimmable_wavenet.nam", "core/slimmable_wavenet@0.5.f32", 0.5},
-	{"core/wavenet_a2_feature_test.nam", "core/wavenet_a2_feature_test.f32", -1},
-	{"core/wavenet_condition_dsp.nam", "core/wavenet_condition_dsp.f32", -1},
-	{"core/gen_convnet.nam", "core/gen_convnet.f32", -1},
-	{"core/gen_convnet_batchnorm.nam", "core/gen_convnet_batchnorm.f32", -1},
-	{"core/gen_wavenet_features.nam", "core/gen_wavenet_features.f32", -1},
-	{"core/gen_wavenet_activations.nam", "core/gen_wavenet_activations.f32", -1},
-	{"core/gen_sequential.nam", "core/gen_sequential.f32", -1},
-	{"core/gen_sequential_lstm.nam", "core/gen_sequential_lstm.f32", -1},
-	{"core/gen_slimmable.nam", "core/gen_slimmable.f32", -1},
-	{"core/gen_slimmable.nam", "core/gen_slimmable@0.1.f32", 0.1},
-	{"core/gen_slimmable.nam", "core/gen_slimmable@0.4.f32", 0.4},
-	{"core/gen_slimmable.nam", "core/gen_slimmable@0.6.f32", 0.6},
+	{"ref/A2.nam", "ref/A2.f32", -1},
+	{"ref/A2.nam", "ref/A2@0.3.f32", 0.3},
+	{"ref/slimmable_container.nam", "ref/slimmable_container.f32", -1},
+	{"ref/slimmable_container.nam", "ref/slimmable_container@0.2.f32", 0.2},
+	{"ref/slimmable_container.nam", "ref/slimmable_container@0.5.f32", 0.5},
+	{"ref/slimmable_wavenet.nam", "ref/slimmable_wavenet.f32", -1},
+	{"ref/slimmable_wavenet.nam", "ref/slimmable_wavenet@0.1.f32", 0.1},
+	{"ref/slimmable_wavenet.nam", "ref/slimmable_wavenet@0.5.f32", 0.5},
+	{"ref/wavenet_a2_feature_test.nam", "ref/wavenet_a2_feature_test.f32", -1},
+	{"ref/wavenet_condition_dsp.nam", "ref/wavenet_condition_dsp.f32", -1},
+	{"ref/gen_convnet.nam", "ref/gen_convnet.f32", -1},
+	{"ref/gen_convnet_batchnorm.nam", "ref/gen_convnet_batchnorm.f32", -1},
+	{"ref/gen_wavenet_features.nam", "ref/gen_wavenet_features.f32", -1},
+	{"ref/gen_wavenet_activations.nam", "ref/gen_wavenet_activations.f32", -1},
+	{"ref/gen_sequential.nam", "ref/gen_sequential.f32", -1},
+	{"ref/gen_sequential_lstm.nam", "ref/gen_sequential_lstm.f32", -1},
+	{"ref/gen_slimmable.nam", "ref/gen_slimmable.f32", -1},
+	{"ref/gen_slimmable.nam", "ref/gen_slimmable@0.1.f32", 0.1},
+	{"ref/gen_slimmable.nam", "ref/gen_slimmable@0.4.f32", 0.4},
+	{"ref/gen_slimmable.nam", "ref/gen_slimmable@0.6.f32", 0.6},
 }
 
 func newModel(t testing.TB, f *File, size float64) *Model {
@@ -121,10 +121,10 @@ func TestSlimmableSizes(t *testing.T) {
 		model string
 		sizes []float64
 	}{
-		{"core/A2.nam", []float64{0.5}},
-		{"core/slimmable_container.nam", []float64{0.33, 0.66}},
-		{"core/slimmable_wavenet.nam", []float64{1.0 / 3, 2.0 / 3}},
-		{"core/gen_slimmable.nam", []float64{1.0 / 3, 0.5, 2.0 / 3}},
+		{"ref/A2.nam", []float64{0.5}},
+		{"ref/slimmable_container.nam", []float64{0.33, 0.66}},
+		{"ref/slimmable_wavenet.nam", []float64{1.0 / 3, 2.0 / 3}},
+		{"ref/gen_slimmable.nam", []float64{1.0 / 3, 0.5, 2.0 / 3}},
 		{"wavenet.nam", nil},
 	} {
 		f, err := Load("testdata/" + c.model)
@@ -136,7 +136,7 @@ func TestSlimmableSizes(t *testing.T) {
 		}
 	}
 	// Sizes past the ends clamp to them.
-	f, err := Load("testdata/core/gen_slimmable.nam")
+	f, err := Load("testdata/ref/gen_slimmable.nam")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +390,7 @@ func generated(t testing.TB, rng *rand.Rand, arch string, config map[string]any,
 // NAM_GENERATE is set; render.cpp makes their references.
 func TestGenerateModels(t *testing.T) {
 	if os.Getenv("NAM_GENERATE") == "" {
-		t.Skip("set NAM_GENERATE to write testdata/core/gen_*.nam")
+		t.Skip("set NAM_GENERATE to write testdata/ref/gen_*.nam")
 	}
 	rng := rand.New(rand.NewPCG(11, 12))
 	gen := func(arch string, config map[string]any, rate float64, positive bool) model {
@@ -488,7 +488,7 @@ func TestGenerateModels(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join("testdata", "core", name+".nam"), data, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join("testdata", "ref", name+".nam"), data, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -518,7 +518,7 @@ func BenchmarkWaveNetStandard(b *testing.B) {
 
 // BenchmarkA2 runs NAM's A2 model at full size on blocks of 128 frames.
 func BenchmarkA2(b *testing.B) {
-	f, err := Load("testdata/core/A2.nam")
+	f, err := Load("testdata/ref/A2.nam")
 	if err != nil {
 		b.Fatal(err)
 	}
