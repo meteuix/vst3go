@@ -3,7 +3,7 @@
 // factory (VST3 main factory class, CLAP ARA factory and plug-in
 // extension, Audio Unit ARA properties), the document controller with the host's audio access, archiving, content access and
 // model update interfaces, note analysis read back through content
-// readers, binding a plugin instance as playback renderer, rendering a
+// readers, the choice of processing algorithm, audio file chunks, binding a plugin instance as playback renderer, rendering a
 // playback region at its song position, storing and restoring the document
 // archive, and both teardown orders (plugin first, document controller
 // first). scripts/validate_ara.sh builds and runs it.
@@ -237,6 +237,7 @@ static void check_factory(const ARAFactory* f) {
     CHECK(f->plugInName && !strcmp(f->plugInName, "ARA Clip"), "plugin name");
     CHECK(f->analyzeableContentTypesCount == 1 && f->analyzeableContentTypes[0] == kARAContentTypeNotes, "analyzeable content types");
     CHECK(f->createDocumentControllerWithDocument, "createDocumentControllerWithDocument");
+    CHECK(f->supportsStoringAudioFileChunks, "audio file chunks");
     ARAInterfaceConfiguration config = { sizeof(config), f->highestSupportedApiGeneration, NULL };
     f->initializeARAWithConfiguration(&config);
 }
@@ -280,43 +281,98 @@ static Song open_song(const ARAFactory* f) {
     return s;
 }
 
-static void check_notes(Song* s) {
-    ARAContentType notes = kARAContentTypeNotes;
-    s->dc->requestAudioSourceContentAnalysis(s->ref, s->source, 1, &notes);
+static void wait_analysis(Song* s) {
     // Generous: under emulation (Wine on Rosetta) Go code runs tens of
     // times slower than native.
     double deadline = now() + 60;
-    while (s->dc->isAudioSourceContentAnalysisIncomplete(s->ref, s->source, notes)) {
+    while (s->dc->isAudioSourceContentAnalysisIncomplete(s->ref, s->source, kARAContentTypeNotes)) {
         CHECK(now() < deadline, "analysis did not finish");
         s->dc->notifyModelUpdates(s->ref);
         struct timespec ts = { 0, 10000000 };
         nanosleep(&ts, NULL);
     }
     s->dc->notifyModelUpdates(s->ref);
-    CHECK(hostLog.analysisCompleted >= 1 && hostLog.sourceChanged >= 1, "analysis notifications: %d completed, %d changes",
-          hostLog.analysisCompleted, hostLog.sourceChanged);
-    CHECK(hostLog.badReads == 0 && hostLog.reads > 0, "audio reads: %d, %d out of range", hostLog.reads, hostLog.badReads);
-    CHECK(s->dc->isAudioSourceContentAvailable(s->ref, s->source, notes), "notes available");
-    CHECK(s->dc->getAudioSourceContentGrade(s->ref, s->source, notes) == kARAContentGradeDetected, "notes grade");
-    CHECK(!s->dc->isAudioSourceContentAvailable(s->ref, s->source, kARAContentTypeTempoEntries), "the plugin has no tempo of its own");
+}
 
+// check_note checks the one note of the recording.
+static void check_note(Song* s) {
+    ARAContentType notes = kARAContentTypeNotes;
+    CHECK(!s->dc->isAudioSourceContentAnalysisIncomplete(s->ref, s->source, notes), "analysis incomplete");
+    CHECK(s->dc->isAudioSourceContentAvailable(s->ref, s->source, notes), "notes available");
     ARAContentReaderRef r = s->dc->createAudioSourceContentReader(s->ref, s->source, notes, NULL);
     CHECK(r && s->dc->getContentReaderEventCount(s->ref, r) == 1, "one note");
     const ARAContentNote* n = s->dc->getContentReaderDataForEvent(s->ref, r, 0);
     CHECK(n->pitchNumber == 69 && fabsf(n->frequency - 440) < 2 && fabs(n->startPosition - 0.5) < 0.05 && fabs(n->noteDuration - 1) < 0.05,
           "note pitch %d, %f Hz, from %f for %f s", n->pitchNumber, n->frequency, n->startPosition, n->noteDuration);
     s->dc->destroyContentReader(s->ref, r);
+}
+
+static void check_notes(Song* s) {
+    ARAContentType notes = kARAContentTypeNotes;
+    s->dc->requestAudioSourceContentAnalysis(s->ref, s->source, 1, &notes);
+    wait_analysis(s);
+    CHECK(hostLog.analysisCompleted >= 1 && hostLog.sourceChanged >= 1, "analysis notifications: %d completed, %d changes",
+          hostLog.analysisCompleted, hostLog.sourceChanged);
+    CHECK(hostLog.badReads == 0 && hostLog.reads > 0, "audio reads: %d, %d out of range", hostLog.reads, hostLog.badReads);
+    check_note(s);
+    CHECK(s->dc->getAudioSourceContentGrade(s->ref, s->source, notes) == kARAContentGradeDetected, "notes grade");
+    CHECK(!s->dc->isAudioSourceContentAvailable(s->ref, s->source, kARAContentTypeTempoEntries), "the plugin has no tempo of its own");
 
     // The region's notes are in song time; the tone starts before the
     // region, so its note starts with the region.
     CHECK(s->dc->isPlaybackRegionContentAvailable(s->ref, s->region, notes), "region notes available");
-    r = s->dc->createPlaybackRegionContentReader(s->ref, s->region, notes, NULL);
+    ARAContentReaderRef r = s->dc->createPlaybackRegionContentReader(s->ref, s->region, notes, NULL);
     CHECK(r && s->dc->getContentReaderEventCount(s->ref, r) == 1, "one region note");
-    n = s->dc->getContentReaderDataForEvent(s->ref, r, 0);
+    const ARAContentNote* n = s->dc->getContentReaderDataForEvent(s->ref, r, 0);
     CHECK(fabs(n->startPosition - 1) < 0.05, "region note from %f s", n->startPosition);
     s->dc->destroyContentReader(s->ref, r);
     CHECK(s->dc->isAudioModificationPreservingAudioSourceSignal(s->ref, s->modification), "an untouched clip preserves the signal");
     CHECK(hostLog.tempoReadersOpened >= 2, "the tempo and bars of the musical context were not read");
+}
+
+// check_algorithms switches the recording to the second note detection,
+// which analyzes it again.
+static void check_algorithms(Song* s) {
+    CHECK(s->dc->getProcessingAlgorithmsCount(s->ref) == 2, "%d processing algorithms", s->dc->getProcessingAlgorithmsCount(s->ref));
+    const ARAProcessingAlgorithmProperties* a = s->dc->getProcessingAlgorithmProperties(s->ref, 1);
+    CHECK(a && a->structSize >= kARAProcessingAlgorithmPropertiesMinSize && !strcmp(a->persistentID, "breathy") && !strcmp(a->name, "Breathy"),
+          "processing algorithm 1");
+    CHECK(s->dc->getProcessingAlgorithmForAudioSource(s->ref, s->source) == 0, "a new recording's algorithm");
+    int completed = hostLog.analysisCompleted;
+    s->dc->beginEditing(s->ref);
+    s->dc->requestProcessingAlgorithmForAudioSource(s->ref, s->source, 1);
+    s->dc->endEditing(s->ref);
+    wait_analysis(s);
+    CHECK(hostLog.analysisCompleted > completed, "no analysis with the requested algorithm");
+    CHECK(s->dc->getProcessingAlgorithmForAudioSource(s->ref, s->source) == 1, "the requested algorithm");
+    check_note(s);
+}
+
+// check_chunk stores the recording's audio file chunk and imports it the
+// way a host does with a file that carries it: into a new song, mapping
+// the chunk's persistent ID to the new source.
+static void check_chunk(const ARAFactory* f, Song* s) {
+    archive.size = 0;
+    ARAPersistentID id = NULL;
+    ARABool open = kARATrue;
+    CHECK(s->dc->storeAudioSourceToAudioFileChunk(s->ref, ARCHIVE_WRITER, s->source, &id, &open), "storeAudioSourceToAudioFileChunk");
+    CHECK(archive.size > 0 && id && !strcmp(id, ARCHIVE_ID) && !open, "chunk: %zu bytes, archive ID %s, open %d",
+          archive.size, id ? id : "(null)", open);
+    Song r = open_song(f);
+    ARAPersistentID archived[1] = { "take" }, current[1] = { "take" };
+    ARARestoreObjectsFilter filter;
+    memset(&filter, 0, sizeof(filter));
+    filter.structSize = sizeof(filter);
+    filter.documentData = kARAFalse;
+    filter.audioSourceIDsCount = 1;
+    filter.audioSourceArchiveIDs = archived;
+    filter.audioSourceCurrentIDs = current;
+    r.dc->beginEditing(r.ref);
+    CHECK(r.dc->restoreObjectsFromArchive(r.ref, ARCHIVE_REF, &filter), "restore the chunk");
+    r.dc->endEditing(r.ref);
+    CHECK(r.dc->getProcessingAlgorithmForAudioSource(r.ref, r.source) == 1, "the chunk's algorithm");
+    check_note(&r);
+    r.dc->destroyDocumentController(r.ref);
 }
 
 // check_archive stores the song, reopens it in a second document
@@ -456,6 +512,8 @@ static void check_vst3(const char* path) {
     check_factory(factory);
     Song s = open_song(factory);
     check_notes(&s);
+    check_algorithms(&s);
+    check_chunk(factory, &s);
     check_archive(factory, &s);
 
     VST3Plugin p;
@@ -546,6 +604,8 @@ static void check_clap(const char* path) {
 
     Song s = open_song(factory);
     check_notes(&s);
+    check_algorithms(&s);
+    check_chunk(factory, &s);
     check_archive(factory, &s);
 
     const clap_plugin_t* p = plugins->create_plugin(plugins, &host, id);
@@ -631,6 +691,8 @@ static void check_au(const char* type, const char* subtype, const char* manufact
     check_factory(factory);
     Song s = open_song(factory);
     check_notes(&s);
+    check_algorithms(&s);
+    check_chunk(factory, &s);
     check_archive(factory, &s);
 
     ARAAudioUnitPlugInExtensionBinding b = { kARAAudioUnitMagic, s.ref, NULL, kARAPlaybackRendererRole | kARAEditorRendererRole | kARAEditorViewRole, kARAPlaybackRendererRole };
@@ -679,6 +741,6 @@ int main(int argc, char** argv) {
 #if defined(__APPLE__)
     else check_au(argv[2], argv[3], argv[4]);
 #endif
-    printf("aracheck %s ok: factory, analysis (A4 found), archive, binding, region rendering, teardown\n", argv[1]);
+    printf("aracheck %s ok: factory, analysis (A4 found), algorithms, audio file chunk, archive, binding, region rendering, teardown\n", argv[1]);
     return 0;
 }

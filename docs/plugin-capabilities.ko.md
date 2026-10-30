@@ -689,10 +689,24 @@ func (p *processor) ProcessAudio(ctx *process.Context) {
   `Config.ContentTypes`(노트, 템포, 박자)를 찾으며, `SignalPreserver`, `HeadTailer`,
   `EditObserver`, `ModificationContentProvider`가 나머지 질의에 답합니다. 모델 호출은
   host의 메인 스레드에서 실행됩니다.
-- 오디오: host가 접근을 허용하면 런타임이 goroutine에서 소스의 샘플을 메모리로
+- 오디오: host가 접근을 허용하면 런타임이 goroutine에서 소스의 샘플을
   읽고(`AudioSource.Audio`) 분석기를 실행합니다. 진행 상황과 콘텐츠 변경은
   `notifyModelUpdates` 때 host에 전달됩니다. 렌더링은 host의 오디오 리더를 호출하지
-  않습니다.
+  않습니다. 샘플이 64 MB 이상인 소스는 사용자 캐시 폴더(`vst3go-ara`)의 임시 파일에
+  담아 메모리에 매핑하므로, 시스템이 재생되는 부분만 페이지로 올리고 메모리가 부족하면
+  내려놓을 수 있습니다. 파일은 `SourceAudio`에 더 이상 닿을 수 없을 때 사라지므로
+  `Channel` 슬라이스를 쓰는 동안에는 `SourceAudio`를 붙잡아 두세요. 파일을 만들 공간이
+  없으면 샘플은 힙에 남습니다.
+- 처리 알고리즘: `Config.Algorithms`는 host가 소스마다 제시하는 분석 방식 목록입니다
+  (Melodyne과 같은 방식). host의 선택은 `AudioSource.SetAlgorithm`으로 들어와 콘텐츠를
+  버리고 다시 분석하며, 분석기는 `AudioSource.Algorithm`을 읽습니다. 플러그인 UI도
+  `SetAlgorithm`을 호출할 수 있습니다. 선택은 소스와 함께 저장되며, 이후 버전에서 없어진
+  ID는 기본값을 유지합니다.
+- 오디오 파일 청크: `Config.AudioFileChunks`를 켜면 저작용 host가 소스의
+  아카이브(`SourceArchiver` 데이터와 알고리즘)를 오디오 파일에 저장하고, 어떤 ARA
+  host든 파일과 함께 이를 가져와 다시 분석하지 않습니다(`OpenChunksAutomatically`는
+  host에 플러그인을 바로 적용하도록 요청합니다). 청크는 `Config.ArchiveID`를 씁니다.
+  `SetContent`는 진행 중인 분석을 끝내므로 복원된 콘텐츠가 유지됩니다.
 - 렌더링: host가 활성화 전에 인스턴스를 바인딩하면 `ARAProcessor.BindARA`가 그
   인스턴스의 `ara.Binding`을 받습니다. 오디오 스레드에서 `Binding.Playback`은 host가 맡긴 영역의 lock-free
   스냅샷을 돌려주며, 각 영역에는 모디피케이션 상태(`AudioModification.SetState`,
@@ -708,7 +722,8 @@ func (p *processor) ProcessAudio(ctx *process.Context) {
 `internal/validation/hostcheck/aracheck.c`로 VST3, CLAP, (macOS에서는 임시로
 설치하고 `auval -strict`를 거친) Audio Unit을 통해 검사합니다. 팩토리, host의 오디오 접근·아카이빙·콘텐츠
 접근·모델 업데이트 인터페이스를 갖춘 문서 컨트롤러(뮤지컬 컨텍스트의 템포와 박자 읽기 포함), 녹음된 A4의 노트 분석을 콘텐츠
-리더로 다시 읽기, 아카이브를 통한 저장과 복원, 재생 렌더러로 바인딩, 곡 위치에서
+리더로 다시 읽기, 소스를 두 번째 처리 알고리즘으로 바꾸기(다시 분석), 오디오 파일 청크를
+저장해 새 문서로 가져오기(알고리즘과 노트가 분석 없이 복원), 아카이브를 통한 저장과 복원, 재생 렌더러로 바인딩, 곡 위치에서
 영역 렌더링, 양쪽 순서의 해제를 확인합니다. Apple silicon에서는 ARA 구조체가 1바이트로
 패킹되는 x86_64 빌드도 Rosetta에서 검사합니다. `scripts/docker_validate_linux.sh`는
 Linux에서 이 스크립트를 실행하고, `scripts/docker_check_windows_wine.sh`는 Windows 빌드를
@@ -822,11 +837,12 @@ Linux를 다룹니다: headless 앱, Xvfb에서의 신스 에디터(페이지가
 - AAX 포맷은 없습니다. AAX 플러그인은 Avid 개발자 계정이 있어야 받을 수 있는 AAX
   SDK로 빌드해야 하고, 정식 Pro Tools에서 로드하려면 PACE 서명이 필요한데, vst3go는 둘
   다 감싸지 않습니다.
-- ARA: 소스는 통째로 메모리에 읽히므로 아주 긴 녹음은 그 크기만큼 RAM을 씁니다.
-  플러그인은 처리 알고리즘을 제공하지 않고, 오디오 파일 청크를 저장하지 않으며, ARA 2
-  host(API 세대 2.0 이상)가 필요하고, AUv3로는 노출되지 않습니다. `aracheck`로만
-  실행해 봤고 상용 ARA host(Studio One, Cubase, Logic, REAPER)에서는 아직 실행해 보지
-  않았습니다.
+- ARA: 큰 소스는 매핑된 파일에서 재생되므로, 메모리 부족으로 시스템이 내려놓은 페이지는
+  그것을 읽는 스레드(오디오 스레드일 수 있음)에서 디스크로부터 다시 읽힙니다. ARA 2
+  host(API 세대 2.0 이상)만 지원합니다. AUv3에는 ARA가 없습니다. ARA SDK 2.3의
+  `ChangeLog.txt`가 AUv3 지원을 보류(postponed)로 적고 있으며, 이를 위한 host나 API가
+  없습니다. `aracheck`로만 실행해 봤고, 상용 ARA host(Studio One, Cubase, Logic,
+  REAPER)는 여기서 쓸 수 없어 실행해 보지 않았습니다.
 - AUv3: 플러그인이 요청한 크기 변경은 `preferredContentSize`로만 host에 전달되는데,
   여기서 macOS의 원격 view controller는 전달 이후의 변경을 넘겨주지 않았습니다. host가
   정하는 크기(view configuration, 레이아웃)는 동작합니다. 샌드박스에서 SFZ 악기의

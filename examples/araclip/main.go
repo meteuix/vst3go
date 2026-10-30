@@ -3,7 +3,9 @@
 // from the whole recording, with a gain and a reverse switch per clip
 // (audio modification) that are saved in the host's song. It analyzes the
 // notes of every recording, which the host reads through ARA (for example
-// to show them or to make MIDI from them). The editor lists the clips of
+// to show them or to make MIDI from them), with a detection the host lets
+// users choose per recording (ARA processing algorithms), and stores them
+// with the song and in audio file chunks of authoring hosts. The editor lists the clips of
 // the song with their controls and the notes found. Outside an ARA host
 // it passes its input through.
 //
@@ -49,9 +51,11 @@ func (araClipPlugin) GetInfo() frameworkplugin.Info {
 
 func (araClipPlugin) ARA() ara.Config {
 	return ara.Config{
-		ArchiveID:     "com.vst3go.examples.araclip.1",
-		ContentTypes:  []ara.ContentType{ara.ContentNotes},
-		NewController: func(d *ara.Document) ara.Controller { return &controller{} },
+		ArchiveID:       "com.vst3go.examples.araclip.1",
+		ContentTypes:    []ara.ContentType{ara.ContentNotes},
+		Algorithms:      algorithms,
+		AudioFileChunks: true,
+		NewController:   func(d *ara.Document) ara.Controller { return &controller{} },
 	}
 }
 
@@ -102,6 +106,24 @@ func (*controller) RestoreModification(m *ara.AudioModification, data []byte) er
 	return nil
 }
 
+// StoreSource stores the notes found, so that reopening the song or
+// importing an audio file chunk does not analyze the recording again.
+func (*controller) StoreSource(s *ara.AudioSource) ([]byte, error) {
+	if s.AnalysisIncomplete(ara.ContentNotes) || s.Content() == nil {
+		return nil, nil
+	}
+	return json.Marshal(s.Content().Notes)
+}
+
+func (*controller) RestoreSource(s *ara.AudioSource, data []byte) error {
+	var notes []ara.Note
+	if err := json.Unmarshal(data, &notes); err != nil {
+		return err
+	}
+	s.SetContent(&ara.Content{Grade: ara.GradeDetected, Notes: notes})
+	return nil
+}
+
 func (*controller) PreservesSignal(m *ara.AudioModification) bool {
 	c := clipOf(m.State())
 	return c.GainDB == 0 && !c.Reverse
@@ -111,10 +133,17 @@ func (*controller) PreservesSignal(m *ara.AudioModification) bool {
 // clear, steady pitch.
 const (
 	hopSeconds   = 0.005
-	minClarity   = 0.9
 	minNoteHops  = 10 // 50 ms
 	minFrequency = 50
 	maxFrequency = 2000
+)
+
+// algorithms are the detections users choose from: how clear a pitch
+// must be to make a note (minClarity), strict for clean instruments,
+// lenient for breathy voices and noisy recordings.
+var (
+	algorithms = []ara.Algorithm{{ID: "clean", Name: "Clean"}, {ID: "breathy", Name: "Breathy"}}
+	minClarity = []float64{0.9, 0.7}
 )
 
 func (*controller) Analyze(s *ara.AudioSource, audio *ara.SourceAudio, stopped func() bool) (*ara.Content, error) {
@@ -124,6 +153,7 @@ func (*controller) Analyze(s *ara.AudioSource, audio *ara.SourceAudio, stopped f
 	if err != nil {
 		return nil, err
 	}
+	clarityNeeded := minClarity[s.Algorithm()]
 	mono := make([]float32, hop)
 	notes := []ara.Note{}
 	var run struct {
@@ -161,7 +191,7 @@ func (*controller) Analyze(s *ara.AudioSource, audio *ara.SourceAudio, stopped f
 		}
 		d.Process(mono)
 		freq, clarity := d.Pitch()
-		if freq <= 0 || clarity < minClarity {
+		if freq <= 0 || clarity < clarityNeeded {
 			end()
 			continue
 		}

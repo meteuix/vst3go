@@ -68,10 +68,22 @@ func araFactories() []araSlot {
 					unsafe.Slice(types, n)[j] = C.int32_t(t)
 				}
 			}
+			// The factory keeps the strings for the process's lifetime.
+			var ids, names **C.char
+			if n := len(config.Algorithms); n > 0 {
+				size := C.size_t(n) * C.size_t(unsafe.Sizeof((*C.char)(nil)))
+				ids, names = (**C.char)(C.malloc(size)), (**C.char)(C.malloc(size))
+				for j, a := range config.Algorithms {
+					unsafe.Slice(ids, n)[j] = C.CString(a.ID)
+					unsafe.Slice(names, n)[j] = C.CString(a.Name)
+				}
+			}
 			slot := len(araSlots)
 			factory := C.vst3go_ara_factory_new(C.int32_t(slot), C.CString(info.ID+".ara"), C.CString(info.Name),
 				C.CString(vendor), C.CString(globalFactoryInfo.URL), C.CString(info.Version), C.CString(archiveID),
-				types, C.int32_t(len(config.ContentTypes)), C.int32_t(config.Transformations))
+				types, C.int32_t(len(config.ContentTypes)), C.int32_t(config.Transformations),
+				ids, names, C.int32_t(len(config.Algorithms)), araBool(config.AudioFileChunks),
+				araBool(config.OpenChunksAutomatically))
 			if factory == nil {
 				panic("plugin: creating the ARA factory of " + info.ID)
 			}
@@ -297,6 +309,33 @@ func GoARAStore(h C.uintptr_t, writer unsafe.Pointer, filter *C.VST3GoARAStoreFi
 		return C.kARAFalse
 	}
 	return C.vst3go_ara_archive_write(ctl.c, writer, 0, C.size_t(len(data)), unsafe.Pointer(unsafe.SliceData(data)))
+}
+
+// GoARAStoreChunk writes the archive of one source for an audio file
+// chunk.
+//
+//export GoARAStoreChunk
+func GoARAStoreChunk(h C.uintptr_t, writer unsafe.Pointer, ref C.uintptr_t) (ok C.ARABool) {
+	defer araRecover()
+	ctl := araControllerOf(h)
+	data, err := ctl.doc.Store(&ara.StoreFilter{Sources: []*ara.AudioSource{araObject[*ara.AudioSource](ref)}})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "vst3go: %v\n", err)
+		return C.kARAFalse
+	}
+	return C.vst3go_ara_archive_write(ctl.c, writer, 0, C.size_t(len(data)), unsafe.Pointer(unsafe.SliceData(data)))
+}
+
+//export GoARAAlgorithm
+func GoARAAlgorithm(h, ref C.uintptr_t) (index C.int32_t) {
+	defer araRecover()
+	return C.int32_t(araObject[*ara.AudioSource](ref).Algorithm())
+}
+
+//export GoARARequestAlgorithm
+func GoARARequestAlgorithm(h, ref C.uintptr_t, index C.int32_t) {
+	defer araRecover()
+	araObject[*ara.AudioSource](ref).SetAlgorithm(int(index))
 }
 
 //export GoARARestore

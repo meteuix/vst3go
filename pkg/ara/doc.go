@@ -7,11 +7,13 @@
 // Config. For every ARA document in the host, the runtime creates a
 // Document and the plugin's Controller of it, and mirrors the host's model
 // in it: audio sources (the recordings, whose samples the runtime reads
-// into memory as SourceAudio), the plugin's audio modifications of them,
+// as SourceAudio, mapped from a temporary file when large), the plugin's audio modifications of them,
 // the playback regions that play those in the song, region sequences
 // (tracks) and musical contexts (tempo maps). The controller stores its
 // data in the host's document (ModificationArchiver and the other
-// archivers), finds content such as notes (Analyzer), and reacts to edits.
+// archivers, also into audio file chunks), finds content such as notes
+// (Analyzer, with the processing algorithm the host or the user chose),
+// and reacts to edits.
 //
 // Plugin instances are bound to a document (plugin.ARAProcessor) and render
 // the playback regions the host assigns them: on the audio thread,

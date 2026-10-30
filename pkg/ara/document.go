@@ -301,11 +301,12 @@ type AudioSource struct {
 	reader AudioReader
 	job    *readJob
 
-	audio    atomic.Pointer[SourceAudio]
-	content  atomic.Pointer[Content]
-	analyzed atomic.Bool
-	err      atomic.Pointer[error]
-	state    state
+	audio     atomic.Pointer[SourceAudio]
+	content   atomic.Pointer[Content]
+	analyzed  atomic.Bool
+	algorithm atomic.Int32
+	err       atomic.Pointer[error]
+	state     state
 }
 
 type readJob struct {
@@ -357,8 +358,18 @@ func (s *AudioSource) State() any { return s.state.load() }
 func (s *AudioSource) SetState(v any) { s.state.store(v) }
 
 // SetContent replaces the source's content, for example after the user
-// corrected the analysis, and tells the host. Model thread.
+// corrected the analysis or an archive restored it, and tells the host.
+// It ends a running analysis, whose result would replace it. Model
+// thread.
 func (s *AudioSource) SetContent(c *Content) {
+	if s.job != nil {
+		s.stopRead()
+		defer func() {
+			if s.doc.editing == 0 {
+				s.startRead()
+			}
+		}()
+	}
 	s.content.Store(c)
 	s.analyzed.Store(true)
 	if !s.doc.restoring {
@@ -442,6 +453,33 @@ func (s *AudioSource) SetDeactivated(deactivated bool) {
 	if deactivated {
 		s.stopRead()
 	} else if s.doc.editing == 0 {
+		s.startRead()
+	}
+}
+
+// Algorithm returns the index in Config.Algorithms of the processing
+// algorithm of the source's analysis; any goroutine, for the Analyzer.
+func (s *AudioSource) Algorithm() int { return int(s.algorithm.Load()) }
+
+// SetAlgorithm selects the processing algorithm of the source's analysis,
+// for example from the plugin's UI; the host's requests come here too.
+// A change drops the content and analyzes the source again, after which
+// the host reads the new algorithm. Indexes outside Config.Algorithms are
+// ignored. Model thread.
+func (s *AudioSource) SetAlgorithm(i int) {
+	if i < 0 || i >= len(s.doc.config.Algorithms) || i == s.Algorithm() {
+		return
+	}
+	_, analyzes := s.doc.controller.(Analyzer)
+	if !analyzes || len(s.doc.config.ContentTypes) == 0 {
+		s.algorithm.Store(int32(i))
+		return
+	}
+	s.stopRead()
+	s.algorithm.Store(int32(i))
+	s.content.Store(nil)
+	s.analyzed.Store(false)
+	if s.doc.editing == 0 {
 		s.startRead()
 	}
 }

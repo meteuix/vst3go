@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -502,5 +504,170 @@ func TestContentRange(t *testing.T) {
 	}
 	if !got.Has(ContentTempoEntries) || got.Has(ContentNotes) {
 		t.Fatal("Has")
+	}
+}
+
+// rampReader serves frame i of every channel as (i mod 1000) + channel.
+type rampReader struct{}
+
+func (rampReader) Read(pos int64, buffers [][]float32) error {
+	for ch, b := range buffers {
+		for i := range b {
+			b[i] = float32((pos+int64(i))%1000) + float32(ch)
+		}
+	}
+	return nil
+}
+
+func (rampReader) Close() {}
+
+func TestLargeSourceIsMapped(t *testing.T) {
+	var mapped, unmapped atomic.Int32
+	mapAudio = func(dir string, size int) ([]byte, func(), error) {
+		data, unmap, err := mapFile(dir, size)
+		if err == nil {
+			mapped.Add(1)
+			inner := unmap
+			unmap = func() { unmapped.Add(1); inner() }
+		}
+		return data, unmap, err
+	}
+	t.Cleanup(func() { mapAudio = mapFile })
+
+	// Two channels of 9M frames are 72 MB of samples: a file mapping, not
+	// the heap.
+	const frames = 9_000_000
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	props := AudioSourceProperties{Samples: frames, SampleRate: 48000, Channels: 2}
+	a, err := readAudio(rampReader{}, &props, func() bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&after)
+	if mapped.Load() != 1 {
+		t.Fatalf("%d mappings for a 72 MB source", mapped.Load())
+	}
+	if grown := int64(after.HeapAlloc) - int64(before.HeapAlloc); grown > 8<<20 {
+		t.Fatalf("the heap grew by %d bytes for a mapped source", grown)
+	}
+	for _, i := range []int{0, 1, 999, 1000, 4_567_891, frames - 1} {
+		for ch := range 2 {
+			if got, want := a.Channel(ch)[i], float32(i%1000+ch); got != want {
+				t.Fatalf("channel %d frame %d = %v, want %v", ch, i, got, want)
+			}
+		}
+	}
+	out := make([]float32, 4)
+	a.Mix(out, 1, frames-2, 1, 1) // the last two frames, then silence
+	if want := []float32{float32((frames-2)%1000 + 1), float32((frames-1)%1000 + 1), 0, 0}; !slices.Equal(out, want) {
+		t.Fatalf("mix at the end = %v, want %v", out, want)
+	}
+
+	// Small sources stay on the heap; an unreachable mapped one unmaps.
+	NewSourceAudio(48000, [][]float32{make([]float32, 1000)})
+	if mapped.Load() != 1 {
+		t.Fatal("a small source was mapped")
+	}
+	runtime.KeepAlive(a)
+	for i := 0; i < 50 && unmapped.Load() == 0; i++ {
+		runtime.GC()
+		time.Sleep(10 * time.Millisecond)
+	}
+	if unmapped.Load() != 1 {
+		t.Fatal("the mapping of an unreachable source stays")
+	}
+}
+
+// algorithmAnalyzer finds one note whose pitch is 60 plus the algorithm.
+type algorithmAnalyzer struct {
+	archiveController
+	runs atomic.Int32
+}
+
+func (a *algorithmAnalyzer) Analyze(s *AudioSource, audio *SourceAudio, stopped func() bool) (*Content, error) {
+	a.runs.Add(1)
+	return &Content{Grade: GradeDetected, Notes: []Note{{Pitch: 60 + int32(s.Algorithm()), Duration: 1, SignalDuration: 1}}}, nil
+}
+
+// RestoreSource restores the analysis as well, as pitch 99.
+func (a *algorithmAnalyzer) RestoreSource(s *AudioSource, data []byte) error {
+	s.SetContent(&Content{Grade: GradeDetected, Notes: []Note{{Pitch: 99, Duration: 1, SignalDuration: 1}}})
+	return a.archiveController.RestoreSource(s, data)
+}
+
+func TestAlgorithms(t *testing.T) {
+	ctl := &algorithmAnalyzer{}
+	config := Config{
+		ContentTypes:  []ContentType{ContentNotes},
+		Algorithms:    []Algorithm{{"auto", "Automatic"}, {"poly", "Polyphonic"}, {"perc", "Percussive"}},
+		NewController: func(*Document) Controller { return ctl },
+	}
+	d, h, s, _, _ := newTestDocument(t, config)
+	pitch := func() int32 {
+		if c := s.Content(); c != nil && !s.AnalysisIncomplete(ContentNotes) {
+			return c.Notes[0].Pitch
+		}
+		return -1
+	}
+	s.EnableAccess(true)
+	waitFor(t, "the first analysis", func() bool { return pitch() == 60 })
+	if s.Algorithm() != 0 {
+		t.Fatalf("a new source uses algorithm %d", s.Algorithm())
+	}
+
+	// The host's request, inside an editing session, analyzes again after
+	// it; the samples are not read again.
+	reads := h.reads
+	d.BeginEditing()
+	s.SetAlgorithm(2)
+	if s.Content() != nil || !s.AnalysisIncomplete(ContentNotes) {
+		t.Fatal("changing the algorithm kept the old content")
+	}
+	d.EndEditing()
+	waitFor(t, "the analysis with algorithm 2", func() bool { return pitch() == 62 })
+	if h.reads != reads {
+		t.Fatal("changing the algorithm read the samples again")
+	}
+	runs := ctl.runs.Load()
+	s.SetAlgorithm(2)
+	s.SetAlgorithm(3)
+	s.SetAlgorithm(-1)
+	if s.Algorithm() != 2 || s.Content() == nil || ctl.runs.Load() != runs {
+		t.Fatal("the same or an unknown algorithm analyzed again")
+	}
+
+	// Archives keep the algorithm: restoring it with the source's data
+	// keeps the restored content instead of analyzing again.
+	s.SetState("analysis")
+	data, err := d.Store(&StoreFilter{Sources: []*AudioSource{s}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, _, s2, _, _ := newTestDocument(t, config)
+	d2.BeginEditing()
+	err = d2.Restore(data, &RestoreFilter{Sources: map[string]string{"s1": "s1"}})
+	if err != nil || s2.Algorithm() != 2 {
+		t.Fatalf("restored algorithm %d, %v", s2.Algorithm(), err)
+	}
+	if s2.State() != "analysis" || s2.Content() == nil || s2.Content().Notes[0].Pitch != 99 || s2.AnalysisIncomplete(ContentNotes) {
+		t.Fatal("the source's data was not restored")
+	}
+	d2.EndEditing()
+	s2.EnableAccess(true)
+	waitFor(t, "the samples", func() bool { return s2.Audio() != nil })
+	if s2.Content().Notes[0].Pitch != 99 {
+		t.Fatal("the restored analysis was redone")
+	}
+
+	// An algorithm a newer version had keeps the source's.
+	config.Algorithms = config.Algorithms[:2]
+	d3, _, s3, _, _ := newTestDocument(t, config)
+	d3.BeginEditing()
+	err = d3.Restore(data, nil)
+	d3.EndEditing()
+	if err != nil || s3.Algorithm() != 0 {
+		t.Fatalf("unknown algorithm restored as %d, %v", s3.Algorithm(), err)
 	}
 }

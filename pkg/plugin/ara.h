@@ -44,6 +44,7 @@ typedef struct VST3GoARAController {
     ARAContentAccessControllerInterface content;
     ARAModelUpdateControllerInterface model;
     const ARAFactory* factory;
+    int32_t slot; // of the factory
     uintptr_t go; // cgo handle of the Go controller
 } VST3GoARAController;
 
@@ -112,7 +113,8 @@ typedef struct VST3GoARANote {
 // Factories
 ARAFactory* vst3go_ara_factory_new(int32_t slot, char* factoryID, char* name, char* vendor, char* url,
                                    char* version, char* archiveID, int32_t* contentTypes, int32_t contentTypeCount,
-                                   int32_t transformations);
+                                   int32_t transformations, char** algorithmIDs, char** algorithmNames,
+                                   int32_t algorithmCount, ARABool audioFileChunks, ARABool openChunksAutomatically);
 const ARAFactory* vst3go_ara_factory(int32_t slot);
 
 // Plug-in extension of a bound instance.
@@ -147,6 +149,9 @@ extern void GoARAEndEditing(uintptr_t controller);
 extern void GoARANotifyModelUpdates(uintptr_t controller);
 extern ARABool GoARARestore(uintptr_t controller, void* reader, VST3GoARARestoreFilter* filter);
 extern ARABool GoARAStore(uintptr_t controller, void* writer, VST3GoARAStoreFilter* filter);
+extern ARABool GoARAStoreChunk(uintptr_t controller, void* writer, uintptr_t sourceRef);
+extern int32_t GoARAAlgorithm(uintptr_t controller, uintptr_t sourceRef);
+extern void GoARARequestAlgorithm(uintptr_t controller, uintptr_t sourceRef, int32_t index);
 extern void GoARAUpdateDocument(uintptr_t controller, char* name);
 extern uintptr_t GoARACreateContext(uintptr_t controller, uintptr_t hostRef, VST3GoARAContextProps* props);
 extern void GoARAUpdateContext(uintptr_t controller, uintptr_t ref, VST3GoARAContextProps* props);

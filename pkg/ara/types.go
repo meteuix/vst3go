@@ -191,9 +191,33 @@ type Config struct {
 	Transformations TransformationFlags
 	// ContentTypes are the content types the plugin's Analyzer finds.
 	ContentTypes []ContentType
+	// Algorithms are the processing algorithms of the analysis the host
+	// may let users choose per audio source, in menu order; a source
+	// starts with the first. The Analyzer reads AudioSource.Algorithm.
+	// Keep the IDs of a plugin version stable; the names may be
+	// localized. Each algorithm finds every one of ContentTypes.
+	Algorithms []Algorithm
+	// AudioFileChunks lets authoring hosts store the data of an audio
+	// source (its SourceArchiver data and algorithm) inside its audio
+	// file as an ARA audio file chunk, from where any ARA host imports it
+	// with the file instead of analyzing it again.
+	AudioFileChunks bool
+	// OpenChunksAutomatically asks hosts importing a file with the
+	// plugin's chunk to apply the plugin at once rather than when the user
+	// adds it.
+	OpenChunksAutomatically bool
 	// NewController creates the plugin's controller of a document, on the
 	// model thread; nil when the plugin keeps no data of its own.
 	NewController func(d *Document) Controller
+}
+
+// Algorithm is a processing algorithm of the analysis (ARA processing
+// algorithm selection).
+type Algorithm struct {
+	// ID identifies the algorithm in documents and audio file chunks.
+	ID string
+	// Name is shown to users.
+	Name string
 }
 
 // Controller is a plugin's side of one document. Every method runs on the

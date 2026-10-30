@@ -280,28 +280,25 @@ static void dc_headAndTail(ARADocumentControllerRef ref, ARAPlaybackRegionRef re
     if (tail) *tail = t;
 }
 
-// The plugin offers no processing algorithms to choose from.
-static ARAInt32 dc_algorithmCount(ARADocumentControllerRef ref) {
-    (void)ref;
-    return 0;
-}
+// Per factory: the processing algorithms (ara.Config.Algorithms), which
+// live as long as the factory, and whether chunks open automatically.
+static ARAProcessingAlgorithmProperties* algorithms[VST3GO_ARA_MAX_FACTORIES];
+static ARAInt32 algorithmCounts[VST3GO_ARA_MAX_FACTORIES];
+static ARABool openChunks[VST3GO_ARA_MAX_FACTORIES];
+
+static ARAInt32 dc_algorithmCount(ARADocumentControllerRef ref) { return algorithmCounts[CTL(ref)->slot]; }
 
 static const ARAProcessingAlgorithmProperties* dc_algorithmProperties(ARADocumentControllerRef ref, ARAInt32 index) {
-    (void)ref;
-    (void)index;
-    return NULL;
+    int32_t slot = CTL(ref)->slot;
+    return index >= 0 && index < algorithmCounts[slot] ? &algorithms[slot][index] : NULL;
 }
 
 static ARAInt32 dc_algorithmForSource(ARADocumentControllerRef ref, ARAAudioSourceRef source) {
-    (void)ref;
-    (void)source;
-    return 0;
+    return GoARAAlgorithm(GO(ref), REF(source));
 }
 
 static void dc_requestAlgorithm(ARADocumentControllerRef ref, ARAAudioSourceRef source, ARAInt32 index) {
-    (void)ref;
-    (void)source;
-    (void)index;
+    GoARARequestAlgorithm(GO(ref), REF(source), index);
 }
 
 // The runtime has no license gate of its own; a plugin with licensing
@@ -315,14 +312,12 @@ static ARABool dc_isLicensed(ARADocumentControllerRef ref, ARABool runDialog, AR
     return kARATrue;
 }
 
-// The factory does not support audio file chunks (supportsStoringAudioFileChunks).
+// An audio file chunk is the archive of the one source, in the format of
+// the document archives; hosts import it with restoreObjectsFromArchive.
 static ARABool dc_storeChunk(ARADocumentControllerRef ref, ARAArchiveWriterHostRef writer, ARAAudioSourceRef source, ARAPersistentID* archiveID, ARABool* openAutomatically) {
-    (void)ref;
-    (void)writer;
-    (void)source;
-    (void)archiveID;
-    (void)openAutomatically;
-    return kARAFalse;
+    if (archiveID) *archiveID = CTL(ref)->factory->documentArchiveID;
+    if (openAutomatically) *openAutomatically = openChunks[CTL(ref)->slot];
+    return GoARAStoreChunk(GO(ref), writer, REF(source));
 }
 
 static ARABool dc_preservesSignal(ARADocumentControllerRef ref, ARAAudioModificationRef modification) {
@@ -412,6 +407,7 @@ static const ARADocumentControllerInstance* createController(int32_t slot, const
     c->instance.documentControllerRef = (ARADocumentControllerRef)c;
     c->instance.documentControllerInterface = &controllerInterface;
     c->factory = factories[slot];
+    c->slot = slot;
     ARADocumentProperties p;
     copySized(&p, sizeof(p), properties);
     c->go = GoARACreateController(slot, c, (char*)p.name);
@@ -456,14 +452,29 @@ static void uninitializeARA(void) {}
 
 ARAFactory* vst3go_ara_factory_new(int32_t slot, char* factoryID, char* name, char* vendor, char* url,
                                    char* version, char* archiveID, int32_t* contentTypes, int32_t contentTypeCount,
-                                   int32_t transformations) {
-    if (slot < 0 || slot >= VST3GO_ARA_MAX_FACTORIES || factories[slot]) {
+                                   int32_t transformations, char** algorithmIDs, char** algorithmNames,
+                                   int32_t algorithmCount, ARABool audioFileChunks, ARABool openChunksAutomatically) {
+    if (slot < 0 || slot >= VST3GO_ARA_MAX_FACTORIES || factories[slot] || algorithmCount < 0) {
         return NULL;
     }
     ARAFactory* f = (ARAFactory*)calloc(1, sizeof(ARAFactory));
     if (!f) {
         return NULL;
     }
+    if (algorithmCount > 0) {
+        algorithms[slot] = (ARAProcessingAlgorithmProperties*)calloc((size_t)algorithmCount, sizeof(ARAProcessingAlgorithmProperties));
+        if (!algorithms[slot]) {
+            free(f);
+            return NULL;
+        }
+        for (int32_t i = 0; i < algorithmCount; i++) {
+            algorithms[slot][i].structSize = sizeof(ARAProcessingAlgorithmProperties);
+            algorithms[slot][i].persistentID = algorithmIDs[i];
+            algorithms[slot][i].name = algorithmNames[i];
+        }
+        algorithmCounts[slot] = algorithmCount;
+    }
+    openChunks[slot] = openChunksAutomatically;
     f->structSize = sizeof(ARAFactory);
     f->lowestSupportedApiGeneration = kARAAPIGeneration_2_0_Final;
     f->highestSupportedApiGeneration = kARAAPIGeneration_2_3_Final;
@@ -479,7 +490,7 @@ ARAFactory* vst3go_ara_factory_new(int32_t slot, char* factoryID, char* name, ch
     f->analyzeableContentTypesCount = (ARASize)contentTypeCount;
     f->analyzeableContentTypes = (const ARAContentType*)contentTypes;
     f->supportedPlaybackTransformationFlags = transformations;
-    f->supportsStoringAudioFileChunks = kARAFalse;
+    f->supportsStoringAudioFileChunks = audioFileChunks;
     factories[slot] = f;
     return f;
 }

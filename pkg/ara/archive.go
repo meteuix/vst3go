@@ -5,17 +5,20 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 )
 
 // archiveMagic starts every archive the runtime writes. The records after
-// it hold the controller's data: a kind byte, the object's persistent ID
-// and the data, each length-prefixed with a uvarint.
+// it hold the controller's data and the sources' algorithms: a kind byte,
+// the object's persistent ID and the data, each length-prefixed with a
+// uvarint.
 const archiveMagic = "VST3GO-ARA-ARCHIVE\x00\x01"
 
 const (
 	recordDocument     = 'D'
 	recordSource       = 'S'
 	recordModification = 'M'
+	recordAlgorithm    = 'A' // data: the Algorithm.ID of a source
 )
 
 // StoreFilter selects what Store writes; a nil filter writes everything.
@@ -56,6 +59,13 @@ func (d *Document) Store(filter *StoreFilter) ([]byte, error) {
 			return nil, fmt.Errorf("ara: storing the document: %w", err)
 		}
 		writeRecord(&buf, recordDocument, "", data)
+	}
+	// The algorithm goes first: restoring it drops the content that a
+	// source record restores after it.
+	if algorithms := d.config.Algorithms; len(algorithms) > 0 {
+		for _, s := range sources {
+			writeRecord(&buf, recordAlgorithm, s.Properties().PersistentID, []byte(algorithms[s.Algorithm()].ID))
+		}
 	}
 	if a, ok := d.controller.(SourceArchiver); ok {
 		for _, s := range sources {
@@ -132,6 +142,12 @@ func (d *Document) Restore(archive []byte, filter *RestoreFilter) error {
 				if err := a.RestoreSource(s, data); err != nil {
 					fail(fmt.Errorf("ara: restoring audio source %q: %w", id, err))
 				}
+			}
+		case recordAlgorithm:
+			// An algorithm this version does not have keeps the source's.
+			i := slices.IndexFunc(d.config.Algorithms, func(a Algorithm) bool { return a.ID == string(data) })
+			if s := d.findSource(mapID(id, filter, true)); s != nil && i >= 0 {
+				s.SetAlgorithm(i)
 			}
 		case recordModification:
 			a, ok := d.controller.(ModificationArchiver)

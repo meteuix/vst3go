@@ -736,9 +736,26 @@ func (p *processor) ProcessAudio(ctx *process.Context) {
   `ModificationContentProvider` answer the rest. Model calls run on the
   host's main thread.
 - Audio: when the host enables access, the runtime reads a source's
-  samples into memory on a goroutine (`AudioSource.Audio`), then runs the
-  analyzer; progress and content changes reach the host on
-  `notifyModelUpdates`. Rendering never calls the host's audio reader.
+  samples on a goroutine (`AudioSource.Audio`), then runs the analyzer;
+  progress and content changes reach the host on `notifyModelUpdates`.
+  Rendering never calls the host's audio reader. Sources of 64 MB of
+  samples or more go to a temporary file in the user cache folder
+  (`vst3go-ara`) mapped into memory, so the system pages them in as they
+  play and can drop them under memory pressure; the file goes when the
+  `SourceAudio` is unreachable, so keep it while using its `Channel`
+  slices. Without space for the file the samples stay on the heap.
+- Processing algorithms: `Config.Algorithms` lists the analysis variants
+  the host offers per source (in Melodyne's manner); the host's choice
+  reaches `AudioSource.SetAlgorithm`, which drops the content and
+  analyzes again, and the analyzer reads `AudioSource.Algorithm`. The
+  plugin's UI can call `SetAlgorithm` too. The choice is stored with the
+  source; an ID a later version dropped keeps the default.
+- Audio file chunks: with `Config.AudioFileChunks` authoring hosts store
+  a source's archive (its `SourceArchiver` data and algorithm) in the
+  audio file, and any ARA host imports it with the file instead of
+  analyzing again (`OpenChunksAutomatically` asks it to apply the plugin
+  at once). The chunk uses `Config.ArchiveID`. `SetContent` ends a
+  running analysis, so restored content stays.
 - Rendering: `ARAProcessor.BindARA` gets the instance's `ara.Binding` when
   the host binds it, before activation. On the audio thread `Binding.Playback` returns a
   lock-free snapshot of the regions the host assigned, each with its
@@ -759,8 +776,10 @@ through VST3, CLAP and (macOS, installed temporarily, after `auval
 -strict`) the Audio Unit: factory, document controller with the host's
 audio access, archiving, content access and model update interfaces
 (the musical context's tempo and bars are read), note analysis of a recorded
-A4 read back through content readers, store and restore through the
-archive, binding as playback renderer, region rendering at its song
+A4 read back through content readers, switching the source to the second
+processing algorithm (analyzed again), an audio file chunk stored and
+imported into a new document (algorithm and notes restored without
+analysis), store and restore through the archive, binding as playback renderer, region rendering at its song
 position, and teardown in both orders. On Apple silicon it also checks
 an x86_64 build under Rosetta, where ARA's structs are packed to one
 byte. `scripts/docker_validate_linux.sh` runs it on Linux, and
@@ -890,12 +909,14 @@ deadline of a 64-sample block.
 - There is no AAX format: AAX plugins are built against Avid's AAX SDK,
   which needs an Avid developer account, and need PACE signing to load in
   release Pro Tools; vst3go wraps neither.
-- ARA: sources are read into memory whole, so very long recordings cost
-  their size in RAM. The plugin offers no processing algorithms, does not
-  store audio file chunks, needs ARA 2 hosts (API generation 2.0 or
-  later) and is not exposed through AUv3. It has run against
-  `aracheck` only, not in a commercial ARA host (Studio One, Cubase,
-  Logic, REAPER).
+- ARA: a large source plays from a mapped file, so a page the system
+  dropped under memory pressure is read from disk on the thread that
+  reads it, which may be the audio thread. ARA 2 hosts only (API
+  generation 2.0 or later). There is no ARA in AUv3: the ARA SDK
+  (2.3 `ChangeLog.txt`) lists AUv3 support as postponed, and no host or
+  API for it exists. It has run against `aracheck` only, not in a
+  commercial ARA host (Studio One, Cubase, Logic, REAPER), none of which
+  is available here.
 - AUv3: a resize the plugin asks for reaches the host only through
   `preferredContentSize`, which the macOS remote view controller did not
   pass on after delivery here; host-driven sizes (view configurations,
