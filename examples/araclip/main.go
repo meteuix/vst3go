@@ -17,13 +17,13 @@ import (
 	"math"
 	"sync/atomic"
 
-	"github.com/th-release/vst3go/pkg/ara"
-	"github.com/th-release/vst3go/pkg/dsp/pitch"
-	"github.com/th-release/vst3go/pkg/framework/bus"
-	frameworkplugin "github.com/th-release/vst3go/pkg/framework/plugin"
-	"github.com/th-release/vst3go/pkg/framework/process"
-	"github.com/th-release/vst3go/pkg/plugin"
-	"github.com/th-release/vst3go/pkg/standalone"
+	"github.com/th-release/vst3go/v2/pkg/ara"
+	"github.com/th-release/vst3go/v2/pkg/dsp/pitch"
+	"github.com/th-release/vst3go/v2/pkg/framework/bus"
+	frameworkplugin "github.com/th-release/vst3go/v2/pkg/framework/plugin"
+	"github.com/th-release/vst3go/v2/pkg/framework/process"
+	"github.com/th-release/vst3go/v2/pkg/plugin"
+	"github.com/th-release/vst3go/v2/pkg/standalone"
 )
 
 //go:embed editor.html

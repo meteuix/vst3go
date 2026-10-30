@@ -16,7 +16,7 @@ import (
 	"slices"
 	"unsafe"
 
-	"github.com/th-release/vst3go/pkg/plugin"
+	"github.com/th-release/vst3go/v2/pkg/plugin"
 )
 
 // The application window's toolbar (transport, status, settings button)

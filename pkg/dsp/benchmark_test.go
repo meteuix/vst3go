@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/th-release/vst3go/pkg/dsp/gain"
-	"github.com/th-release/vst3go/pkg/dsp/utility"
+	"github.com/th-release/vst3go/v2/pkg/dsp/gain"
+	"github.com/th-release/vst3go/v2/pkg/dsp/utility"
 )
 
 // Common buffer sizes for benchmarking

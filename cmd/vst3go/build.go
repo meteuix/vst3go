@@ -16,7 +16,7 @@ import (
 	"strings"
 )
 
-const modulePath = "github.com/th-release/vst3go"
+const modulePath = "github.com/th-release/vst3go/v2"
 
 // buildConfig is one vst3go build invocation.
 type buildConfig struct {

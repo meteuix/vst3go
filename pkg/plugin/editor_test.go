@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/th-release/vst3go/pkg/framework/bus"
-	"github.com/th-release/vst3go/pkg/framework/param"
+	"github.com/th-release/vst3go/v2/pkg/framework/bus"
+	"github.com/th-release/vst3go/v2/pkg/framework/param"
 )
 
 // customEditorProcessor has its own editor page and answers editor messages.

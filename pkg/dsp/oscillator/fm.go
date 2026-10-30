@@ -3,7 +3,7 @@ package oscillator
 import (
 	"math"
 
-	"github.com/th-release/vst3go/pkg/dsp/fastmath"
+	"github.com/th-release/vst3go/v2/pkg/dsp/fastmath"
 )
 
 // Operator is a sine oscillator for phase-modulation (DX-style FM)

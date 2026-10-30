@@ -7,9 +7,9 @@ import "C"
 import (
 	"unsafe"
 
-	"github.com/th-release/vst3go/pkg/framework/bus"
-	"github.com/th-release/vst3go/pkg/framework/process"
-	"github.com/th-release/vst3go/pkg/vst3"
+	"github.com/th-release/vst3go/v2/pkg/framework/bus"
+	"github.com/th-release/vst3go/v2/pkg/framework/process"
+	"github.com/th-release/vst3go/v2/pkg/vst3"
 )
 
 // IAudioProcessor callbacks

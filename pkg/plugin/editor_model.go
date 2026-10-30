@@ -3,8 +3,8 @@ package plugin
 import (
 	"fmt"
 
-	"github.com/th-release/vst3go/pkg/framework/param"
-	frameworkplugin "github.com/th-release/vst3go/pkg/framework/plugin"
+	"github.com/th-release/vst3go/v2/pkg/framework/param"
+	frameworkplugin "github.com/th-release/vst3go/v2/pkg/framework/plugin"
 )
 
 // EditorModel is the browser-friendly snapshot of the plugin editor.

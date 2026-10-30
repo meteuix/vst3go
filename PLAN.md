@@ -5,7 +5,7 @@ English | [한국어](PLAN.ko.md)
 ## Repo Boundary
 
 - [x] Keep the VST3 binding/runtime layer, the DSP library and the showcase plugins in this repo.
-- [x] Rename the module to `github.com/th-release/vst3go`.
+- [x] Rename the module to `github.com/th-release/vst3go/v2`.
 - [x] Update the README to state that this fork intentionally differs from the original project.
 - [x] Review the retained package boundary once more.
   - [x] `pkg/vst3`

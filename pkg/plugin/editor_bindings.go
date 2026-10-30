@@ -10,7 +10,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/th-release/vst3go/pkg/framework/param"
+	"github.com/th-release/vst3go/v2/pkg/framework/param"
 )
 
 // EditorBindings returns a TypeScript module with typed bindings to the

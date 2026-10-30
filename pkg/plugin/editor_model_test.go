@@ -3,10 +3,10 @@ package plugin
 import (
 	"testing"
 
-	frameworkbus "github.com/th-release/vst3go/pkg/framework/bus"
-	frameworkparam "github.com/th-release/vst3go/pkg/framework/param"
-	frameworkplugin "github.com/th-release/vst3go/pkg/framework/plugin"
-	"github.com/th-release/vst3go/pkg/framework/process"
+	frameworkbus "github.com/th-release/vst3go/v2/pkg/framework/bus"
+	frameworkparam "github.com/th-release/vst3go/v2/pkg/framework/param"
+	frameworkplugin "github.com/th-release/vst3go/v2/pkg/framework/plugin"
+	"github.com/th-release/vst3go/v2/pkg/framework/process"
 )
 
 type editorModelTestProcessor struct {

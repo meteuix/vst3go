@@ -83,7 +83,7 @@
 
 다운스트림 저장소가 이 포크를 사용할 때는 다음을 따릅니다:
 
-- `github.com/th-release/vst3go`를 import합니다
+- `github.com/th-release/vst3go/v2`를 import합니다
 - 위에 나열한 지원 패키지를 기반으로 플러그인/런타임 로직을 구축합니다
 - 신호 처리에는 `pkg/dsp`를, 참조 플러그인으로는 `examples/`를 사용합니다
 - 제품 전용 코드(라이선스, 인스톨러, 브랜딩)는 다운스트림 저장소에 둡니다

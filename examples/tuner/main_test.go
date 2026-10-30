@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/th-release/vst3go/pkg/plugintest"
+	"github.com/th-release/vst3go/v2/pkg/plugintest"
 )
 
 // pluck is a harmonic-rich tone at freq, like a plucked string.

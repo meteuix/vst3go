@@ -3,8 +3,8 @@ package plugin
 import (
 	"testing"
 
-	"github.com/th-release/vst3go/pkg/framework/bus"
-	"github.com/th-release/vst3go/pkg/framework/param"
+	"github.com/th-release/vst3go/v2/pkg/framework/bus"
+	"github.com/th-release/vst3go/v2/pkg/framework/param"
 )
 
 func gestureComponent(t *testing.T) *componentImpl {

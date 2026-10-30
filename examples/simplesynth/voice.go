@@ -1,9 +1,9 @@
 package main
 
 import (
-	"github.com/th-release/vst3go/pkg/dsp/envelope"
-	"github.com/th-release/vst3go/pkg/dsp/oscillator"
-	"github.com/th-release/vst3go/pkg/midi"
+	"github.com/th-release/vst3go/v2/pkg/dsp/envelope"
+	"github.com/th-release/vst3go/v2/pkg/dsp/oscillator"
+	"github.com/th-release/vst3go/v2/pkg/midi"
 )
 
 // synthVoice is a sine oscillator with an ADSR amplitude envelope. It

@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/th-release/vst3go/pkg/plugintest"
+	"github.com/th-release/vst3go/v2/pkg/plugintest"
 )
 
 func normalizedGain(db float64) float64 { return (db - minGainDB) / (maxGainDB - minGainDB) }

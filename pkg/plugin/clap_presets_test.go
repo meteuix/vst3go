@@ -8,8 +8,8 @@ import (
 	"slices"
 	"testing"
 
-	frameworkplugin "github.com/th-release/vst3go/pkg/framework/plugin"
-	"github.com/th-release/vst3go/pkg/preset"
+	frameworkplugin "github.com/th-release/vst3go/v2/pkg/framework/plugin"
+	"github.com/th-release/vst3go/v2/pkg/preset"
 )
 
 func TestCLAPPresetMetadata(t *testing.T) {

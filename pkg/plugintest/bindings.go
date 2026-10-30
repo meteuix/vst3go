@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/th-release/vst3go/pkg/plugin"
+	"github.com/th-release/vst3go/v2/pkg/plugin"
 )
 
 // UpdateBindingsEnv is the environment variable that makes EditorBindings

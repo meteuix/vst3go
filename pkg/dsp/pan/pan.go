@@ -4,7 +4,7 @@ package pan
 import (
 	"math"
 
-	"github.com/th-release/vst3go/pkg/dsp/fastmath"
+	"github.com/th-release/vst3go/v2/pkg/dsp/fastmath"
 )
 
 // Law represents different panning laws

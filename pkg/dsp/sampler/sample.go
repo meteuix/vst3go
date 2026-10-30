@@ -12,7 +12,7 @@ import (
 	"math"
 	"sync/atomic"
 
-	"github.com/th-release/vst3go/pkg/dsp/resample"
+	"github.com/th-release/vst3go/v2/pkg/dsp/resample"
 )
 
 // maxLevels bounds the half-rate copies: up to five octaves above the

@@ -10,9 +10,9 @@ import (
 	"unicode/utf8"
 	"unsafe"
 
-	"github.com/th-release/vst3go/pkg/framework/process"
-	"github.com/th-release/vst3go/pkg/midi"
-	"github.com/th-release/vst3go/pkg/vst3"
+	"github.com/th-release/vst3go/v2/pkg/framework/process"
+	"github.com/th-release/vst3go/v2/pkg/midi"
+	"github.com/th-release/vst3go/v2/pkg/vst3"
 )
 
 const (

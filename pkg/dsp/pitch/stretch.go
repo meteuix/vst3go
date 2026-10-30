@@ -5,7 +5,7 @@ import (
 	"math"
 	"math/cmplx"
 
-	"github.com/th-release/vst3go/pkg/dsp/fft"
+	"github.com/th-release/vst3go/v2/pkg/dsp/fft"
 )
 
 // Stretch changes the length of a signal by factor (2 is twice as long)

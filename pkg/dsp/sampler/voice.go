@@ -4,8 +4,8 @@ import (
 	"math"
 	"sync/atomic"
 
-	"github.com/th-release/vst3go/pkg/dsp/envelope"
-	"github.com/th-release/vst3go/pkg/dsp/resample"
+	"github.com/th-release/vst3go/v2/pkg/dsp/envelope"
+	"github.com/th-release/vst3go/v2/pkg/dsp/resample"
 )
 
 // MaxLayers is the most zones one note plays at once.

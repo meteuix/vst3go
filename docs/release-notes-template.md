@@ -46,7 +46,7 @@ Use this template when publishing a new `vst3go` tag.
 
 ## Compatibility Notes
 
-- module path: `github.com/th-release/vst3go`
+- module path: `github.com/th-release/vst3go/v2`
 - supported public API surface: `pkg/plugin`, `pkg/vst3`, `pkg/midi`, `pkg/framework/{bus,param,plugin,process,state,dsp,voice,debug}`, `pkg/dsp/...`
 - any breaking changes:
 

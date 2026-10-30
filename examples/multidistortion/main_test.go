@@ -4,8 +4,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/th-release/vst3go/pkg/dsp/distortion"
-	"github.com/th-release/vst3go/pkg/plugintest"
+	"github.com/th-release/vst3go/v2/pkg/dsp/distortion"
+	"github.com/th-release/vst3go/v2/pkg/plugintest"
 )
 
 func newEngine(t *testing.T, engine int) *plugintest.Instance {

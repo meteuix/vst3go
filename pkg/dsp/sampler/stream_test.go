@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/th-release/vst3go/pkg/audiofile"
+	"github.com/th-release/vst3go/v2/pkg/audiofile"
 )
 
 // longSample writes a stereo float WAV of n frames (a sweep left, noise

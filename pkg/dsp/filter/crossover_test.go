@@ -5,7 +5,7 @@ import (
 	"math/cmplx"
 	"testing"
 
-	"github.com/th-release/vst3go/pkg/dsp/fft"
+	"github.com/th-release/vst3go/v2/pkg/dsp/fft"
 )
 
 // impulseBands returns the impulse response of each band.

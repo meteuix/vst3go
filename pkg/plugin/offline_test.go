@@ -5,11 +5,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/th-release/vst3go/pkg/framework/bus"
-	"github.com/th-release/vst3go/pkg/framework/param"
-	frameworkplugin "github.com/th-release/vst3go/pkg/framework/plugin"
-	"github.com/th-release/vst3go/pkg/framework/process"
-	"github.com/th-release/vst3go/pkg/midi"
+	"github.com/th-release/vst3go/v2/pkg/framework/bus"
+	"github.com/th-release/vst3go/v2/pkg/framework/param"
+	frameworkplugin "github.com/th-release/vst3go/v2/pkg/framework/plugin"
+	"github.com/th-release/vst3go/v2/pkg/framework/process"
+	"github.com/th-release/vst3go/v2/pkg/midi"
 )
 
 // recorder copies its main input to the output and records what it saw.

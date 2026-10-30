@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/th-release/vst3go/pkg/plugintest"
+	"github.com/th-release/vst3go/v2/pkg/plugintest"
 )
 
 // gainDB renders a sine at freq through p and returns the steady-state gain.

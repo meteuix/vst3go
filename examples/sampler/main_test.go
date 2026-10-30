@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/th-release/vst3go/pkg/audiofile"
-	"github.com/th-release/vst3go/pkg/dsp/sampler"
-	"github.com/th-release/vst3go/pkg/plugintest"
+	"github.com/th-release/vst3go/v2/pkg/audiofile"
+	"github.com/th-release/vst3go/v2/pkg/dsp/sampler"
+	"github.com/th-release/vst3go/v2/pkg/plugintest"
 )
 
 // TestMain keeps the streamer's cache files out of the user's cache

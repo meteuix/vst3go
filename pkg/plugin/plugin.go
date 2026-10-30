@@ -9,12 +9,12 @@ package plugin
 import (
 	"io"
 
-	"github.com/th-release/vst3go/pkg/ara"
+	"github.com/th-release/vst3go/v2/pkg/ara"
 
-	"github.com/th-release/vst3go/pkg/framework/bus"
-	"github.com/th-release/vst3go/pkg/framework/param"
-	"github.com/th-release/vst3go/pkg/framework/plugin"
-	"github.com/th-release/vst3go/pkg/framework/process"
+	"github.com/th-release/vst3go/v2/pkg/framework/bus"
+	"github.com/th-release/vst3go/v2/pkg/framework/param"
+	"github.com/th-release/vst3go/v2/pkg/framework/plugin"
+	"github.com/th-release/vst3go/v2/pkg/framework/process"
 )
 
 // Plugin is the top-level runtime interface implemented by a plugin entrypoint.

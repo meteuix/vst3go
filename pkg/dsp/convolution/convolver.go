@@ -6,7 +6,7 @@ package convolution
 import (
 	"fmt"
 
-	"github.com/th-release/vst3go/pkg/dsp/fft"
+	"github.com/th-release/vst3go/v2/pkg/dsp/fft"
 )
 
 // stageRatio is how much larger each FFT stage's block is than the one

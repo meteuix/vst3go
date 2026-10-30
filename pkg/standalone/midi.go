@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/th-release/vst3go/internal/midiport"
+	"github.com/th-release/vst3go/v2/internal/midiport"
 )
 
 // midiPorts are the MIDI inputs feeding the plugin and the output its MIDI

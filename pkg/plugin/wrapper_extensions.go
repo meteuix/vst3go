@@ -10,7 +10,7 @@ import (
 	"strings"
 	"unsafe"
 
-	"github.com/th-release/vst3go/pkg/framework/bus"
+	"github.com/th-release/vst3go/v2/pkg/framework/bus"
 )
 
 // Optional edit controller interfaces. Each is exposed by the C object only

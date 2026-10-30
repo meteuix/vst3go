@@ -46,7 +46,7 @@
 
 ## 호환성 참고 사항
 
-- 모듈 경로: `github.com/th-release/vst3go`
+- 모듈 경로: `github.com/th-release/vst3go/v2`
 - 지원하는 공개 API 범위: `pkg/plugin`, `pkg/vst3`, `pkg/midi`, `pkg/framework/{bus,param,plugin,process,state,dsp,voice,debug}`, `pkg/dsp/...`
 - 호환성을 깨는 변경 사항:
 

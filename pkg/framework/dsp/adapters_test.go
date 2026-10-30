@@ -4,8 +4,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/th-release/vst3go/pkg/dsp/dynamics"
-	"github.com/th-release/vst3go/pkg/dsp/utility"
+	"github.com/th-release/vst3go/v2/pkg/dsp/dynamics"
+	"github.com/th-release/vst3go/v2/pkg/dsp/utility"
 )
 
 func TestCompressorAdapter(t *testing.T) {

@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/th-release/vst3go/pkg/plugin"
-	"github.com/th-release/vst3go/pkg/plugintest"
+	"github.com/th-release/vst3go/v2/pkg/plugin"
+	"github.com/th-release/vst3go/v2/pkg/plugintest"
 )
 
 func TestStallCountsNotesInItsGain(t *testing.T) {

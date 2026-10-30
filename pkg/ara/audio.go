@@ -4,7 +4,7 @@ import (
 	"errors"
 	"math"
 
-	"github.com/th-release/vst3go/pkg/dsp/resample"
+	"github.com/th-release/vst3go/v2/pkg/dsp/resample"
 )
 
 // audioPad is the silent frames kept before and after a source's samples,

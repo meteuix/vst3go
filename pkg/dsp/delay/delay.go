@@ -4,7 +4,7 @@ package delay
 import (
 	"math"
 
-	"github.com/th-release/vst3go/pkg/dsp/fastmath"
+	"github.com/th-release/vst3go/v2/pkg/dsp/fastmath"
 )
 
 // Line implements a basic delay line with linear interpolation

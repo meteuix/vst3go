@@ -4,8 +4,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/th-release/vst3go/pkg/dsp/dynamics"
-	"github.com/th-release/vst3go/pkg/plugintest"
+	"github.com/th-release/vst3go/v2/pkg/dsp/dynamics"
+	"github.com/th-release/vst3go/v2/pkg/plugintest"
 )
 
 const sr = 48000

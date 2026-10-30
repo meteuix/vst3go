@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/th-release/vst3go/pkg/audiofile"
+	"github.com/th-release/vst3go/v2/pkg/audiofile"
 )
 
 func TestLayersPlayTogetherWithTheirPan(t *testing.T) {

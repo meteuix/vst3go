@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/th-release/vst3go/pkg/plugintest"
+	"github.com/th-release/vst3go/v2/pkg/plugintest"
 )
 
 // drum is a decaying 100 Hz hit starting at sample 1000.

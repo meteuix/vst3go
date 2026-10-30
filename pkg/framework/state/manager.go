@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/th-release/vst3go/pkg/framework/param"
+	"github.com/th-release/vst3go/v2/pkg/framework/param"
 )
 
 const (

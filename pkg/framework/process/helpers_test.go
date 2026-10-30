@@ -3,7 +3,7 @@ package process
 import (
 	"testing"
 
-	"github.com/th-release/vst3go/pkg/framework/param"
+	"github.com/th-release/vst3go/v2/pkg/framework/param"
 )
 
 func TestProcessSamplesDoesNotAllocateAfterWarmup(t *testing.T) {

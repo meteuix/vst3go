@@ -3,7 +3,7 @@ package analysis
 import (
 	"math"
 
-	"github.com/th-release/vst3go/pkg/dsp/fft"
+	"github.com/th-release/vst3go/v2/pkg/dsp/fft"
 )
 
 // FFT is a windowed spectrum transform of a fixed power-of-two size on

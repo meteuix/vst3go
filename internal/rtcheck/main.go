@@ -27,15 +27,15 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/th-release/vst3go/pkg/dsp/convolution"
-	"github.com/th-release/vst3go/pkg/dsp/dynamics"
-	"github.com/th-release/vst3go/pkg/dsp/filter"
-	"github.com/th-release/vst3go/pkg/dsp/resample"
-	"github.com/th-release/vst3go/pkg/framework/bus"
-	"github.com/th-release/vst3go/pkg/framework/param"
-	frameworkplugin "github.com/th-release/vst3go/pkg/framework/plugin"
-	"github.com/th-release/vst3go/pkg/framework/process"
-	"github.com/th-release/vst3go/pkg/plugin"
+	"github.com/th-release/vst3go/v2/pkg/dsp/convolution"
+	"github.com/th-release/vst3go/v2/pkg/dsp/dynamics"
+	"github.com/th-release/vst3go/v2/pkg/dsp/filter"
+	"github.com/th-release/vst3go/v2/pkg/dsp/resample"
+	"github.com/th-release/vst3go/v2/pkg/framework/bus"
+	"github.com/th-release/vst3go/v2/pkg/framework/param"
+	frameworkplugin "github.com/th-release/vst3go/v2/pkg/framework/plugin"
+	"github.com/th-release/vst3go/v2/pkg/framework/process"
+	"github.com/th-release/vst3go/v2/pkg/plugin"
 )
 
 const (

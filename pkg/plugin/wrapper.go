@@ -16,9 +16,9 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"github.com/th-release/vst3go/pkg/framework/bus"
-	"github.com/th-release/vst3go/pkg/framework/plugin"
-	"github.com/th-release/vst3go/pkg/vst3"
+	"github.com/th-release/vst3go/v2/pkg/framework/bus"
+	"github.com/th-release/vst3go/v2/pkg/framework/plugin"
+	"github.com/th-release/vst3go/v2/pkg/vst3"
 )
 
 // SDKVersion is the VST3 SDK version reported in PClassInfo2.

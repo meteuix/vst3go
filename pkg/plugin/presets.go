@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/th-release/vst3go/pkg/preset"
+	"github.com/th-release/vst3go/v2/pkg/preset"
 )
 
 // messageState carries a component state loaded from a preset to the other

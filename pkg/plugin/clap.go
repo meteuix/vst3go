@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/th-release/vst3go/pkg/framework/param"
-	frameworkplugin "github.com/th-release/vst3go/pkg/framework/plugin"
-	"github.com/th-release/vst3go/pkg/midi"
+	"github.com/th-release/vst3go/v2/pkg/framework/param"
+	frameworkplugin "github.com/th-release/vst3go/v2/pkg/framework/plugin"
+	"github.com/th-release/vst3go/v2/pkg/midi"
 )
 
 // Format-independent parts of the CLAP front end (wrapper_clap.go).

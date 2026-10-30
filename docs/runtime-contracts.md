@@ -83,7 +83,7 @@ The deadline guard bounds what such a stall costs, and it is on by default: `New
 
 When a downstream repo consumes this fork:
 
-- import `github.com/th-release/vst3go`
+- import `github.com/th-release/vst3go/v2`
 - build plugin/runtime logic on top of the supported packages above
 - use `pkg/dsp` for signal processing and `examples/` as reference plugins
 - keep product-specific code (licensing, installers, branding) in the downstream repo

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/th-release/vst3go/pkg/dsp/fft"
+	"github.com/th-release/vst3go/v2/pkg/dsp/fft"
 )
 
 const (

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/th-release/vst3go/pkg/plugin"
-	"github.com/th-release/vst3go/pkg/plugintest"
+	"github.com/th-release/vst3go/v2/pkg/plugin"
+	"github.com/th-release/vst3go/v2/pkg/plugintest"
 )
 
 // writeModel writes a Linear model that scales its input by g, trained

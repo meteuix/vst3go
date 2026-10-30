@@ -4,9 +4,9 @@ import (
 	"math"
 	"testing"
 
-	"github.com/th-release/vst3go/pkg/dsp/fft"
-	"github.com/th-release/vst3go/pkg/plugin"
-	"github.com/th-release/vst3go/pkg/plugintest"
+	"github.com/th-release/vst3go/v2/pkg/dsp/fft"
+	"github.com/th-release/vst3go/v2/pkg/plugin"
+	"github.com/th-release/vst3go/v2/pkg/plugintest"
 )
 
 // dominant returns the strongest frequency of x[:16384].

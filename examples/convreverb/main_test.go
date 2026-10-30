@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/th-release/vst3go/pkg/plugintest"
+	"github.com/th-release/vst3go/v2/pkg/plugintest"
 )
 
 func TestConvReverbImpulseIsTheGeneratedResponse(t *testing.T) {

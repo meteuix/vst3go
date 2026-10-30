@@ -5,7 +5,7 @@
 ## 저장소 경계
 
 - [x] VST3 바인딩/런타임 계층, DSP 라이브러리, 쇼케이스 플러그인을 이 저장소에 둡니다.
-- [x] 모듈 이름을 `github.com/th-release/vst3go`로 바꿉니다.
+- [x] 모듈 이름을 `github.com/th-release/vst3go/v2`로 바꿉니다.
 - [x] 이 포크가 원본 프로젝트와 의도적으로 다르다는 점을 README에 명시합니다.
 - [x] 유지하는 패키지 경계를 한 번 더 검토합니다.
   - [x] `pkg/vst3`

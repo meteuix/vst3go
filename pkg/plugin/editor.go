@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/th-release/vst3go/pkg/framework/param"
+	"github.com/th-release/vst3go/v2/pkg/framework/param"
 )
 
 // Editor describes the web editor of a processor. Processors implement

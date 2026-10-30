@@ -3,7 +3,7 @@ package distortion
 import (
 	"math"
 
-	"github.com/th-release/vst3go/pkg/dsp/fastmath"
+	"github.com/th-release/vst3go/v2/pkg/dsp/fastmath"
 )
 
 // Tape flutter delay: a fixed center delay the flutter swings around.

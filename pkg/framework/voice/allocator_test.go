@@ -3,7 +3,7 @@ package voice
 import (
 	"testing"
 
-	"github.com/th-release/vst3go/pkg/midi"
+	"github.com/th-release/vst3go/v2/pkg/midi"
 )
 
 // TestVoice is a simple voice implementation for testing

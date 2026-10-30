@@ -3,8 +3,8 @@ package process
 import (
 	"testing"
 
-	"github.com/th-release/vst3go/pkg/framework/param"
-	"github.com/th-release/vst3go/pkg/midi"
+	"github.com/th-release/vst3go/v2/pkg/framework/param"
+	"github.com/th-release/vst3go/v2/pkg/midi"
 )
 
 func TestContextEventProcessing(t *testing.T) {

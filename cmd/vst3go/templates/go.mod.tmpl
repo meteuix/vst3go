@@ -2,8 +2,8 @@ module {{.Module}}
 
 go 1.24.3
 {{if .VST3GoVersion}}
-require github.com/th-release/vst3go {{.VST3GoVersion}}
+require github.com/th-release/vst3go/v2 {{.VST3GoVersion}}
 {{end}}{{if .Replace}}
-replace github.com/th-release/vst3go => {{.Replace}}
+replace github.com/th-release/vst3go/v2 => {{.Replace}}
 {{end}}
-tool github.com/th-release/vst3go/cmd/vst3go
+tool github.com/th-release/vst3go/v2/cmd/vst3go
