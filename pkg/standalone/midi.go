@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/th-release/vst3go/internal/midiport"
 )
@@ -28,10 +29,14 @@ func midiPortNames() (ins, outs []string, err error) {
 	return ins, outs, err
 }
 
+// midiOutPoll is how often the plugin's MIDI output goes to the port.
+const midiOutPoll = time.Millisecond
+
 // openMIDI opens the MIDI ports of the settings: inputs (for plugins with
 // note input), a virtual input named after the plugin, and the output.
-// Messages go to in and come from out.
-func openMIDI(s Settings, name string, noteInput bool, in chan<- [3]byte, out <-chan [3]byte) (*midiPorts, error) {
+// Input goes to the next block (pushMIDI); the output port gets what the
+// plugin outputs (popMIDI).
+func openMIDI(s Settings, name string, noteInput bool) (*midiPorts, error) {
 	m := &midiPorts{}
 	wanted := s.midiInputs()
 	if !noteInput {
@@ -45,10 +50,7 @@ func openMIDI(s Settings, name string, noteInput bool, in chan<- [3]byte, out <-
 	}
 	receive := func(msg []byte) {
 		if b, ok := channelMessage(msg); ok {
-			select {
-			case in <- b:
-			default: // the audio thread is behind; drop rather than block
-			}
+			pushMIDI(b) // dropped when the audio thread is behind
 		}
 	}
 	var errs []error
@@ -84,16 +86,15 @@ func openMIDI(s Settings, name string, noteInput bool, in chan<- [3]byte, out <-
 		}
 	}
 	if s.MIDIOutput != "" {
-		if err := m.openOutput(s.MIDIOutput, out); err != nil {
+		if err := m.openOutput(s.MIDIOutput); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return m, errors.Join(errs...)
 }
 
-// openOutput opens the output port and sends the plugin's MIDI from out to
-// it.
-func (m *midiPorts) openOutput(name string, out <-chan [3]byte) error {
+// openOutput opens the output port and sends the plugin's MIDI to it.
+func (m *midiPorts) openOutput(name string) error {
 	o, err := midiport.OpenOutput(name)
 	if err != nil {
 		return err
@@ -101,10 +102,14 @@ func (m *midiPorts) openOutput(name string, out <-chan [3]byte) error {
 	m.out = o
 	m.done = make(chan struct{})
 	go func() {
+		ticker := time.NewTicker(midiOutPoll)
+		defer ticker.Stop()
 		for {
 			select {
-			case b := <-out:
-				_ = o.Send(b[:messageLength(b[0])])
+			case <-ticker.C:
+				for b, ok := popMIDI(); ok; b, ok = popMIDI() {
+					_ = o.Send(b[:messageLength(b[0])])
+				}
 			case <-m.done:
 				return
 			}

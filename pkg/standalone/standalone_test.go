@@ -4,10 +4,10 @@ package standalone
 
 import (
 	"bytes"
-	"encoding/binary"
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -24,7 +24,11 @@ import (
 // its notes to the MIDI output.
 type testSynth struct{}
 
-var synthBlocks atomic.Int64
+var (
+	synthBlocks atomic.Int64
+	// synthTransport is the transport of the synth's last block.
+	synthTransport process.TransportInfo
+)
 
 func (testSynth) GetInfo() frameworkplugin.Info {
 	return frameworkplugin.Info{ID: "com.vst3go.test.standalone-synth", Name: "Standalone Test Synth", Version: "1.0.0", Vendor: "VST3Go Tests", Category: frameworkplugin.CategoryInstrument}
@@ -32,7 +36,9 @@ func (testSynth) GetInfo() frameworkplugin.Info {
 
 func (testSynth) CreateProcessor() plugin.Processor {
 	config := bus.NewBuilder().WithStereoOutput("Out").WithEventInput("MIDI In").WithEventOutput("MIDI Out").MustBuild()
-	return &synthProcessor{BaseProcessor: frameworkplugin.NewBaseProcessor(config)}
+	p := &synthProcessor{BaseProcessor: frameworkplugin.NewBaseProcessor(config)}
+	p.SetProcessDeadline(0) // see testEffect
+	return p
 }
 
 type synthProcessor struct {
@@ -42,6 +48,7 @@ type synthProcessor struct {
 
 func (p *synthProcessor) ProcessAudio(ctx *process.Context) {
 	synthBlocks.Add(1)
+	synthTransport = *ctx.Transport
 	for _, e := range ctx.GetAllInputEvents() {
 		switch e.Type {
 		case midi.EventTypeNoteOn:
@@ -72,6 +79,11 @@ func (testEffect) GetInfo() frameworkplugin.Info {
 
 func (testEffect) CreateProcessor() plugin.Processor {
 	p := &effectProcessor{BaseProcessor: frameworkplugin.NewBaseProcessor(bus.NewEffectStereo())}
+	// The tests check the host's routing with blocks of a few frames: a
+	// 3-frame block has a 31 µs deadline, which the cold first block of a
+	// process misses under the race detector, and the guard then outputs
+	// silence. The deadline guard has its own tests in pkg/plugin.
+	p.SetProcessDeadline(0)
 	p.Parameters().Add(param.New(0, "Gain").Range(0, 1).Default(0.5).Build())
 	return p
 }
@@ -90,22 +102,6 @@ func (p *effectProcessor) ProcessAudio(ctx *process.Context) {
 func init() {
 	plugin.Register(testSynth{})
 	plugin.Register(testEffect{})
-}
-
-func floats(b []byte) []float32 {
-	out := make([]float32, len(b)/4)
-	for i := range out {
-		out[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[4*i:]))
-	}
-	return out
-}
-
-func bytesOf(f []float32) []byte {
-	b := make([]byte, 4*len(f))
-	for i, v := range f {
-		binary.LittleEndian.PutUint32(b[4*i:], math.Float32bits(v))
-	}
-	return b
 }
 
 // hostPlugin creates and activates a registered plugin for a test.
@@ -142,41 +138,38 @@ func TestInstrumentMIDIInAndOut(t *testing.T) {
 	if in, out := mainChannels(); in != 0 || out != 2 {
 		t.Fatalf("main channels = %d in, %d out", in, out)
 	}
-	a := &app{audio: &audio{outChannels: 2}, midiIn: make(chan [3]byte, 16), midiOut: make(chan [3]byte, 16)}
-	out := make([]byte, 4*2*100) // longer than the 64-frame maximum block
-	a.midiIn <- [3]byte{0x90, 60, 100}
-	a.process(out, nil, 100)
-	for i, v := range floats(out) {
+	for _, ok := popMIDI(); ok; _, ok = popMIDI() {
+	}
+	out := make([]float32, 2*100) // longer than the 64-frame maximum block
+	pushMIDI([3]byte{0x90, 60, 100})
+	render(out, nil, 0, 2, 100)
+	for i, v := range out {
 		if v != 0.25 {
 			t.Fatalf("sample %d = %g while the note is held", i, v)
 		}
 	}
-	if got := <-a.midiOut; got != [3]byte{0x90, 60, 100} {
-		t.Fatalf("MIDI out = % x", got)
+	if got, ok := popMIDI(); !ok || got != [3]byte{0x90, 60, 100} {
+		t.Fatalf("MIDI out = % x, %v", got, ok)
 	}
-	a.midiIn <- [3]byte{0x80, 60, 0}
-	a.process(out, nil, 100)
-	for i, v := range floats(out) {
+	pushMIDI([3]byte{0x80, 60, 0})
+	render(out, nil, 0, 2, 100)
+	for i, v := range out {
 		if v != 0 {
 			t.Fatalf("sample %d = %g after the note off", i, v)
 		}
 	}
-	if got := <-a.midiOut; got[0] != 0x80 || got[1] != 60 {
-		t.Fatalf("MIDI out = % x", got)
+	if got, ok := popMIDI(); !ok || got[0] != 0x80 || got[1] != 60 {
+		t.Fatalf("MIDI out = % x, %v", got, ok)
 	}
 }
 
 func TestEffectMonoDeviceFeedsStereoInput(t *testing.T) {
 	hostPlugin(t, "Standalone Test Effect", 256)
-	a := &app{audio: &audio{inChannels: 1, outChannels: 2}, midiIn: make(chan [3]byte, 1), midiOut: make(chan [3]byte, 1)}
-	in := bytesOf([]float32{0.5, -1, 0.25})
-	out := make([]byte, 4*2*3)
-	a.process(out, in, 3)
+	out := make([]float32, 2*3)
+	render(out, []float32{0.5, -1, 0.25}, 1, 2, 3)
 	want := []float32{0.25, 0.25, -0.5, -0.5, 0.125, 0.125}
-	for i, v := range floats(out) {
-		if v != want[i] {
-			t.Fatalf("output = %v, want %v", floats(out), want)
-		}
+	if !slices.Equal(out, want) {
+		t.Fatalf("output = %v, want %v", out, want)
 	}
 }
 
@@ -248,6 +241,9 @@ func TestRunErrors(t *testing.T) {
 		{[]string{"-backend", "null", "-output", "no such device"}, `no single audio device matches "no such device"`},
 		{[]string{"-buffer", "-1"}, "must not be negative"},
 		{[]string{"extra"}, "unexpected arguments"},
+		{[]string{"-tempo", "5"}, "tempo 5 is outside 20 to 999 BPM"},
+		{[]string{"-time-signature", "7/5"}, "time signature 7/5 is not supported"},
+		{[]string{"-time-signature", "fast"}, `time signature "fast" is not beats/unit`},
 	} {
 		err := run(append([]string{"-config", dir, "-headless"}, tc.args...), &bytes.Buffer{})
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -274,5 +270,151 @@ func TestChannelMessage(t *testing.T) {
 		if got, ok := channelMessage(tc.in); got != tc.want || ok != tc.ok {
 			t.Errorf("channelMessage(% x) = % x, %v", tc.in, got, ok)
 		}
+	}
+}
+
+// recorder collects the messages the application posts to a panel.
+type recorder struct{ messages []any }
+
+func (r *recorder) Post(message any) error {
+	r.messages = append(r.messages, message)
+	return nil
+}
+
+func (r *recorder) last() any {
+	if len(r.messages) == 0 {
+		return nil
+	}
+	return r.messages[len(r.messages)-1]
+}
+
+func TestTransport(t *testing.T) {
+	hostPlugin(t, "Standalone Test Synth", 64)
+	toolbar := &recorder{}
+	a := &app{dir: t.TempDir(), settings: Settings{Tempo: 90, BeatsPerBar: 3, BeatUnit: 4}, toolbarPost: toolbar}
+	a.applyTransport()
+	a.toolbarMessage([]byte(`{"type":"rewind"}`))
+	out := make([]float32, 2*48000)
+
+	render(out, nil, 0, 2, 48000)
+	if tr := synthTransport; tr.IsPlaying || !tr.HasTempo || tr.Tempo != 90 || tr.TimeSigNumerator != 3 || tr.TimeSigDenominator != 4 || tr.ProjectTimeMusic != 0 {
+		t.Fatalf("stopped transport = %+v", tr)
+	}
+
+	a.toolbarMessage([]byte(`{"type":"play"}`))
+	if msg, ok := toolbar.last().(transportMessage); !ok || !msg.Playing || msg.Tempo != 90 || msg.BeatsPerBar != 3 || msg.Position != "1.1" {
+		t.Fatalf("toolbar after play = %+v", toolbar.last())
+	}
+	// Two seconds at 90 BPM are three quarter notes: one 3/4 bar.
+	render(out, nil, 0, 2, 48000)
+	render(out, nil, 0, 2, 48000)
+	tr := synthTransport
+	if !tr.IsPlaying || !tr.HasMusicalTime {
+		t.Fatalf("playing transport = %+v", tr)
+	}
+	// The last block starts 64 frames before the end.
+	if want := 3 - 64*1.5/48000; math.Abs(tr.ProjectTimeMusic-want) > 1e-6 {
+		t.Fatalf("position of the last block = %v quarters, want %v", tr.ProjectTimeMusic, want)
+	}
+	if tr.BarPositionMusic != 0 {
+		t.Fatalf("bar start = %v, want 0", tr.BarPositionMusic)
+	}
+	a.updatePosition()
+	if msg, ok := toolbar.last().(positionMessage); !ok || msg.Position != "2.1" {
+		t.Fatalf("position after a bar = %+v", toolbar.last())
+	}
+	render(out, nil, 0, 2, 48000)
+	if tr := synthTransport; tr.BarPositionMusic != 3 {
+		t.Fatalf("bar start in the second bar = %v, want 3", tr.BarPositionMusic)
+	}
+
+	// Stopped, the position holds; rewind returns to the start.
+	a.toolbarMessage([]byte(`{"type":"stop"}`))
+	render(out, nil, 0, 2, 64)
+	held := synthTransport.ProjectTimeMusic
+	render(out, nil, 0, 2, 64)
+	if tr := synthTransport; tr.IsPlaying || tr.ProjectTimeMusic != held || held < 4.4 {
+		t.Fatalf("stopped transport moved: %+v (held %v)", tr, held)
+	}
+	a.toolbarMessage([]byte(`{"type":"rewind"}`))
+	if msg, ok := toolbar.last().(transportMessage); !ok || msg.Position != "1.1" {
+		t.Fatalf("toolbar after rewind = %+v", toolbar.last())
+	}
+	render(out, nil, 0, 2, 64)
+	if tr := synthTransport; tr.ProjectTimeMusic != 0 {
+		t.Fatalf("position after rewind = %v", tr.ProjectTimeMusic)
+	}
+
+	// Tempo and time signature apply and persist; invalid ones revert.
+	a.toolbarMessage([]byte(`{"type":"tempo","tempo":140}`))
+	a.toolbarMessage([]byte(`{"type":"time-signature","beatsPerBar":6,"beatUnit":8}`))
+	a.toolbarMessage([]byte(`{"type":"tempo","tempo":5}`))
+	if msg, ok := toolbar.last().(transportMessage); !ok || msg.Tempo != 140 || msg.BeatsPerBar != 6 || msg.BeatUnit != 8 {
+		t.Fatalf("toolbar after an invalid tempo = %+v", toolbar.last())
+	}
+	render(out, nil, 0, 2, 64)
+	if tr := synthTransport; tr.Tempo != 140 || tr.TimeSigNumerator != 6 || tr.TimeSigDenominator != 8 {
+		t.Fatalf("transport = %+v", tr)
+	}
+	if s, err := LoadSettings(a.dir); err != nil || s.Tempo != 140 || s.BeatsPerBar != 6 || s.BeatUnit != 8 {
+		t.Fatalf("saved settings = %+v, %v", s, err)
+	}
+}
+
+func TestSettingsWindow(t *testing.T) {
+	index, _, err := pluginIndex("Standalone Test Effect")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := createPlugin(index); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(destroyPlugin)
+	page, toolbar := &recorder{}, &recorder{}
+	a := &app{name: "Effect", dir: t.TempDir(), settingsPost: page, toolbarPost: toolbar,
+		settings: Settings{Backend: "null", MIDIInput: "none", NoVirtualMIDI: true, Tempo: 100}}
+	in, out := mainChannels()
+	if a.audio, err = openAudio(a.settings, in, out); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.startAudio(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		a.stopAudio()
+		a.audio.close()
+		a.midi.close()
+	})
+
+	a.settingsMessage([]byte(`{"type":"ready"}`))
+	devices, ok := page.last().(devicesMessage)
+	if !ok || !slices.Contains(devices.Backends, "null") || !devices.AudioInput || devices.Settings.Backend != "null" || devices.Error != "" {
+		t.Fatalf("devices = %+v", page.last())
+	}
+
+	a.settingsMessage([]byte(`{"type":"apply","settings":{"backend":"null","sampleRate":44100,"bufferSize":512,"midiInput":"none","noVirtualMIDI":true}}`))
+	applied, ok := page.last().(appliedMessage)
+	if !ok || applied.Error != "" || !strings.Contains(applied.Status, "44100 Hz, 512 frames") {
+		t.Fatalf("applied = %+v", page.last())
+	}
+	if !a.audio.running() || a.audio.frames != 512 || a.audio.sampleRate != 44100 {
+		t.Fatalf("audio after apply = %+v", a.audio)
+	}
+	if status, ok := toolbar.last().(statusMessage); !ok || !strings.Contains(status.Text, "512 frames") {
+		t.Fatalf("toolbar status = %+v", toolbar.last())
+	}
+	saved, err := LoadSettings(a.dir)
+	if err != nil || saved.BufferSize != 512 || saved.SampleRate != 44100 || saved.Tempo != 100 {
+		t.Fatalf("saved settings = %+v, %v (the transport tempo is kept)", saved, err)
+	}
+
+	// A device that fails to open reports the error and the previous
+	// devices come back.
+	a.settingsMessage([]byte(`{"type":"apply","settings":{"backend":"null","output":"no such device","bufferSize":128}}`))
+	if applied, ok := page.last().(appliedMessage); !ok || !strings.Contains(applied.Error, `no single audio device matches "no such device"`) {
+		t.Fatalf("applied = %+v", page.last())
+	}
+	if !a.audio.running() || a.audio.frames != 512 || a.settings.BufferSize != 512 || a.quit.Load() {
+		t.Fatalf("audio after a failed apply = %+v, settings %+v", a.audio, a.settings)
 	}
 }

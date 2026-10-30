@@ -3,7 +3,6 @@ module github.com/th-release/vst3go
 go 1.24.3
 
 require (
-	github.com/gen2brain/malgo v0.11.26
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/mewkiz/flac v1.0.14

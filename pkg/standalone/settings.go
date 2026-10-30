@@ -3,9 +3,11 @@ package standalone
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -35,12 +37,22 @@ type Settings struct {
 	// MIDIOutput is the MIDI output port name for the plugin's MIDI output;
 	// empty sends none.
 	MIDIOutput string `json:"midiOutput,omitempty"`
+	// Tempo of the transport in BPM; 0 uses 120.
+	Tempo float64 `json:"tempo,omitempty"`
+	// BeatsPerBar and BeatUnit are the transport's time signature; 0 uses
+	// 4/4.
+	BeatsPerBar int `json:"beatsPerBar,omitempty"`
+	BeatUnit    int `json:"beatUnit,omitempty"`
 }
 
 const (
 	defaultBufferSize = 256
-	settingsFile      = "standalone.json"
-	stateFile         = "standalone.state"
+	defaultTempo      = 120
+	// The tempo range of vst3go_sa_transport_set.
+	minTempo     = 20
+	maxTempo     = 999
+	settingsFile = "standalone.json"
+	stateFile    = "standalone.state"
 )
 
 // bufferSize returns the period with the default applied.
@@ -49,6 +61,40 @@ func (s Settings) bufferSize() int {
 		return defaultBufferSize
 	}
 	return s.BufferSize
+}
+
+// check reports settings no device or transport can take.
+func (s Settings) check() error {
+	if s.SampleRate < 0 || s.BufferSize < 0 {
+		return errors.New("sample rate and buffer size must not be negative")
+	}
+	if s.Tempo != 0 && (s.Tempo < minTempo || s.Tempo > maxTempo) {
+		return fmt.Errorf("tempo %g is outside %d to %d BPM", s.Tempo, minTempo, maxTempo)
+	}
+	if beats, unit := s.timeSignature(); beats > 64 || !slices.Contains([]int{1, 2, 4, 8, 16, 32}, unit) {
+		return fmt.Errorf("time signature %d/%d is not supported", beats, unit)
+	}
+	return nil
+}
+
+// timeSignature returns the time signature with the 4/4 default applied.
+func (s Settings) timeSignature() (beats, unit int) {
+	beats, unit = s.BeatsPerBar, s.BeatUnit
+	if beats <= 0 {
+		beats = 4
+	}
+	if unit <= 0 {
+		unit = 4
+	}
+	return beats, unit
+}
+
+// tempo returns the tempo with the default applied.
+func (s Settings) tempo() float64 {
+	if s.Tempo <= 0 {
+		return defaultTempo
+	}
+	return s.Tempo
 }
 
 // midiInputs returns the MIDI inputs to open: nil for none, ["*"] for all.

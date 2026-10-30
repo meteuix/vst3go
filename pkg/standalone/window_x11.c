@@ -17,9 +17,12 @@ enum { MAX_TIMERS = 16 };
 static Display* display;
 static bool displayTried;
 static Window window;
+static Window editorArea;   // the plugin editor's parent, below the toolbar
+static Window toolbarArea;  // the toolbar's parent, along the top
+static uint32_t toolbarHeight;
 static Atom wmDelete;
 static bool quitting;
-static uint32_t windowWidth, windowHeight;
+static uint32_t editorWidth, editorHeight;
 static struct {
     clap_id id;
     uint32_t period;
@@ -45,12 +48,20 @@ const char* vst3go_sa_window_api(void) {
 
 double vst3go_sa_window_scale(void) { return 0; }
 
-bool vst3go_sa_window_open(const char* title, uint32_t width, uint32_t height, bool resizable, clap_window_t* out) {
+bool vst3go_sa_window_open(const char* title, uint32_t width, uint32_t height, bool resizable, uint32_t toolbar,
+                           clap_window_t* out, void** toolbarParent) {
     if (!vst3go_sa_window_api()) return false;
     int screen = DefaultScreen(display);
-    window = XCreateSimpleWindow(display, RootWindow(display, screen), 0, 0, width, height, 0,
+    toolbarHeight = toolbar;
+    window = XCreateSimpleWindow(display, RootWindow(display, screen), 0, 0, width, height + toolbar, 0,
                                  BlackPixel(display, screen), BlackPixel(display, screen));
     if (!window) return false;
+    toolbarArea = XCreateSimpleWindow(display, window, 0, 0, width, toolbar, 0,
+                                      BlackPixel(display, screen), BlackPixel(display, screen));
+    editorArea = XCreateSimpleWindow(display, window, 0, (int)toolbar, width, height, 0,
+                                     BlackPixel(display, screen), BlackPixel(display, screen));
+    XMapWindow(display, toolbarArea);
+    XMapWindow(display, editorArea);
     XStoreName(display, window, title);
     XClassHint* hint = XAllocClassHint();
     if (hint) {
@@ -64,7 +75,7 @@ bool vst3go_sa_window_open(const char* title, uint32_t width, uint32_t height, b
         if (size) {
             size->flags = PMinSize | PMaxSize;
             size->min_width = size->max_width = (int)width;
-            size->min_height = size->max_height = (int)height;
+            size->min_height = size->max_height = (int)(height + toolbar);
             XSetWMNormalHints(display, window, size);
             XFree(size);
         }
@@ -74,16 +85,17 @@ bool vst3go_sa_window_open(const char* title, uint32_t width, uint32_t height, b
     XSelectInput(display, window, StructureNotifyMask);
     XMapWindow(display, window);
     XFlush(display);
-    windowWidth = width;
-    windowHeight = height;
+    editorWidth = width;
+    editorHeight = height;
     out->api = CLAP_WINDOW_API_X11;
-    out->x11 = window;
+    out->x11 = editorArea;
+    *toolbarParent = (void*)(uintptr_t)toolbarArea;
     return true;
 }
 
 void vst3go_sa_window_resize(uint32_t width, uint32_t height) {
     if (!window) return;
-    XResizeWindow(display, window, width, height);
+    XResizeWindow(display, window, width, height + toolbarHeight);
     XFlush(display);
 }
 
@@ -91,20 +103,25 @@ void vst3go_sa_window_close(void) {
     if (!window) return;
     XDestroyWindow(display, window);
     XFlush(display);
-    window = 0;
+    window = editorArea = toolbarArea = 0;
 }
 
-static void resized(uint32_t width, uint32_t height) {
-    if (width == windowWidth && height == windowHeight) return;
+// resized lays out the areas of a window resized to width x windowHeight.
+static void resized(uint32_t width, uint32_t windowHeight) {
+    uint32_t height = windowHeight > toolbarHeight ? windowHeight - toolbarHeight : 0;
+    if (width == editorWidth && height == editorHeight) return;
     uint32_t w = width, h = height;
     vst3go_sa_gui_adjust(&w, &h);
-    windowWidth = w;
-    windowHeight = h;
+    editorWidth = w;
+    editorHeight = h;
     if (w != width || h != height) {
         // Snap the window to the size the editor accepts.
         vst3go_sa_window_resize(w, h);
     }
+    XMoveResizeWindow(display, toolbarArea, 0, 0, w ? w : 1, toolbarHeight);
+    XMoveResizeWindow(display, editorArea, 0, (int)toolbarHeight, w ? w : 1, h ? h : 1);
     vst3go_sa_gui_set_size(w, h);
+    goStandaloneToolbarSize(w, toolbarHeight);
 }
 
 static void handle_events(void) {

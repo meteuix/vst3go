@@ -2,53 +2,87 @@
 
 package standalone
 
+/*
+#cgo linux LDFLAGS: -ldl -lpthread -lm
+#cgo amd64 CFLAGS: -msse2
+#include <stdlib.h>
+#include "audio.h"
+*/
+import "C"
+
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"unsafe"
-
-	"github.com/gen2brain/malgo"
 )
 
-// backendNull is miniaudio's ma_backend_null, a device without hardware
-// that runs on a timer (tests, servers). malgo.BackendNull is off by one:
-// malgo leaves out ma_backend_custom, which precedes it.
-const backendNull = malgo.BackendWebaudio + 2
-
-var backends = map[string]malgo.Backend{
-	"coreaudio":  malgo.BackendCoreaudio,
-	"wasapi":     malgo.BackendWasapi,
-	"dsound":     malgo.BackendDsound,
-	"winmm":      malgo.BackendWinmm,
-	"alsa":       malgo.BackendAlsa,
-	"pulseaudio": malgo.BackendPulseaudio,
-	"jack":       malgo.BackendJack,
-	"oss":        malgo.BackendOss,
-	"sndio":      malgo.BackendSndio,
-	"null":       backendNull,
+// audioAPI opens an audio API (see vst3go_sa_audio_new) and lists its
+// devices.
+func audioAPI(backend string) (*C.VST3GoSAAudio, error) {
+	name := C.CString(backend)
+	defer C.free(unsafe.Pointer(name))
+	if backend != "" && !C.vst3go_sa_audio_backend_known(name) {
+		return nil, fmt.Errorf("unknown audio backend %q", backend)
+	}
+	var msg *C.char
+	api := C.vst3go_sa_audio_new(name, &msg)
+	if api == nil {
+		return nil, fmt.Errorf("audio: %s", C.GoString(msg))
+	}
+	return api, nil
 }
 
-func newContext(backend string) (*malgo.AllocatedContext, error) {
-	var list []malgo.Backend
-	if backend != "" {
-		b, ok := backends[strings.ToLower(backend)]
-		if !ok {
-			return nil, fmt.Errorf("unknown audio backend %q", backend)
+// render renders one period as the device's callback does (see
+// vst3go_sa_audio_render); the tests drive it, as _test files cannot use
+// cgo.
+func render(out, in []float32, inChannels, outChannels, frames uint32) {
+	var inPtr, outPtr *C.float
+	if len(in) > 0 {
+		inPtr = (*C.float)(unsafe.Pointer(&in[0]))
+	}
+	if len(out) > 0 {
+		outPtr = (*C.float)(unsafe.Pointer(&out[0]))
+	}
+	C.vst3go_sa_audio_render(inPtr, C.uint32_t(inChannels), outPtr, C.uint32_t(outChannels), C.uint32_t(frames))
+}
+
+// midiInput serializes the MIDI input callbacks of every port: the ring
+// takes one producer.
+var midiInput sync.Mutex
+
+// pushMIDI queues a message for the next block; it returns false when the
+// ring is full (the audio thread is behind).
+func pushMIDI(b [3]byte) bool {
+	midiInput.Lock()
+	defer midiInput.Unlock()
+	return bool(C.vst3go_sa_midi_in_push((*C.uint8_t)(&b[0])))
+}
+
+// popMIDI takes a message the plugin output; one goroutine at a time.
+func popMIDI() (b [3]byte, ok bool) {
+	ok = bool(C.vst3go_sa_midi_out_pop((*C.uint8_t)(&b[0])))
+	return b, ok
+}
+
+// deviceNames returns the output (capture false) or input devices of an
+// API and the index of the default one (-1 without one).
+func deviceNames(api *C.VST3GoSAAudio, capture bool) (names []string, def int) {
+	def = -1
+	for i := range uint32(C.vst3go_sa_audio_device_count(api, C.bool(capture))) {
+		names = append(names, C.GoString(C.vst3go_sa_audio_device_name(api, C.bool(capture), C.uint32_t(i))))
+		if C.vst3go_sa_audio_device_default(api, C.bool(capture), C.uint32_t(i)) {
+			def = int(i)
 		}
-		list = []malgo.Backend{b}
 	}
-	ctx, err := malgo.InitContext(list, malgo.ContextConfig{}, nil)
-	if err != nil {
-		return nil, fmt.Errorf("audio: %w", err)
-	}
-	return ctx, nil
+	return names, def
 }
 
 // audio is the duplex (or output-only) device of the application.
 type audio struct {
-	ctx         *malgo.AllocatedContext
-	device      *malgo.Device
+	api         *C.VST3GoSAAudio
 	backend     string
 	output      string
 	input       string
@@ -59,13 +93,13 @@ type audio struct {
 }
 
 // openAudio opens the devices of the settings for a plugin with in and out
-// main channels; the callback gets interleaved float32 frames.
-func openAudio(s Settings, in, out uint32, callback malgo.DataProc) (*audio, error) {
-	ctx, err := newContext(s.Backend)
+// main channels.
+func openAudio(s Settings, in, out uint32) (*audio, error) {
+	api, err := audioAPI(s.Backend)
 	if err != nil {
 		return nil, err
 	}
-	a := &audio{ctx: ctx, backend: s.Backend, frames: s.bufferSize(), inChannels: in, outChannels: out}
+	a := &audio{api: api, backend: s.Backend, frames: s.bufferSize(), inChannels: in, outChannels: out}
 	if a.backend == "" {
 		a.backend = "default"
 	}
@@ -77,102 +111,63 @@ func openAudio(s Settings, in, out uint32, callback malgo.DataProc) (*audio, err
 		// effects, analyzers), which then play silence.
 		a.outChannels = 2
 	}
-	kind := malgo.Playback
-	if a.inChannels > 0 {
-		kind = malgo.Duplex
-	}
-	cfg := malgo.DefaultDeviceConfig(kind)
-	cfg.SampleRate = uint32(s.SampleRate)
-	cfg.PeriodSizeInFrames = uint32(a.frames)
-	cfg.Playback.Format = malgo.FormatF32
-	cfg.Playback.Channels = a.outChannels
-	cfg.Capture.Format = malgo.FormatF32
-	cfg.Capture.Channels = a.inChannels
-	var free []unsafe.Pointer
-	defer func() {
-		for _, p := range free {
-			freeC(p)
-		}
-	}()
+	output, input := -1, -1
 	if s.Output != "" {
-		info, err := findDevice(ctx, malgo.Playback, s.Output)
-		if err != nil {
+		if output, a.output, err = findDevice(api, false, s.Output); err != nil {
 			a.close()
 			return nil, err
 		}
-		cfg.Playback.DeviceID = info.ID.Pointer()
-		free = append(free, cfg.Playback.DeviceID)
-		a.output = info.Name()
 	}
 	if a.inChannels > 0 && s.Input != "" {
-		info, err := findDevice(ctx, malgo.Capture, s.Input)
-		if err != nil {
+		if input, a.input, err = findDevice(api, true, s.Input); err != nil {
 			a.close()
 			return nil, err
 		}
-		cfg.Capture.DeviceID = info.ID.Pointer()
-		free = append(free, cfg.Capture.DeviceID)
-		a.input = info.Name()
 	}
-	if a.device, err = malgo.InitDevice(ctx.Context, cfg, malgo.DeviceCallbacks{Data: callback}); err != nil {
+	if msg := C.vst3go_sa_audio_open(api, C.int32_t(output), C.int32_t(input), C.uint32_t(s.SampleRate), C.uint32_t(a.frames),
+		C.uint32_t(a.inChannels), C.uint32_t(a.outChannels)); msg != nil {
 		a.close()
-		return nil, fmt.Errorf("audio device: %w", err)
+		return nil, fmt.Errorf("audio device: %s", C.GoString(msg))
 	}
-	a.sampleRate = int(a.device.SampleRate())
+	a.sampleRate = int(C.vst3go_sa_audio_sample_rate(api))
 	return a, nil
 }
 
 // findDevice picks a device by exact name, else by a unique part of it.
-func findDevice(ctx *malgo.AllocatedContext, kind malgo.DeviceType, name string) (malgo.DeviceInfo, error) {
-	devices, err := ctx.Devices(kind)
-	if err != nil {
-		return malgo.DeviceInfo{}, fmt.Errorf("audio devices: %w", err)
-	}
-	var matches []malgo.DeviceInfo
-	var names []string
-	for _, d := range devices {
-		if d.Name() == name {
-			return d, nil
+func findDevice(api *C.VST3GoSAAudio, capture bool, name string) (int, string, error) {
+	names, _ := deviceNames(api, capture)
+	var matches []int
+	for i, n := range names {
+		if n == name {
+			return i, n, nil
 		}
-		if strings.Contains(strings.ToLower(d.Name()), strings.ToLower(name)) {
-			matches = append(matches, d)
+		if strings.Contains(strings.ToLower(n), strings.ToLower(name)) {
+			matches = append(matches, i)
 		}
-		names = append(names, d.Name())
 	}
 	if len(matches) == 1 {
-		return matches[0], nil
+		return matches[0], names[matches[0]], nil
 	}
-	return malgo.DeviceInfo{}, fmt.Errorf("no single audio device matches %q; devices: %s", name, strings.Join(names, ", "))
+	return 0, "", fmt.Errorf("no single audio device matches %q; devices: %s", name, strings.Join(names, ", "))
 }
 
 func (a *audio) start() error {
-	if err := a.device.Start(); err != nil {
-		return fmt.Errorf("audio start: %w", err)
+	if msg := C.vst3go_sa_audio_start(a.api); msg != nil {
+		return errors.New("audio start: " + C.GoString(msg))
 	}
 	return nil
 }
 
-func (a *audio) running() bool { return a.device != nil && a.device.IsStarted() }
+func (a *audio) running() bool { return a.api != nil && bool(C.vst3go_sa_audio_running(a.api)) }
 
-func (a *audio) stop() {
-	if a.running() {
-		_ = a.device.Stop()
-	}
-}
+func (a *audio) stop() { C.vst3go_sa_audio_stop(a.api) }
 
 func (a *audio) close() {
-	if a == nil {
+	if a == nil || a.api == nil {
 		return
 	}
-	if a.device != nil {
-		a.device.Uninit()
-		a.device = nil
-	}
-	if a.ctx != nil {
-		_ = a.ctx.Uninit()
-		a.ctx.Free()
-		a.ctx = nil
-	}
+	C.vst3go_sa_audio_free(a.api)
+	a.api = nil
 }
 
 func (a *audio) describe() string {
@@ -192,29 +187,23 @@ func (a *audio) describe() string {
 
 // listDevices prints the audio devices of a backend and the MIDI ports.
 func listDevices(w io.Writer, backend string) error {
-	ctx, err := newContext(backend)
+	api, err := audioAPI(backend)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		_ = ctx.Uninit()
-		ctx.Free()
-	}()
+	defer C.vst3go_sa_audio_free(api)
 	for _, kind := range []struct {
-		name string
-		kind malgo.DeviceType
-	}{{"audio outputs", malgo.Playback}, {"audio inputs", malgo.Capture}} {
-		devices, err := ctx.Devices(kind.kind)
-		if err != nil {
-			return err
-		}
+		name    string
+		capture bool
+	}{{"audio outputs", false}, {"audio inputs", true}} {
+		names, def := deviceNames(api, kind.capture)
 		fmt.Fprintf(w, "%s:\n", kind.name)
-		for _, d := range devices {
+		for i, name := range names {
 			mark := ""
-			if d.IsDefault != 0 {
+			if i == def {
 				mark = " (default)"
 			}
-			fmt.Fprintf(w, "  %s%s\n", d.Name(), mark)
+			fmt.Fprintf(w, "  %s%s\n", name, mark)
 		}
 	}
 	ins, outs, err := midiPortNames()

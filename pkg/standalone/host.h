@@ -43,6 +43,14 @@ void vst3go_sa_force_stop(void);
 uint32_t vst3go_sa_process(const float* in, uint32_t in_channels, float* out, uint32_t out_channels, uint32_t frames,
                            const uint8_t* midi, uint32_t midi_count, uint8_t* midi_out, uint32_t midi_out_capacity);
 
+// Transport of the application, played to the plugin (clap_process
+// transport) from the next block on. The position advances while playing;
+// vst3go_sa_transport_position reports it in quarter notes.
+enum { VST3GO_SA_MIN_TEMPO = 20, VST3GO_SA_MAX_TEMPO = 999, VST3GO_SA_DEFAULT_TEMPO = 120 };
+void vst3go_sa_transport_set(bool playing, double tempo, uint32_t numerator, uint32_t denominator);
+void vst3go_sa_transport_rewind(void);
+double vst3go_sa_transport_position(void);
+
 // State as one malloc'd buffer (free it), and loading it back.
 bool vst3go_sa_state_save(uint8_t** data, size_t* size);
 bool vst3go_sa_state_load(const uint8_t* data, size_t size);

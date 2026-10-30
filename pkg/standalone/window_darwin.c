@@ -7,6 +7,9 @@
 #include "platform.h"
 
 static NSWindow* window;
+static NSView* editorView;   // the plugin editor's parent, below the toolbar
+static NSView* toolbarView;  // the toolbar's parent, along the top
+static uint32_t toolbarHeight;
 static bool quitting;
 
 @interface VST3GoStandalone : NSObject <NSApplicationDelegate, NSWindowDelegate>
@@ -22,14 +25,22 @@ static bool quitting;
 // User drags snap to the sizes the editor accepts.
 - (NSSize)windowWillResize:(NSWindow*)sender toSize:(NSSize)frameSize {
     NSRect content = [sender contentRectForFrameRect:NSMakeRect(0, 0, frameSize.width, frameSize.height)];
-    uint32_t width = (uint32_t)content.size.width, height = (uint32_t)content.size.height;
+    uint32_t width = (uint32_t)content.size.width;
+    uint32_t height = content.size.height > toolbarHeight ? (uint32_t)content.size.height - toolbarHeight : 0;
     vst3go_sa_gui_adjust(&width, &height);
-    return [sender frameRectForContentRect:NSMakeRect(0, 0, width, height)].size;
+    return [sender frameRectForContentRect:NSMakeRect(0, 0, width, height + toolbarHeight)].size;
 }
 
 - (void)windowDidResize:(NSNotification*)notification {
-    NSSize size = [[(NSWindow*)notification.object contentView] frame].size;
+    (void)notification;
+    NSSize size = [editorView frame].size;
     vst3go_sa_gui_set_size((uint32_t)size.width, (uint32_t)size.height);
+    goStandaloneToolbarSize((uint32_t)size.width, toolbarHeight);
+}
+
+- (void)openSettings:(id)sender {
+    (void)sender;
+    goStandaloneOpenSettings();
 }
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
@@ -58,6 +69,9 @@ static void setup_app(const char* title) {
     NSMenuItem* appItem = [[NSMenuItem alloc] init];
     [bar addItem:appItem];
     NSMenu* appMenu = [[NSMenu alloc] init];
+    NSMenuItem* settings = [appMenu addItemWithTitle:@"Settings…" action:@selector(openSettings:) keyEquivalent:@","];
+    [settings setTarget:delegate];
+    [appMenu addItem:[NSMenuItem separatorItem]];
     [appMenu addItemWithTitle:[@"Hide " stringByAppendingString:name] action:@selector(hide:) keyEquivalent:@"h"];
     [appMenu addItem:[NSMenuItem separatorItem]];
     [appMenu addItemWithTitle:[@"Quit " stringByAppendingString:name] action:@selector(terminate:) keyEquivalent:@"q"];
@@ -70,29 +84,40 @@ const char* vst3go_sa_window_api(void) { return CLAP_WINDOW_API_COCOA; }
 // Cocoa editors work in logical pixels.
 double vst3go_sa_window_scale(void) { return 0; }
 
-bool vst3go_sa_window_open(const char* title, uint32_t width, uint32_t height, bool resizable, clap_window_t* out) {
+bool vst3go_sa_window_open(const char* title, uint32_t width, uint32_t height, bool resizable, uint32_t toolbar,
+                           clap_window_t* out, void** toolbarParent) {
     @autoreleasepool {
+        toolbarHeight = toolbar;
         setup_app(title);
         NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable;
         if (resizable) style |= NSWindowStyleMaskResizable;
-        window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, width, height)
+        window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, width, height + toolbar)
                                              styleMask:style
                                                backing:NSBackingStoreBuffered
                                                  defer:NO];
         if (!window) return false;
         [window setReleasedWhenClosed:NO];
         [window setTitle:[NSString stringWithUTF8String:title]];
+        // Cocoa's origin is bottom left: the editor fills the bottom, the
+        // toolbar keeps its height along the top.
+        editorView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, width, height)];
+        [editorView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+        toolbarView = [[NSView alloc] initWithFrame:NSMakeRect(0, height, width, toolbar)];
+        [toolbarView setAutoresizingMask:NSViewWidthSizable | NSViewMinYMargin];
+        [[window contentView] addSubview:editorView];
+        [[window contentView] addSubview:toolbarView];
         [window setDelegate:delegate];
         [window center];
         [window makeKeyAndOrderFront:nil];
         out->api = CLAP_WINDOW_API_COCOA;
-        out->cocoa = (__bridge void*)[window contentView];
+        out->cocoa = (__bridge void*)editorView;
+        *toolbarParent = (__bridge void*)toolbarView;
         return true;
     }
 }
 
 void vst3go_sa_window_resize(uint32_t width, uint32_t height) {
-    if (window) [window setContentSize:NSMakeSize(width, height)];
+    if (window) [window setContentSize:NSMakeSize(width, height + toolbarHeight)];
 }
 
 void vst3go_sa_window_close(void) {
@@ -101,6 +126,7 @@ void vst3go_sa_window_close(void) {
     [window orderOut:nil];
     [window close];
     window = nil;
+    editorView = toolbarView = nil;
 }
 
 void vst3go_sa_run(uint32_t tick_ms) {

@@ -51,6 +51,15 @@ static struct {
     atomic_bool callbackRequested, restartRequested;
     atomic_uint_least64_t pendingSize;  // width << 32 | height, 0: none
     int64_t steadyTime;
+    double sampleRate;
+
+    // Transport: the main thread sets it, the audio thread plays it.
+    atomic_bool playing, rewindRequest;
+    atomic_uint_least64_t tempoBits;      // double
+    atomic_uint_least32_t timeSignature;  // numerator << 16 | denominator
+    atomic_uint_least64_t positionBits;   // double beats, published by the audio thread
+    double beats;                         // audio thread
+    clap_event_transport_t transport;
 
     clap_event_midi_t midiIn[MAX_MIDI_IN];
     clap_event_note_t notesIn[MAX_MIDI_IN];
@@ -275,6 +284,7 @@ bool vst3go_sa_activate(double sampleRate, uint32_t maxFrames) {
         return false;
     }
     if (!sa.plugin->activate(sa.plugin, sampleRate, 1, maxFrames)) return false;
+    sa.sampleRate = sampleRate;
     sa.active = true;
     sa.processing = false;
     atomic_store(&sa.stopRequest, false);
@@ -366,6 +376,64 @@ static void queue_midi(const uint8_t* midi, uint32_t count) {
     }
 }
 
+// ---- transport ----
+
+static uint64_t double_bits(double v) {
+    uint64_t bits;
+    memcpy(&bits, &v, sizeof bits);
+    return bits;
+}
+
+static double bits_double(uint64_t bits) {
+    double v;
+    memcpy(&v, &bits, sizeof v);
+    return v;
+}
+
+void vst3go_sa_transport_set(bool playing, double tempo, uint32_t numerator, uint32_t denominator) {
+    if (tempo < VST3GO_SA_MIN_TEMPO) tempo = VST3GO_SA_MIN_TEMPO;
+    if (tempo > VST3GO_SA_MAX_TEMPO) tempo = VST3GO_SA_MAX_TEMPO;
+    if (numerator < 1) numerator = 1;
+    if (numerator > 64) numerator = 64;
+    if (denominator != 1 && denominator != 2 && denominator != 4 && denominator != 8 && denominator != 16 && denominator != 32) denominator = 4;
+    atomic_store(&sa.tempoBits, double_bits(tempo));
+    atomic_store(&sa.timeSignature, numerator << 16 | denominator);
+    atomic_store(&sa.playing, playing);
+}
+
+void vst3go_sa_transport_rewind(void) {
+    atomic_store(&sa.rewindRequest, true);
+    if (!atomic_load(&sa.playing)) atomic_store(&sa.positionBits, double_bits(0));
+}
+
+double vst3go_sa_transport_position(void) { return bits_double(atomic_load(&sa.positionBits)); }
+
+// update_transport fills sa.transport for a block of frames starting at the
+// current position, then advances the position over the block if playing.
+static void update_transport(uint32_t frames) {
+    if (atomic_exchange(&sa.rewindRequest, false)) sa.beats = 0;
+    bool playing = atomic_load(&sa.playing);
+    double tempo = bits_double(atomic_load(&sa.tempoBits));
+    if (!(tempo >= VST3GO_SA_MIN_TEMPO)) tempo = VST3GO_SA_DEFAULT_TEMPO;
+    uint32_t signature = atomic_load(&sa.timeSignature);
+    uint16_t numerator = signature ? (uint16_t)(signature >> 16) : 4, denominator = signature ? (uint16_t)signature : 4;
+    double barBeats = numerator * 4.0 / denominator;
+    double bar = (double)(int64_t)(sa.beats / barBeats);
+    clap_event_transport_t* t = &sa.transport;
+    *t = (clap_event_transport_t){ { sizeof(*t), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_TRANSPORT, 0 } };
+    t->flags = CLAP_TRANSPORT_HAS_TEMPO | CLAP_TRANSPORT_HAS_BEATS_TIMELINE | CLAP_TRANSPORT_HAS_SECONDS_TIMELINE |
+               CLAP_TRANSPORT_HAS_TIME_SIGNATURE | (playing ? CLAP_TRANSPORT_IS_PLAYING : 0);
+    t->song_pos_beats = (clap_beattime)(sa.beats * CLAP_BEATTIME_FACTOR);
+    t->song_pos_seconds = (clap_sectime)(sa.beats * 60.0 / tempo * CLAP_SECTIME_FACTOR);
+    t->tempo = tempo;
+    t->bar_start = (clap_beattime)(bar * barBeats * CLAP_BEATTIME_FACTOR);
+    t->bar_number = (int32_t)bar;
+    t->tsig_num = numerator;
+    t->tsig_denom = denominator;
+    if (playing && sa.sampleRate > 0) sa.beats += frames * tempo / (60.0 * sa.sampleRate);
+    atomic_store(&sa.positionBits, double_bits(sa.beats));
+}
+
 static void silence(float* out, uint32_t channels, uint32_t frames) {
     if (out) memset(out, 0, sizeof(float) * channels * frames);
 }
@@ -408,8 +476,9 @@ uint32_t vst3go_sa_process(const float* in, uint32_t inChannels, float* out, uin
                 }
             }
         }
+        update_transport(n);
         clap_process_t process = {
-            sa.steadyTime, n, NULL, sa.inBuffers, sa.outBuffers, sa.inCount, sa.outCount, &inEvents, &outEvents,
+            sa.steadyTime, n, &sa.transport, sa.inBuffers, sa.outBuffers, sa.inCount, sa.outCount, &inEvents, &outEvents,
         };
         sa.plugin->process(sa.plugin, &process);
         sa.eventCount = 0;

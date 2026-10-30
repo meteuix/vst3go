@@ -1,0 +1,74 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    display: flex; align-items: center; gap: 8px; padding: 0 8px; box-sizing: border-box;
+    background: #1d1f23; color: #d8dbe0; border-bottom: 1px solid #000;
+    font: 12px -apple-system, "Segoe UI", system-ui, sans-serif; user-select: none;
+  }
+  button, input, select {
+    font: inherit; color: inherit; background: #2c2f35; border: 1px solid #44484f; border-radius: 4px;
+    height: 24px; box-sizing: border-box;
+  }
+  button { padding: 0 10px; cursor: pointer; }
+  button:hover { background: #363a41; }
+  button.on { background: #2f6f3e; border-color: #3f8f52; }
+  input[type=number] { width: 58px; padding: 0 4px; }
+  select { padding: 0 2px; }
+  label { display: flex; align-items: center; gap: 4px; }
+  #position { min-width: 52px; text-align: right; font-variant-numeric: tabular-nums; font-size: 14px; }
+  #status { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #8b9099; }
+</style>
+</head>
+<body>
+  <button id="rewind" title="Back to the start">Rewind</button>
+  <button id="play" title="Play or stop the transport">Play</button>
+  <span id="position" title="Bar.beat">1.1</span>
+  <label title="Tempo (BPM)"><input id="tempo" type="number" min="20" max="999" step="0.1">BPM</label>
+  <label title="Time signature"><input id="beats" type="number" min="1" max="64" step="1">/<select id="unit">
+    <option>1</option><option>2</option><option>4</option><option>8</option><option>16</option><option>32</option>
+  </select></label>
+  <span id="status"></span>
+  <button id="settings" title="Audio and MIDI settings">Settings</button>
+<script>
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const post = (message) => window.vst3goPanel.post(message);
+  let playing = false;
+
+  $("rewind").onclick = () => post({ type: "rewind" });
+  $("play").onclick = () => post({ type: playing ? "stop" : "play" });
+  $("settings").onclick = () => post({ type: "settings" });
+  $("tempo").onchange = () => post({ type: "tempo", tempo: Number($("tempo").value) });
+  const signature = () => post({ type: "time-signature", beatsPerBar: Number($("beats").value), beatUnit: Number($("unit").value) });
+  $("beats").onchange = signature;
+  $("unit").onchange = signature;
+
+  window.vst3goPanel.onMessage((message) => {
+    switch (message.type) {
+    case "transport":
+      playing = message.playing;
+      $("play").textContent = playing ? "Stop" : "Play";
+      $("play").classList.toggle("on", playing);
+      if (document.activeElement !== $("tempo")) $("tempo").value = message.tempo;
+      if (document.activeElement !== $("beats")) $("beats").value = message.beatsPerBar;
+      $("unit").value = String(message.beatUnit);
+      $("position").textContent = message.position;
+      break;
+    case "position":
+      $("position").textContent = message.position;
+      break;
+    case "status":
+      $("status").textContent = message.text;
+      $("status").title = message.text;
+      break;
+    }
+  });
+  post({ type: "ready" });
+</script>
+</body>
+</html>

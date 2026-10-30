@@ -17,6 +17,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -28,7 +29,7 @@ import (
 	"unsafe"
 
 	// The application hosts the plugin through its clap_entry.
-	_ "github.com/th-release/vst3go/pkg/plugin"
+	"github.com/th-release/vst3go/pkg/plugin"
 )
 
 // The main goroutine owns the main thread: the run loop and the editor
@@ -37,7 +38,6 @@ func init() { runtime.LockOSThread() }
 
 const (
 	tickInterval = 10 * time.Millisecond
-	maxMIDI      = 512
 	stopTimeout  = time.Second
 )
 
@@ -58,6 +58,7 @@ type options struct {
 	reset    bool
 	config   string
 	duration time.Duration
+	play     bool
 }
 
 func parseFlags(args []string, name string, out io.Writer, s *Settings) (options, error) {
@@ -78,6 +79,9 @@ func parseFlags(args []string, name string, out io.Writer, s *Settings) (options
 	midiIn := fs.String("midi-in", "", `MIDI inputs: "all", "none" or comma-separated port names`)
 	midiOut := fs.String("midi-out", "", "MIDI output port for the plugin's MIDI output")
 	virtual := fs.Bool("virtual-midi", true, "open a virtual MIDI input named after the plugin (macOS, Linux)")
+	tempo := fs.Float64("tempo", 0, "transport tempo in BPM (default 120)")
+	signature := fs.String("time-signature", "", `transport time signature, such as "3/4" (default 4/4)`)
+	fs.BoolVar(&o.play, "play", false, "start the transport playing")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -103,12 +107,16 @@ func parseFlags(args []string, name string, out io.Writer, s *Settings) (options
 			s.MIDIOutput = *midiOut
 		case "virtual-midi":
 			s.NoVirtualMIDI = !*virtual
+		case "tempo":
+			s.Tempo = *tempo
 		}
 	})
-	if s.SampleRate < 0 || s.BufferSize < 0 {
-		return o, errors.New("sample rate and buffer size must not be negative")
+	if *signature != "" {
+		if _, err := fmt.Sscanf(*signature, "%d/%d", &s.BeatsPerBar, &s.BeatUnit); err != nil || s.BeatsPerBar <= 0 || s.BeatUnit <= 0 {
+			return o, fmt.Errorf("time signature %q is not beats/unit", *signature)
+		}
 	}
-	return o, nil
+	return o, s.check()
 }
 
 // createPlugin creates and initializes the plugin of a descriptor index;
@@ -155,11 +163,12 @@ func pluginIndex(key string) (uint32, *C.clap_plugin_descriptor_t, error) {
 	return 0, nil, fmt.Errorf("no plugin %q; registered: %s", key, strings.Join(names, ", "))
 }
 
-// app is the running application; the main thread owns it, the audio
-// callback only touches the fields marked.
+// app is the running application, owned by the main thread; the audio
+// device renders in C (audio.h).
 type app struct {
 	name     string
 	dir      string
+	log      io.Writer
 	settings Settings
 	audio    *audio
 	midi     *midiPorts
@@ -167,11 +176,12 @@ type app struct {
 	quit     atomic.Bool
 	failed   error
 
-	// audio thread
-	midiIn     chan [3]byte
-	midiOut    chan [3]byte
-	midiBuf    [maxMIDI * 3]byte
-	midiOutBuf [maxMIDI * 3]byte
+	playing        bool   // transport
+	shownPosition  string // position the toolbar shows
+	toolbar        *plugin.Panel
+	settingsWindow *plugin.Panel
+	toolbarPost    poster
+	settingsPost   poster
 }
 
 var current *app
@@ -201,7 +211,7 @@ func run(args []string, log io.Writer) error {
 	if err != nil {
 		return err
 	}
-	a := &app{name: C.GoString(desc.name), midiIn: make(chan [3]byte, 1024), midiOut: make(chan [3]byte, 1024)}
+	a := &app{name: C.GoString(desc.name), log: log}
 	a.dir = o.config
 	if a.dir == "" {
 		if a.dir, err = ConfigDir(C.GoString(desc.vendor), a.name); err != nil {
@@ -227,31 +237,31 @@ func run(args []string, log io.Writer) error {
 			fmt.Fprintf(log, "%s: ignoring the saved state: %v\n", a.name, err)
 		}
 	}
-	if err := SaveSettings(a.dir, a.settings); err != nil {
-		fmt.Fprintf(log, "%s: settings not saved: %v\n", a.name, err)
-	}
+	a.saveSettings()
+	a.playing = o.play
+	a.applyTransport()
 
 	in, out := mainChannels()
-	if a.audio, err = openAudio(a.settings, in, out, a.process); err != nil {
+	if a.audio, err = openAudio(a.settings, in, out); err != nil {
 		return err
 	}
-	defer a.audio.close()
+	// The settings window may replace the device and the MIDI ports.
+	defer func() { a.audio.close() }()
 	if err := a.startAudio(); err != nil {
 		return err
 	}
 	defer a.stopAudio()
 
-	if a.midi, err = openMIDI(a.settings, a.name, bool(C.vst3go_sa_note_input()), a.midiIn, a.midiOut); err != nil {
+	if a.midi, err = openMIDI(a.settings, a.name, bool(C.vst3go_sa_note_input())); err != nil {
 		fmt.Fprintf(log, "%s: MIDI: %v\n", a.name, err)
 	}
-	defer a.midi.close()
+	defer func() { a.midi.close() }()
 
 	editor := "no editor"
 	if !o.headless {
 		if w, h, ok := a.openEditor(); ok {
 			editor = fmt.Sprintf("editor %dx%d", w, h)
-			defer C.vst3go_sa_window_close()
-			defer C.vst3go_sa_gui_destroy()
+			defer a.closeEditor()
 		}
 	}
 	fmt.Fprintf(log, "%s: %s, %s, %s, settings in %s\n", a.name, a.audio.describe(), a.midi.describe(), editor, a.dir)
@@ -268,19 +278,7 @@ func run(args []string, log io.Writer) error {
 		defer timer.Stop()
 	}
 
-	current = a
-	defer func() { current = nil }()
-	if a.gui {
-		C.vst3go_sa_run(C.uint32_t(tickInterval / time.Millisecond))
-	} else {
-		ticker := time.NewTicker(tickInterval)
-		for range ticker.C {
-			if a.tick() {
-				break
-			}
-		}
-		ticker.Stop()
-	}
+	a.loop()
 
 	// Stop the audio before the editor goes, then keep the state.
 	a.stopAudio()
@@ -288,6 +286,23 @@ func run(args []string, log io.Writer) error {
 		fmt.Fprintf(log, "%s: state not saved: %v\n", a.name, err)
 	}
 	return a.failed
+}
+
+// loop runs the main thread until the application quits.
+func (a *app) loop() {
+	current = a
+	defer func() { current = nil }()
+	if a.gui {
+		C.vst3go_sa_run(C.uint32_t(tickInterval / time.Millisecond))
+		return
+	}
+	ticker := time.NewTicker(tickInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		if a.tick() {
+			return
+		}
+	}
 }
 
 // openEditor opens the plugin's editor in the application window.
@@ -303,8 +318,14 @@ func (a *app) openEditor() (width, height uint32, ok bool) {
 	}
 	title := C.CString(a.name)
 	defer C.free(unsafe.Pointer(title))
+	// The toolbar has the editor's pixels: physical ones on Windows.
+	bar := toolbarHeight
+	if scale := float64(C.vst3go_sa_window_scale()); scale > 0 {
+		bar = int(math.Round(toolbarHeight * scale))
+	}
 	var window C.clap_window_t
-	if !C.vst3go_sa_window_open(title, w, h, resizable, &window) {
+	var toolbar unsafe.Pointer
+	if !C.vst3go_sa_window_open(title, w, h, resizable, C.uint32_t(bar), &window, &toolbar) {
 		C.vst3go_sa_gui_destroy()
 		return 0, 0, false
 	}
@@ -313,8 +334,18 @@ func (a *app) openEditor() (width, height uint32, ok bool) {
 		C.vst3go_sa_window_close()
 		return 0, 0, false
 	}
+	a.openToolbar(toolbar, int(w), bar)
 	a.gui = true
 	return uint32(w), uint32(h), true
+}
+
+// closeEditor closes the toolbar and settings panels, the editor and the
+// window.
+func (a *app) closeEditor() {
+	a.closePanels()
+	C.vst3go_sa_gui_destroy()
+	C.vst3go_sa_window_close()
+	a.gui = false
 }
 
 // tick runs on the main thread every tickInterval and reports whether to
@@ -328,10 +359,15 @@ func (a *app) tick() bool {
 			return true
 		}
 	}
+	a.updatePosition()
+	a.idlePanels()
 	return a.quit.Load()
 }
 
 func (a *app) startAudio() error {
+	if a.audio == nil {
+		return errors.New("no audio device")
+	}
 	if err := activatePlugin(a.audio.sampleRate, a.audio.frames); err != nil {
 		return fmt.Errorf("%s: %w", a.name, err)
 	}
@@ -355,36 +391,6 @@ func (a *app) stopAudio() {
 	}
 	a.audio.stop()
 	C.vst3go_sa_deactivate()
-}
-
-// process is the audio callback: interleaved float32 in and out.
-func (a *app) process(out, in []byte, frames uint32) {
-	n := 0
-drain:
-	for n < maxMIDI {
-		select {
-		case m := <-a.midiIn:
-			copy(a.midiBuf[3*n:], m[:])
-			n++
-		default:
-			break drain
-		}
-	}
-	var inPtr, outPtr *C.float
-	if len(in) > 0 {
-		inPtr = (*C.float)(unsafe.Pointer(&in[0]))
-	}
-	if len(out) > 0 {
-		outPtr = (*C.float)(unsafe.Pointer(&out[0]))
-	}
-	count := C.vst3go_sa_process(inPtr, C.uint32_t(a.audio.inChannels), outPtr, C.uint32_t(a.audio.outChannels), C.uint32_t(frames),
-		(*C.uint8_t)(unsafe.Pointer(&a.midiBuf[0])), C.uint32_t(n), (*C.uint8_t)(unsafe.Pointer(&a.midiOutBuf[0])), maxMIDI)
-	for i := range int(count) {
-		select {
-		case a.midiOut <- [3]byte(a.midiOutBuf[3*i : 3*i+3]):
-		default:
-		}
-	}
 }
 
 func (a *app) statePath() string { return filepath.Join(a.dir, stateFile) }
@@ -412,6 +418,3 @@ func (a *app) saveState() error {
 	defer C.free(unsafe.Pointer(data))
 	return writeFile(a.statePath(), C.GoBytes(unsafe.Pointer(data), C.int(size)))
 }
-
-// freeC frees C memory (malgo device IDs).
-func freeC(p unsafe.Pointer) { C.free(p) }

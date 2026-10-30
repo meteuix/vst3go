@@ -1,0 +1,127 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: #1d1f23; color: #d8dbe0; padding: 16px; box-sizing: border-box;
+    font: 13px -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+  h2 { font-size: 13px; margin: 14px 0 8px; color: #8b9099; text-transform: uppercase; letter-spacing: 0.04em; }
+  h2:first-child { margin-top: 0; }
+  .row { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 8px; margin: 6px 0; }
+  select, input, button {
+    font: inherit; color: inherit; background: #2c2f35; border: 1px solid #44484f; border-radius: 4px;
+    height: 26px; box-sizing: border-box; min-width: 0;
+  }
+  button { padding: 0 14px; cursor: pointer; }
+  button.primary { background: #2d5a8c; border-color: #3b74b3; }
+  #midiInputs { display: flex; flex-direction: column; gap: 2px; max-height: 96px; overflow: auto; }
+  #midiInputs label { display: flex; gap: 6px; align-items: center; }
+  #midiInputs input { height: auto; }
+  .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  #message { min-height: 1.4em; margin-top: 10px; color: #8b9099; white-space: pre-wrap; }
+  #message.error { color: #ff7b72; }
+</style>
+</head>
+<body>
+  <h2>Audio</h2>
+  <div class="row"><span>Driver</span><select id="backend"></select></div>
+  <div class="row"><span>Output</span><select id="output"></select></div>
+  <div class="row"><span>Input</span><select id="input"></select></div>
+  <div class="row"><span>Sample rate</span><select id="sampleRate"></select></div>
+  <div class="row"><span>Buffer size</span><select id="bufferSize"></select></div>
+  <h2>MIDI</h2>
+  <div class="row"><span>Inputs</span><div id="midiInputs"></div></div>
+  <div class="row"><span></span><label><input id="virtualMIDI" type="checkbox"> Virtual input port</label></div>
+  <div class="row"><span>Output</span><select id="midiOutput"></select></div>
+  <div id="message"></div>
+  <div class="actions">
+    <button id="close">Close</button>
+    <button id="apply" class="primary">Apply</button>
+  </div>
+<script>
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const post = (message) => window.vst3goPanel.post(message);
+
+  // fill replaces a select's options; each option is [value, label].
+  function fill(select, options, value) {
+    select.replaceChildren(...options.map(([v, label]) => {
+      const option = document.createElement("option");
+      option.value = String(v);
+      option.textContent = label;
+      return option;
+    }));
+    select.value = String(value);
+    if (select.selectedIndex < 0) select.selectedIndex = 0;
+  }
+
+  function show(text, error) {
+    $("message").textContent = text || "";
+    $("message").classList.toggle("error", !!error);
+  }
+
+  // midiSelection is the MIDIInput setting of the checkboxes.
+  function midiSelection() {
+    const boxes = [...$("midiInputs").querySelectorAll("input")];
+    const checked = boxes.filter((box) => box.checked).map((box) => box.value);
+    if (checked.length === boxes.length) return "all";
+    if (checked.length === 0) return "none";
+    return checked.join(",");
+  }
+
+  function render(d) {
+    const s = d.settings;
+    fill($("backend"), [["", "Default"], ...d.backends.map((b) => [b, b])], d.backend);
+    fill($("output"), [["", "System default"], ...d.outputs.map((n) => [n, n])], s.output || "");
+    fill($("input"), [["", "System default"], ["none", "None"], ...d.inputs.map((n) => [n, n])], s.input || "");
+    $("input").disabled = !d.audioInput;
+    fill($("sampleRate"), [[0, "Device rate"], ...d.sampleRates.map((r) => [r, r + " Hz"])], s.sampleRate || 0);
+    fill($("bufferSize"), d.bufferSizes.map((n) => [n, n + " frames"]), s.bufferSize || d.defaultBufferSize);
+    const wanted = (s.midiInput || "all").trim();
+    const selected = (name) => wanted === "all" || (wanted !== "none" && wanted.split(",").some((w) => w.trim() && name.toLowerCase().includes(w.trim().toLowerCase())));
+    $("midiInputs").replaceChildren(...d.midiInputs.map((name) => {
+      const label = document.createElement("label");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.value = name;
+      box.checked = selected(name);
+      label.append(box, name);
+      return label;
+    }));
+    if (d.midiInputs.length === 0) $("midiInputs").textContent = "No MIDI inputs";
+    $("virtualMIDI").checked = !s.noVirtualMIDI;
+    fill($("midiOutput"), [["", "None"], ...d.midiOutputs.map((n) => [n, n])], s.midiOutput || "");
+    show(d.error, !!d.error);
+  }
+
+  $("backend").onchange = () => post({ type: "backend", backend: $("backend").value });
+  $("close").onclick = () => post({ type: "close" });
+  $("apply").onclick = () => {
+    show("Applying…");
+    post({
+      type: "apply",
+      settings: {
+        backend: $("backend").value,
+        output: $("output").value,
+        input: $("input").value,
+        sampleRate: Number($("sampleRate").value),
+        bufferSize: Number($("bufferSize").value),
+        midiInput: $("midiInputs").querySelector("input") ? midiSelection() : "all",
+        noVirtualMIDI: !$("virtualMIDI").checked,
+        midiOutput: $("midiOutput").value,
+      },
+    });
+  };
+
+  window.vst3goPanel.onMessage((message) => {
+    if (message.type === "devices") render(message);
+    else if (message.type === "applied") show(message.error || message.status, !!message.error);
+  });
+  post({ type: "ready" });
+</script>
+</body>
+</html>

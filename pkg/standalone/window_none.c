@@ -6,8 +6,9 @@
 
 const char* vst3go_sa_window_api(void) { return NULL; }
 double vst3go_sa_window_scale(void) { return 0; }
-bool vst3go_sa_window_open(const char* title, uint32_t width, uint32_t height, bool resizable, clap_window_t* window) {
-    (void)title; (void)width; (void)height; (void)resizable; (void)window;
+bool vst3go_sa_window_open(const char* title, uint32_t width, uint32_t height, bool resizable, uint32_t toolbar_height,
+                           clap_window_t* window, void** toolbar) {
+    (void)title; (void)width; (void)height; (void)resizable; (void)toolbar_height; (void)window; (void)toolbar;
     return false;
 }
 void vst3go_sa_window_resize(uint32_t width, uint32_t height) { (void)width; (void)height; }

@@ -17,12 +17,19 @@ const char* vst3go_sa_window_api(void);
 // vst3go_sa_window_scale is the scale factor for gui set_scale; 0 when the
 // API works in logical pixels (Cocoa).
 double vst3go_sa_window_scale(void);
-// vst3go_sa_window_open opens the application window with a client area of
-// width x height and returns it as the editor's parent.
-bool vst3go_sa_window_open(const char* title, uint32_t width, uint32_t height, bool resizable, clap_window_t* window);
-// vst3go_sa_window_resize sets the client area size.
+// vst3go_sa_window_open opens the application window: a toolbar strip
+// toolbar_height high along the top (in the editor's pixels) over an editor
+// area of width x height. It returns the editor area as the editor's parent
+// and the toolbar's native parent (NSView*, HWND or X11 window ID), whose
+// size it reports to goStandaloneToolbarSize when it changes.
+bool vst3go_sa_window_open(const char* title, uint32_t width, uint32_t height, bool resizable, uint32_t toolbar_height,
+                           clap_window_t* window, void** toolbar);
+// vst3go_sa_window_resize sets the size of the editor area.
 void vst3go_sa_window_resize(uint32_t width, uint32_t height);
 void vst3go_sa_window_close(void);
+
+// The platform's settings command (the application menu's Settings… on
+// macOS) calls goStandaloneOpenSettings.
 
 // vst3go_sa_run runs the main-thread loop, calling goStandaloneTick every
 // tick_ms, until vst3go_sa_quit or the user closes the window.
