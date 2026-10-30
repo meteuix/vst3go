@@ -27,13 +27,17 @@ type buildConfig struct {
 	install   bool
 	id        string // bundle identifier
 	version   string
+	platform  string // AUv3 platform
+	identity  string // code signing identity on Apple platforms
 
 	goos, goarch string
 	vst3goDir    string // module root: scripts/*.c and include/
 	tmp          string
 }
 
-var allFormats = []string{"vst3", "clap", "au", "lv2", "app"}
+// allFormats in build order: a standalone application is built before
+// the AUv3 extension it contains.
+var allFormats = []string{"vst3", "clap", "au", "lv2", "app", "auv3"}
 
 func defaultFormats(goos string) string {
 	if goos == "darwin" {
@@ -58,6 +62,9 @@ Builds the plugin package as the requested formats into the output folder:
   lv2    <Name>.lv2 bundle with its Turtle files (Linux)
   app    standalone application (<Name>.app on macOS, executable on Linux;
          main must call standalone.Main)
+  auv3   AUv3 extension <Name>.appex in <Name>.app: in the standalone
+         application when app is built too, else in a minimal container
+         application; -platform ios or ios-simulator builds it for iOS
 Tags in GOFLAGS are kept. Windows builds: scripts/docker_build_windows.sh.
 
 `)
@@ -69,6 +76,8 @@ Tags in GOFLAGS are kept. Windows builds: scripts/docker_build_windows.sh.
 	install := fs.Bool("install", false, "copy the plugins into the user plugin folders (~/Library/Audio/Plug-Ins, ~/.vst3, ~/.clap, ~/.lv2)")
 	id := fs.String("id", "", "bundle identifier (default com.vst3go.<name>)")
 	version := fs.String("version", "1.0.0", "bundle version")
+	platform := fs.String("platform", platformMacOS, "platform of the auv3 format: "+strings.Join(allPlatforms, ", "))
+	identity := fs.String("sign", "-", "code signing identity on Apple platforms (- signs ad hoc)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -78,7 +87,22 @@ Tags in GOFLAGS are kept. Windows builds: scripts/docker_build_windows.sh.
 	}
 	c := &buildConfig{
 		pkg: fs.Arg(0), name: fs.Arg(1), out: *out, install: *install, version: *version,
-		goos: goos, goarch: goarch,
+		platform: *platform, identity: *identity, goos: goos, goarch: goarch,
+	}
+	if !slices.Contains(allPlatforms, c.platform) {
+		return fmt.Errorf("unknown platform %q (want %s)", c.platform, strings.Join(allPlatforms, ", "))
+	}
+	if c.platform != platformMacOS {
+		set := false
+		fs.Visit(func(f *flag.Flag) { set = set || f.Name == "format" })
+		if !set {
+			*formats = "auv3"
+		} else if *formats != "auv3" {
+			return fmt.Errorf("-platform %s builds the auv3 format only", c.platform)
+		}
+		if *install {
+			return fmt.Errorf("-install does not install %s builds: use xcrun simctl install or Xcode", c.platform)
+		}
 	}
 	if !strings.HasPrefix(c.pkg, ".") && !filepath.IsAbs(c.pkg) {
 		// A folder of the current module, not an import path.
@@ -101,7 +125,7 @@ Tags in GOFLAGS are kept. Windows builds: scripts/docker_build_windows.sh.
 		if !slices.Contains(allFormats, f) {
 			return fmt.Errorf("unknown format %q (want %s)", f, strings.Join(allFormats, ", "))
 		}
-		if f == "au" && goos != "darwin" {
+		if (f == "au" || f == "auv3") && goos != "darwin" {
 			return errors.New("Audio Units build on macOS only")
 		}
 		if f == "lv2" && goos != "linux" {
@@ -114,6 +138,7 @@ Tags in GOFLAGS are kept. Windows builds: scripts/docker_build_windows.sh.
 	if len(c.formats) == 0 {
 		return errors.New("no formats")
 	}
+	slices.SortFunc(c.formats, func(a, b string) int { return slices.Index(allFormats, a) - slices.Index(allFormats, b) })
 	if goos != "darwin" && goos != "linux" {
 		return fmt.Errorf("vst3go build runs on macOS and Linux; Windows builds use scripts/docker_build_windows.sh")
 	}
@@ -136,7 +161,7 @@ func (c *buildConfig) build() error {
 		return err
 	}
 	var built []string
-	var lib string
+	var lib, app string
 	for _, format := range c.formats {
 		if format != "app" && lib == "" {
 			lib = filepath.Join(c.tmp, "lib"+c.name)
@@ -157,15 +182,22 @@ func (c *buildConfig) build() error {
 			path, err = c.lv2(lib)
 		case "app":
 			path, err = c.app()
+			app = path
+		case "auv3":
+			path, err = c.auv3(lib, app)
 		}
 		if err != nil {
 			return fmt.Errorf("%s: %w", format, err)
 		}
 		if c.goos == "darwin" {
-			sign(path)
+			if err := c.sign(path); err != nil {
+				return fmt.Errorf("%s: %w", format, err)
+			}
 		}
 		fmt.Println("built", path)
-		built = append(built, path)
+		if !slices.Contains(built, path) {
+			built = append(built, path)
+		}
 	}
 	if c.install {
 		return c.installAll(built)
@@ -190,14 +222,7 @@ func (c *buildConfig) goBuild(output string, shared bool) error {
 	cmd := exec.Command("go", args...)
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
 	if c.goos == "darwin" {
-		// The Audio Unit editor's view factory is an Objective-C class looked
-		// up by name in the bundle; name it after the bundle so several
-		// vst3go plugins can share a host process.
-		cflags := os.Getenv("CGO_CFLAGS")
-		if cflags == "" {
-			cflags = "-O2 -g"
-		}
-		cmd.Env = append(cmd.Env, "CGO_CFLAGS="+cflags+" -DVST3GO_AU_VIEW_CLASS="+c.auViewClass())
+		cmd.Env = append(cmd.Env, "CGO_CFLAGS="+c.cgoCFlags())
 	}
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
@@ -205,6 +230,17 @@ func (c *buildConfig) goBuild(output string, shared bool) error {
 		return fmt.Errorf("go build %s: %w", c.pkg, err)
 	}
 	return nil
+}
+
+// cgoCFlags are CGO_CFLAGS with the name of the Audio Unit editor's view
+// factory: an Objective-C class looked up by name in the bundle, named
+// after the bundle so several vst3go plugins can share a host process.
+func (c *buildConfig) cgoCFlags() string {
+	cflags := os.Getenv("CGO_CFLAGS")
+	if cflags == "" {
+		cflags = "-O2 -g"
+	}
+	return cflags + " -DVST3GO_AU_VIEW_CLASS=" + c.auViewClass()
 }
 
 func (c *buildConfig) auViewClass() string {
@@ -328,6 +364,12 @@ func (c *buildConfig) freshBundle(bundle, binary, lib string) error {
 }
 
 func (c *buildConfig) bundlePlist(bundle, id, kind string, extra []string) error {
+	return c.writePlist(filepath.Join(bundle, "Contents"), id, kind, extra)
+}
+
+// writePlist writes Info.plist and PkgInfo into contents, the Contents
+// folder of a macOS bundle or an iOS bundle itself.
+func (c *buildConfig) writePlist(contents, id, kind string, extra []string) error {
 	var b bytes.Buffer
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -336,6 +378,7 @@ func (c *buildConfig) bundlePlist(bundle, id, kind string, extra []string) error
 `)
 	for _, kv := range [][2]string{
 		{"CFBundleDevelopmentRegion", "English"},
+		{"CFBundleDisplayName", c.name},
 		{"CFBundleExecutable", c.name},
 		{"CFBundleIdentifier", id},
 		{"CFBundleInfoDictionaryVersion", "6.0"},
@@ -354,7 +397,6 @@ func (c *buildConfig) bundlePlist(bundle, id, kind string, extra []string) error
 		}
 	}
 	b.WriteString("</dict>\n</plist>\n")
-	contents := filepath.Join(bundle, "Contents")
 	if err := os.WriteFile(filepath.Join(contents, "Info.plist"), b.Bytes(), 0o644); err != nil {
 		return err
 	}
@@ -388,9 +430,16 @@ func (c *buildConfig) installAll(built []string) error {
 		return err
 	}
 	registrar := false
+	var extensions []string
 	for _, path := range built {
 		var dir string
+		appex := filepath.Join(path, "Contents", "PlugIns", c.name+".appex")
 		switch {
+		case strings.HasSuffix(path, ".app") && slices.Contains(c.formats, "auv3"):
+			// macOS registers the extensions of applications in
+			// ~/Applications; pluginkit registers this one now.
+			dir = filepath.Join(home, "Applications")
+			extensions = append(extensions, filepath.Join(dir, filepath.Base(path), "Contents", "PlugIns", filepath.Base(appex)))
 		case strings.HasSuffix(path, ".vst3"):
 			dir = filepath.Join(home, ".vst3")
 			if c.goos == "darwin" {
@@ -421,17 +470,21 @@ func (c *buildConfig) installAll(built []string) error {
 		}
 		fmt.Println("installed", target)
 	}
-	if registrar {
+	for _, appex := range extensions {
+		if _, err := output("pluginkit", "-a", appex); err != nil {
+			return err
+		}
+	}
+	if registrar || len(extensions) > 0 {
 		// The registrar caches the component list.
 		_ = exec.Command("killall", "-9", "AudioComponentRegistrar").Run()
 	}
 	return nil
 }
 
-func sign(path string) {
-	if _, err := exec.LookPath("codesign"); err == nil {
-		_ = exec.Command("codesign", "--force", "--sign", "-", path).Run()
-	}
+func (c *buildConfig) sign(path string) error {
+	_, err := output("codesign", "--force", "--sign", c.identity, path)
+	return err
 }
 
 func goEnv() (goos, goarch string, err error) {
