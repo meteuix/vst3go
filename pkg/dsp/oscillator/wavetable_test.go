@@ -42,7 +42,7 @@ func peakNear(amp []float64, freq, binHz float64) float64 {
 	c := int(math.Round(freq / binHz))
 	best := 0.0
 	for k := max(0, c-2); k <= min(len(amp)-1, c+2); k++ {
-		best = math.Max(best, amp[k])
+		best = max(best, amp[k])
 	}
 	return best
 }
@@ -91,7 +91,7 @@ func TestWavetableSawHasNoAliases(t *testing.T) {
 			f := float64(k) * bin
 			h := math.Round(f / f0)
 			if math.Abs(f-h*f0) > 8*bin {
-				worst = math.Max(worst, amp[k])
+				worst = max(worst, amp[k])
 			}
 		}
 		if db := 20 * math.Log10(worst); db > -80 {

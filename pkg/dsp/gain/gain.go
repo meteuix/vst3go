@@ -23,13 +23,17 @@ func LinearToDb(linear float64) float64 {
 	return 20.0 * math.Log10(linear)
 }
 
+// dbToNeper turns decibels into the exponent of e: 10^(dB/20) = e^(dB·ln10/20),
+// which math.Exp computes several times faster than math.Pow.
+const dbToNeper = math.Ln10 / 20
+
 // DbToLinear converts a decibel value to linear amplitude.
 // Values <= MinDB return 0.
 func DbToLinear(db float64) float64 {
 	if db <= MinDB {
 		return 0
 	}
-	return math.Pow(10.0, db/20.0)
+	return math.Exp(db * dbToNeper)
 }
 
 // LinearToDb32 is the float32 version of LinearToDb.
@@ -45,7 +49,7 @@ func DbToLinear32(db float32) float32 {
 	if db <= MinDB {
 		return 0
 	}
-	return float32(math.Pow(10.0, float64(db)/20.0))
+	return float32(math.Exp(float64(db) * dbToNeper))
 }
 
 // Apply applies a gain factor to a sample.

@@ -57,33 +57,33 @@ func NewFlanger(sampleRate float64) *Flanger {
 
 // SetRate sets the LFO rate in Hz
 func (f *Flanger) SetRate(hz float64) {
-	f.rate = math.Max(0.01, math.Min(20.0, hz))
+	f.rate = max(0.01, min(20.0, hz))
 	f.lfo.SetFrequency(f.rate)
 }
 
 // SetDepth sets the modulation depth in milliseconds
 func (f *Flanger) SetDepth(ms float64) {
-	f.depth = math.Max(0.0, math.Min(flangerMaxDepthMs, ms))
+	f.depth = max(0.0, min(flangerMaxDepthMs, ms))
 }
 
 // SetDelay sets the center delay time in milliseconds
 func (f *Flanger) SetDelay(ms float64) {
-	f.delay = math.Max(0.1, math.Min(flangerMaxDelayMs, ms))
+	f.delay = max(0.1, min(flangerMaxDelayMs, ms))
 }
 
 // SetFeedback sets the feedback amount (-1 to 1)
 func (f *Flanger) SetFeedback(feedback float64) {
-	f.feedback = math.Max(-0.99, math.Min(0.99, feedback))
+	f.feedback = max(-0.99, min(0.99, feedback))
 }
 
 // SetMix sets the wet/dry mix (0=dry, 1=wet)
 func (f *Flanger) SetMix(mix float64) {
-	f.mix = math.Max(0.0, math.Min(1.0, mix))
+	f.mix = max(0.0, min(1.0, mix))
 }
 
 // SetManual sets the manual control position (0-1)
 func (f *Flanger) SetManual(position float64) {
-	f.manual = math.Max(0.0, math.Min(1.0, position))
+	f.manual = max(0.0, min(1.0, position))
 }
 
 // SetManualMode enables/disables manual mode: the delay stays where Manual
@@ -103,7 +103,7 @@ func (f *Flanger) modulation() float64 {
 // delaySamples converts a sweep position to a delay in samples.
 func (f *Flanger) delaySamples(modulation float64) float64 {
 	samples := (f.delay + f.depth*modulation) * f.sampleRate / 1000.0
-	return math.Max(1.0, math.Min(float64(len(f.delayL)-2), samples))
+	return max(1.0, min(float64(len(f.delayL)-2), samples))
 }
 
 // tick writes one input sample with feedback into a channel's delay line
@@ -117,7 +117,15 @@ func (f *Flanger) tick(line []float32, fb *float32, input float32, delaySamples 
 	}
 	i := int(pos)
 	frac := float32(pos - float64(i))
-	wet := line[i%size]*(1-frac) + line[(i+1)%size]*frac
+	// pos can round up to size.
+	if i >= size {
+		i -= size
+	}
+	j := i + 1
+	if j == size {
+		j = 0
+	}
+	wet := line[i]*(1-frac) + line[j]*frac
 	*fb = wet
 	return wet
 }
@@ -125,7 +133,9 @@ func (f *Flanger) tick(line []float32, fb *float32, input float32, delaySamples 
 // Process processes a mono sample
 func (f *Flanger) Process(input float32) float32 {
 	wet := f.tick(f.delayL, &f.feedbackL, input, f.delaySamples(f.modulation()))
-	f.writePos = (f.writePos + 1) % len(f.delayL)
+	if f.writePos++; f.writePos == len(f.delayL) {
+		f.writePos = 0
+	}
 	return input*(1-float32(f.mix)) + wet*float32(f.mix)
 }
 
@@ -139,7 +149,9 @@ func (f *Flanger) ProcessStereo(inputL, inputR float32) (outputL, outputR float3
 	}
 	wetL := f.tick(f.delayL, &f.feedbackL, inputL, f.delaySamples(m))
 	wetR := f.tick(f.delayR, &f.feedbackR, inputR, f.delaySamples(mR))
-	f.writePos = (f.writePos + 1) % len(f.delayL)
+	if f.writePos++; f.writePos == len(f.delayL) {
+		f.writePos = 0
+	}
 	dry, wet := 1-float32(f.mix), float32(f.mix)
 	return inputL*dry + wetL*wet, inputR*dry + wetR*wet
 }

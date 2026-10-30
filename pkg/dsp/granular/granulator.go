@@ -6,6 +6,7 @@ package granular
 import (
 	"math"
 
+	"github.com/th-release/vst3go/pkg/dsp/fastmath"
 	"github.com/th-release/vst3go/pkg/dsp/interpolation"
 )
 
@@ -66,31 +67,31 @@ func New(sampleRate, bufferSeconds float64, maxGrains int) *Granulator {
 }
 
 // SetSize sets the grain length in seconds (5 ms to 1 s).
-func (g *Granulator) SetSize(seconds float64) { g.size = math.Max(0.005, math.Min(1, seconds)) }
+func (g *Granulator) SetSize(seconds float64) { g.size = max(0.005, min(1, seconds)) }
 
 // SetDensity sets how many grains start per second (0.5 to 500).
 func (g *Granulator) SetDensity(perSecond float64) {
-	g.density = math.Max(0.5, math.Min(500, perSecond))
+	g.density = max(0.5, min(500, perSecond))
 }
 
 // SetPosition sets how far behind the newest input grains start, in
 // seconds; it is kept inside the buffer.
-func (g *Granulator) SetPosition(seconds float64) { g.position = math.Max(0, seconds) }
+func (g *Granulator) SetPosition(seconds float64) { g.position = max(0, seconds) }
 
 // SetSpray sets the random spread of grain start positions in seconds.
-func (g *Granulator) SetSpray(seconds float64) { g.spray = math.Max(0, seconds) }
+func (g *Granulator) SetSpray(seconds float64) { g.spray = max(0, seconds) }
 
 // SetPitch sets the grain playback ratio (2 is an octave up, 0.25..4).
-func (g *Granulator) SetPitch(ratio float64) { g.pitch = math.Max(0.25, math.Min(4, ratio)) }
+func (g *Granulator) SetPitch(ratio float64) { g.pitch = max(0.25, min(4, ratio)) }
 
 // SetPitchSpray sets the random pitch deviation in semitones.
-func (g *Granulator) SetPitchSpray(semitones float64) { g.pitchSpray = math.Max(0, semitones) }
+func (g *Granulator) SetPitchSpray(semitones float64) { g.pitchSpray = max(0, semitones) }
 
 // SetSpread sets the random stereo spread (0 centred, 1 anywhere).
-func (g *Granulator) SetSpread(amount float64) { g.spread = math.Max(0, math.Min(1, amount)) }
+func (g *Granulator) SetSpread(amount float64) { g.spread = max(0, min(1, amount)) }
 
 // SetJitter randomizes onset times (0 regular, 1 random).
-func (g *Granulator) SetJitter(amount float64) { g.jitter = math.Max(0, math.Min(1, amount)) }
+func (g *Granulator) SetJitter(amount float64) { g.jitter = max(0, min(1, amount)) }
 
 // Freeze stops (true) or resumes (false) recording input.
 func (g *Granulator) Freeze(frozen bool) { g.frozen = frozen }
@@ -117,7 +118,7 @@ func (g *Granulator) Process(in, outL, outR []float32) {
 	interval := g.sampleRate / g.density
 	// Each grain is a Hann window with mean 1/2; at density·size grains
 	// overlapping, this keeps the average level near the input level.
-	norm := float32(1 / math.Max(1, 0.5*g.density*g.size))
+	norm := float32(1 / max(1, 0.5*g.density*g.size))
 	for i := range in {
 		if !g.frozen {
 			g.buf[g.write] = in[i]
@@ -137,7 +138,7 @@ func (g *Granulator) Process(in, outL, outR []float32) {
 			}
 			x := g.read(gr.pos)
 			phase := float64(gr.age) / float64(gr.length)
-			w := float32(0.5 - 0.5*math.Cos(2*math.Pi*phase))
+			w := float32(0.5 - 0.5*fastmath.Cos2Pi(phase))
 			l += x * w * gr.gainL
 			r += x * w * gr.gainR
 			gr.pos += gr.step
@@ -174,12 +175,12 @@ func (g *Granulator) start(length int) {
 	// Frozen, it stays within what has been recorded.
 	back := (g.position + g.spray*g.random()) * g.sampleRate
 	if g.frozen {
-		back = math.Min(float64(g.filled-2), back)
+		back = min(float64(g.filled-2), back)
 	} else {
-		back = math.Max(back, (step-1)*float64(length)+2)
-		back = math.Min(float64(len(g.buf)-4)-math.Max(0, (1-step)*float64(length)), back)
+		back = max(back, (step-1)*float64(length)+2)
+		back = min(float64(len(g.buf)-4)-max(0, (1-step)*float64(length)), back)
 	}
-	back = math.Max(2, back)
+	back = max(2, back)
 	pan := 0.5 + g.spread*(g.random()-0.5)
 	*gr = grain{
 		active: true,

@@ -271,7 +271,7 @@ func TestPhaserStereo(t *testing.T) {
 		l, r := phaser.ProcessStereo(x, x)
 		m := mono.Process(x)
 		diff += math.Abs(float64(l - r))
-		err = math.Max(err, math.Abs(float64(l-m)))
+		err = max(err, math.Abs(float64(l-m)))
 	}
 	if diff/24000 < 0.02 {
 		t.Errorf("mean |L-R| %.4f: no stereo difference", diff/24000)

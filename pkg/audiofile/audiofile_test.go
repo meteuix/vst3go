@@ -245,7 +245,7 @@ func want(x float32, e Encoding) float64 {
 		return float64(x)
 	}
 	full := float64(int64(1) << (e.bits() - 1))
-	return math.Max(-1, math.Min((full-1)/full, float64(x)))
+	return max(-1, min((full-1)/full, float64(x)))
 }
 
 func TestWriteRoundTrip(t *testing.T) {

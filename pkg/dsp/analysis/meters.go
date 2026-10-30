@@ -36,13 +36,13 @@ func (pm *PeakMeter) SetDecayRate(dbPerSecond float64) { pm.decayRate = dbPerSec
 func (pm *PeakMeter) Process(samples []float64) {
 	blockPeak := 0.0
 	for _, sample := range samples {
-		blockPeak = math.Max(blockPeak, math.Abs(sample))
+		blockPeak = max(blockPeak, math.Abs(sample))
 	}
 
 	// Decay, converting dB per second to a linear factor per sample.
 	decayPerSample := pm.decayRate / pm.sampleRate / 20.0 * math.Ln10
 	pm.peak *= math.Exp(-decayPerSample * float64(len(samples)))
-	pm.peak = math.Max(pm.peak, blockPeak)
+	pm.peak = max(pm.peak, blockPeak)
 
 	if blockPeak > pm.hold {
 		pm.hold = blockPeak
@@ -117,7 +117,7 @@ func (rm *RMSMeter) Process(samples []float64) {
 func (rm *RMSMeter) publish() {
 	rms := 0.0
 	if rm.count > 0 {
-		rms = math.Sqrt(math.Max(0, rm.sum) / float64(rm.count))
+		rms = math.Sqrt(max(0, rm.sum) / float64(rm.count))
 	}
 	*rm.out.write() = rms
 	rm.out.publish()

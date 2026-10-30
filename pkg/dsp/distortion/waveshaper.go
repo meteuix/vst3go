@@ -39,19 +39,19 @@ func (w *Waveshaper) SetCurveType(curve CurveType) {
 }
 
 func (w *Waveshaper) SetDrive(drive float64) {
-	w.drive = math.Max(1.0, math.Min(100.0, drive))
+	w.drive = max(1.0, min(100.0, drive))
 }
 
 func (w *Waveshaper) SetMix(mix float64) {
-	w.mix = math.Max(0.0, math.Min(1.0, mix))
+	w.mix = max(0.0, min(1.0, mix))
 }
 
 func (w *Waveshaper) SetOutput(output float64) {
-	w.output = math.Max(0.0, math.Min(2.0, output))
+	w.output = max(0.0, min(2.0, output))
 }
 
 func (w *Waveshaper) SetAsymmetry(asymmetry float64) {
-	w.asymmetry = math.Max(-1.0, math.Min(1.0, asymmetry))
+	w.asymmetry = max(-1.0, min(1.0, asymmetry))
 }
 
 func (w *Waveshaper) Process(input float64) float64 {
@@ -169,10 +169,10 @@ func (w *Waveshaper) exponential(x float64) float64 {
 
 func Sigmoid(x, k float64) float64 {
 	// Ensure k is reasonable to avoid numerical issues
-	k = math.Max(0.1, math.Min(10.0, k))
+	k = max(0.1, min(10.0, k))
 	result := 2.0/(1.0+math.Exp(-k*x)) - 1.0
 	// Ensure output is strictly bounded
-	return math.Max(-0.999999, math.Min(0.999999, result))
+	return max(-0.999999, min(0.999999, result))
 }
 
 func Polynomial(x float64, coeffs []float64) float64 {

@@ -1,7 +1,11 @@
 // Package oscillator provides audio oscillators for synthesis
 package oscillator
 
-import "math"
+import (
+	"math"
+
+	"github.com/th-release/vst3go/pkg/dsp/fastmath"
+)
 
 // Oscillator generates periodic waveforms
 type Oscillator struct {
@@ -47,7 +51,7 @@ func (o *Oscillator) updatePhase() {
 
 // Sine generates a sine wave sample
 func (o *Oscillator) Sine() float32 {
-	sample := float32(math.Sin(2.0 * math.Pi * o.phase))
+	sample := float32(fastmath.Sin2Pi(o.phase))
 	o.updatePhase()
 	return sample
 }

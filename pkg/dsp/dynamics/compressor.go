@@ -77,25 +77,25 @@ func (c *Compressor) SetThreshold(dB float64) {
 
 // SetRatio sets the compression ratio (1.0 = no compression, inf = limiting)
 func (c *Compressor) SetRatio(ratio float64) {
-	c.ratio = math.Max(1.0, ratio)
+	c.ratio = max(1.0, ratio)
 }
 
 // SetAttack sets the attack time in seconds
 func (c *Compressor) SetAttack(seconds float64) {
-	c.attack = math.Max(0.0001, seconds)
+	c.attack = max(0.0001, seconds)
 	c.detector.SetAttack(c.attack)
 }
 
 // SetRelease sets the release time in seconds
 func (c *Compressor) SetRelease(seconds float64) {
-	c.release = math.Max(0.001, seconds)
+	c.release = max(0.001, seconds)
 	c.detector.SetRelease(c.release)
 }
 
 // SetKnee sets the knee type and width
 func (c *Compressor) SetKnee(kneeType KneeType, widthDB float64) {
 	c.kneeType = kneeType
-	c.kneeWidth = math.Max(0.0, widthDB)
+	c.kneeWidth = max(0.0, widthDB)
 }
 
 // SetMakeupGain sets the makeup gain in dB
@@ -106,7 +106,7 @@ func (c *Compressor) SetMakeupGain(dB float64) {
 // SetLookahead sets the lookahead time in seconds (0 to 10ms). Changing it
 // clears the delay lines.
 func (c *Compressor) SetLookahead(seconds float64) {
-	c.lookahead = math.Max(0.0, math.Min(maxLookahead, seconds))
+	c.lookahead = max(0.0, min(maxLookahead, seconds))
 	samples := min(int(math.Round(c.lookahead*c.sampleRate)), len(c.delayL))
 	if samples != c.delaySamples {
 		c.delaySamples = samples
@@ -149,10 +149,10 @@ func (c *Compressor) gain(detection float32) float32 {
 	env := c.detector.Detect(detection)
 	inputDB := -96.0
 	if env > 0 {
-		inputDB = 20.0 * math.Log10(float64(env))
+		inputDB = gainToDB(float64(env))
 	}
 	c.lastGainReduction = c.computeGain(inputDB)
-	return float32(math.Pow(10.0, (c.makeupGain-c.lastGainReduction)/20.0))
+	return float32(dbToGain(c.makeupGain - c.lastGainReduction))
 }
 
 // delay stores input in a channel's lookahead delay line and returns the
@@ -196,7 +196,7 @@ func (c *Compressor) ProcessBuffer(input, output []float32) {
 func (c *Compressor) ProcessStereo(inputL, inputR, outputL, outputR []float32) {
 	for i := range inputL {
 		l, r := inputL[i], inputR[i]
-		g := c.gain(float32(math.Max(math.Abs(float64(l)), math.Abs(float64(r)))))
+		g := c.gain(float32(max(math.Abs(float64(l)), math.Abs(float64(r)))))
 		outputL[i] = c.delay(c.delayL, l) * g
 		outputR[i] = c.delay(c.delayR, r) * g
 		c.advanceDelay()

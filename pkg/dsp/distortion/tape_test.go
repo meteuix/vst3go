@@ -145,7 +145,7 @@ func TestTapeSaturation(t *testing.T) {
 		mixed := tape.Process(input)
 
 		// Should be between dry and wet
-		if mixed <= math.Min(dry, wet) || mixed >= math.Max(dry, wet) {
+		if mixed <= min(dry, wet) || mixed >= max(dry, wet) {
 			t.Errorf("50%% mix should be between dry and wet signals")
 		}
 	})

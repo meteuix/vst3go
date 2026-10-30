@@ -8,6 +8,7 @@ package pitch
 import (
 	"math"
 
+	"github.com/th-release/vst3go/pkg/dsp/fastmath"
 	"github.com/th-release/vst3go/pkg/dsp/interpolation"
 )
 
@@ -35,12 +36,12 @@ func NewShifter(sampleRate, maxWindow float64) *Shifter {
 		n <<= 1
 	}
 	s := &Shifter{sampleRate: sampleRate, buf: make([]float32, n), mask: n - 1, ratio: 1}
-	s.SetWindow(math.Min(0.05, maxWindow))
+	s.SetWindow(min(0.05, maxWindow))
 	return s
 }
 
 // SetRatio sets the pitch ratio (2 is an octave up), clamped to 0.25..4.
-func (s *Shifter) SetRatio(ratio float64) { s.ratio = math.Max(0.25, math.Min(4, ratio)) }
+func (s *Shifter) SetRatio(ratio float64) { s.ratio = max(0.25, min(4, ratio)) }
 
 // SetSemitones sets the shift in semitones.
 func (s *Shifter) SetSemitones(semitones float64) { s.SetRatio(math.Exp2(semitones / 12)) }
@@ -51,7 +52,7 @@ func (s *Shifter) Ratio() float64 { return s.ratio }
 // SetWindow sets the window length in seconds, up to the constructor's
 // maximum.
 func (s *Shifter) SetWindow(seconds float64) {
-	s.window = math.Max(4, math.Min(float64(len(s.buf)-8), seconds*s.sampleRate))
+	s.window = max(4, min(float64(len(s.buf)-8), seconds*s.sampleRate))
 }
 
 // Process shifts in into out (same length); in and out may be the same
@@ -66,8 +67,8 @@ func (s *Shifter) Process(in, out []float32) {
 			b--
 		}
 		// sin² fades: the two gains always sum to one.
-		ga := math.Sin(math.Pi * a)
-		gb := math.Sin(math.Pi * b)
+		ga := fastmath.Sin2Pi(0.5 * a)
+		gb := fastmath.Sin2Pi(0.5 * b)
 		out[i] = float32(ga*ga)*s.tap(a) + float32(gb*gb)*s.tap(b)
 		s.phase += step
 		s.phase -= math.Floor(s.phase)

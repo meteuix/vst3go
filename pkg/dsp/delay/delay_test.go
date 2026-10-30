@@ -52,6 +52,21 @@ func TestLineInterpolatesAndClamps(t *testing.T) {
 	}
 }
 
+func TestLineReadJustPastTheWriteHeadWraps(t *testing.T) {
+	// writePos - delay a hair below zero rounds to exactly the buffer size
+	// when the buffer wraps; the read must land on the first slot.
+	d := New(1, 48000)
+	for range 3 {
+		d.Write(0.25)
+	}
+	d.Write(1) // writePos is now 4
+	for _, delay := range []float64{4 + 1e-13, 4 - 1e-13} {
+		if got := d.Read(delay); math.Abs(float64(got)-0.25) > 1e-6 {
+			t.Fatalf("Read(%v) = %v, want 0.25", delay, got)
+		}
+	}
+}
+
 func TestMultiTapDelaysEachTap(t *testing.T) {
 	m := NewMultiTap(0.1, 1000, 2)
 	taps := []TapOutput{{DelaySamples: 5, Gain: 1, Pan: -1}, {DelaySamples: 9, Gain: 0.5, Pan: 1}}

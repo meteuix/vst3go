@@ -1,8 +1,6 @@
 package modulation
 
-import (
-	"math"
-)
+import "github.com/th-release/vst3go/pkg/dsp/fastmath"
 
 // RingModulator implements a ring modulation effect
 type RingModulator struct {
@@ -48,13 +46,13 @@ func NewRingModulator(sampleRate float64) *RingModulator {
 
 // SetFrequency sets the carrier frequency in Hz
 func (rm *RingModulator) SetFrequency(hz float64) {
-	rm.frequency = math.Max(0.1, math.Min(rm.sampleRate/2, hz))
+	rm.frequency = max(0.1, min(rm.sampleRate/2, hz))
 	rm.updatePhaseIncrement()
 }
 
 // SetMix sets the wet/dry mix (0=dry, 1=wet)
 func (rm *RingModulator) SetMix(mix float64) {
-	rm.mix = math.Max(0.0, math.Min(1.0, mix))
+	rm.mix = max(0.0, min(1.0, mix))
 }
 
 // SetWaveform sets the carrier waveform
@@ -69,13 +67,13 @@ func (rm *RingModulator) EnableLFO(enabled bool) {
 
 // SetLFORate sets the LFO modulation rate in Hz
 func (rm *RingModulator) SetLFORate(hz float64) {
-	rm.lfoRate = math.Max(0.01, math.Min(20.0, hz))
+	rm.lfoRate = max(0.01, min(20.0, hz))
 	rm.lfo.SetFrequency(rm.lfoRate)
 }
 
 // SetLFODepth sets the LFO modulation depth (0-1)
 func (rm *RingModulator) SetLFODepth(depth float64) {
-	rm.lfoDepth = math.Max(0.0, math.Min(1.0, depth))
+	rm.lfoDepth = max(0.0, min(1.0, depth))
 }
 
 // updatePhaseIncrement updates the phase increment based on frequency
@@ -89,7 +87,7 @@ func (rm *RingModulator) generateCarrier() float64 {
 
 	switch rm.waveform {
 	case WaveformSine:
-		carrier = math.Sin(2.0 * math.Pi * rm.phase)
+		carrier = fastmath.Sin2Pi(rm.phase)
 
 	case WaveformTriangle:
 		if rm.phase < 0.5 {
@@ -109,7 +107,7 @@ func (rm *RingModulator) generateCarrier() float64 {
 		carrier = 2.0*rm.phase - 1.0
 
 	default:
-		carrier = math.Sin(2.0 * math.Pi * rm.phase)
+		carrier = fastmath.Sin2Pi(rm.phase)
 	}
 
 	return carrier

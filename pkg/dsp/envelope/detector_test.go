@@ -232,3 +232,40 @@ func BenchmarkDetectorRMS(b *testing.B) {
 		d.Process(signal, output)
 	}
 }
+
+func TestDetectorSettersDoNotAllocate(t *testing.T) {
+	d := NewDetector(48000, ModePeak)
+	allocs := testing.AllocsPerRun(50, func() {
+		d.SetMode(ModeRMS)
+		d.SetRMSWindow(50)
+		d.Detect(0.5)
+		d.SetRMSWindow(5)
+		d.SetMode(ModePeak)
+	})
+	if allocs != 0 {
+		t.Fatalf("%v allocations", allocs)
+	}
+}
+
+func TestDetectorRMSWindowMeasuresItsLength(t *testing.T) {
+	d := NewDetector(48000, ModeRMS)
+	d.SetAttack(0.0001)
+	d.SetRMSWindow(10) // 480 samples
+	// A square wave of ±0.5 has RMS 0.5 over any whole number of periods.
+	var env float32
+	for i := range 4800 {
+		x := float32(0.5)
+		if i/24%2 == 1 {
+			x = -0.5
+		}
+		env = d.Detect(x)
+	}
+	if math.Abs(float64(env)-0.5) > 1e-3 {
+		t.Fatalf("RMS %v, want 0.5", env)
+	}
+	// Longer than MaxRMSWindow is clamped, not grown.
+	d.SetRMSWindow(5000)
+	if d.rmsWindowLen != 48000 {
+		t.Fatalf("window %d samples, want the 1 s maximum", d.rmsWindowLen)
+	}
+}

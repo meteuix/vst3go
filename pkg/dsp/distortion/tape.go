@@ -2,6 +2,8 @@ package distortion
 
 import (
 	"math"
+
+	"github.com/th-release/vst3go/pkg/dsp/fastmath"
 )
 
 // Tape flutter delay: a fixed center delay the flutter swings around.
@@ -65,27 +67,27 @@ func NewTapeSaturation(sampleRate float64) *TapeSaturation {
 	return t
 }
 func (t *TapeSaturation) SetSaturation(saturation float64) {
-	t.saturation = math.Max(0.0, math.Min(1.0, saturation))
+	t.saturation = max(0.0, min(1.0, saturation))
 }
 
 func (t *TapeSaturation) SetCompression(compression float64) {
-	t.compression = math.Max(0.0, math.Min(1.0, compression))
+	t.compression = max(0.0, min(1.0, compression))
 }
 
 func (t *TapeSaturation) SetFlutter(flutter float64) {
-	t.flutter = math.Max(0.0, math.Min(1.0, flutter))
+	t.flutter = max(0.0, min(1.0, flutter))
 }
 
 func (t *TapeSaturation) SetWarmth(warmth float64) {
-	t.warmth = math.Max(0.0, math.Min(1.0, warmth))
+	t.warmth = max(0.0, min(1.0, warmth))
 }
 
 func (t *TapeSaturation) SetMix(mix float64) {
-	t.mix = math.Max(0.0, math.Min(1.0, mix))
+	t.mix = max(0.0, min(1.0, mix))
 }
 
 func (t *TapeSaturation) SetOutput(output float64) {
-	t.output = math.Max(0.0, math.Min(2.0, output))
+	t.output = max(0.0, min(2.0, output))
 }
 
 func (t *TapeSaturation) Process(input float64) float64 {
@@ -166,7 +168,7 @@ func (t *TapeSaturation) flutterDelay() float64 {
 		}
 	}
 	depth := t.flutter * flutterDepth
-	modulation := math.Sin(t.flutterPhase)*depth + (t.random()*2.0-1.0)*depth*0.3
+	modulation := fastmath.Sin2Pi(t.flutterPhase*(0.5/math.Pi))*depth + (t.random()*2.0-1.0)*depth*0.3
 	return flutterCenter + modulation
 }
 
@@ -175,15 +177,24 @@ func (t *TapeSaturation) flutterDelay() float64 {
 func (t *TapeSaturation) applyFlutter(c *tapeChannel, x, delay float64) float64 {
 	size := len(c.delay)
 	c.delay[c.writePos] = x
-	c.writePos = (c.writePos + 1) % size
+	if c.writePos++; c.writePos == size {
+		c.writePos = 0
+	}
 	if delay == 0 {
 		return x
 	}
 	i := int(delay)
 	frac := delay - float64(i)
-	newer := c.delay[(c.writePos-1-i+2*size)%size]
-	older := c.delay[(c.writePos-2-i+2*size)%size]
-	return newer*(1.0-frac) + older*frac
+	// The newest sample is at writePos-1: newer is i samples before it.
+	newer := c.writePos - 1 - i
+	for newer < 0 {
+		newer += size
+	}
+	older := newer - 1
+	if older < 0 {
+		older += size
+	}
+	return c.delay[newer]*(1.0-frac) + c.delay[older]*frac
 }
 
 func (t *TapeSaturation) preEmphasize(c *tapeChannel, x float64) float64 {

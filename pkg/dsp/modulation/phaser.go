@@ -94,38 +94,38 @@ func NewPhaser(sampleRate float64) *Phaser {
 
 // SetRate sets the LFO rate in Hz
 func (p *Phaser) SetRate(hz float64) {
-	p.rate = math.Max(0.01, math.Min(10.0, hz))
+	p.rate = max(0.01, min(10.0, hz))
 	p.lfo.SetFrequency(p.rate)
 }
 
 // SetDepth sets the modulation depth (0-1): the sweep spans depth times
 // the center frequency.
 func (p *Phaser) SetDepth(depth float64) {
-	p.depth = math.Max(0.0, math.Min(1.0, depth))
+	p.depth = max(0.0, min(1.0, depth))
 	p.updateFrequencyRange()
 }
 
 // SetCenterFrequency sets the center frequency for modulation
 func (p *Phaser) SetCenterFrequency(freq float64) {
-	p.centerFreq = math.Max(100.0, math.Min(4000.0, freq))
+	p.centerFreq = max(100.0, min(4000.0, freq))
 	p.updateFrequencyRange()
 }
 
 // SetFrequencyRange sets the min and max frequencies for modulation
 func (p *Phaser) SetFrequencyRange(minFreq, maxFreq float64) {
-	p.minFreq = math.Max(20.0, math.Min(p.sampleRate/4, minFreq))
-	p.maxFreq = math.Max(p.minFreq+100, math.Min(p.sampleRate/2, maxFreq))
+	p.minFreq = max(20.0, min(p.sampleRate/4, minFreq))
+	p.maxFreq = max(p.minFreq+100, min(p.sampleRate/2, maxFreq))
 	p.centerFreq = (p.minFreq + p.maxFreq) / 2
 }
 
 // SetFeedback sets the feedback amount (-1 to 1)
 func (p *Phaser) SetFeedback(feedback float64) {
-	p.feedback = math.Max(-0.99, math.Min(0.99, feedback))
+	p.feedback = max(-0.99, min(0.99, feedback))
 }
 
 // SetMix sets the wet/dry mix (0=dry, 1=wet)
 func (p *Phaser) SetMix(mix float64) {
-	p.mix = math.Max(0.0, math.Min(1.0, mix))
+	p.mix = max(0.0, min(1.0, mix))
 }
 
 // SetStages sets the number of all-pass stages (2, 4, 6, or 8)
@@ -137,8 +137,8 @@ func (p *Phaser) SetStages(stages int) {
 // updateFrequencyRange updates the frequency range based on center and depth
 func (p *Phaser) updateFrequencyRange() {
 	freqRange := p.centerFreq * p.depth
-	p.minFreq = math.Max(20.0, p.centerFreq-freqRange/2)
-	p.maxFreq = math.Min(p.sampleRate/4, p.centerFreq+freqRange/2)
+	p.minFreq = max(20.0, p.centerFreq-freqRange/2)
+	p.maxFreq = min(p.sampleRate/4, p.centerFreq+freqRange/2)
 }
 
 // sweep returns the all-pass frequency for a sweep position (-1 to 1),

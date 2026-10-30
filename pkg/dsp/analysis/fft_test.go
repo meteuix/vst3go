@@ -234,15 +234,20 @@ func TestCrossCorrelation(t *testing.T) {
 		}
 	}
 
-	// The peak should indicate where signal b best matches signal a
-	// Since b[i] = a[i-10], we need to check if the correlation peak
-	// is in the expected range (allowing for FFT resolution)
+	// b[i] = a[i-10]: the peak is at lag +10.
 	expectedIdx := center + delay
-
-	// Allow larger tolerance as FFT-based correlation can have some shift
-	if math.Abs(float64(maxIdx-expectedIdx)) > 10 {
-		t.Errorf("Cross-correlation peak at wrong lag for delayed signal: expected around %d, got %d",
+	if maxIdx != expectedIdx {
+		t.Errorf("Cross-correlation peak at wrong lag for delayed signal: expected %d, got %d",
 			expectedIdx, maxIdx)
+	}
+	for k := -(n - 1); k < n; k++ {
+		var want float64
+		for i := max(0, -k); i < n && i+k < n; i++ {
+			want += a[i] * b[i+k]
+		}
+		if got := correlation[n-1+k]; math.Abs(got-want) > 1e-9 {
+			t.Fatalf("lag %d: %v, want %v", k, got, want)
+		}
 	}
 }
 

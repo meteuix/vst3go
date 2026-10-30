@@ -70,13 +70,15 @@ func NewDetector(sampleRate, minFreq, maxFreq float64, hop int) (*Detector, erro
 func (d *Detector) Latency() int { return len(d.history) }
 
 // SetThreshold sets the YIN threshold (0.05 strict to 0.3 permissive).
-func (d *Detector) SetThreshold(t float64) { d.threshold = math.Max(0.01, math.Min(0.5, t)) }
+func (d *Detector) SetThreshold(t float64) { d.threshold = max(0.01, min(0.5, t)) }
 
 // Process adds samples and updates the estimate every hop samples.
 func (d *Detector) Process(in []float32) {
 	for _, x := range in {
 		d.ring[d.write] = float64(x)
-		d.write = (d.write + 1) % len(d.ring)
+		if d.write++; d.write == len(d.ring) {
+			d.write = 0
+		}
 		d.fill++
 		if d.fill >= d.hop {
 			d.fill = 0
@@ -117,7 +119,7 @@ func (d *Detector) analyse() {
 	d.diff[0] = 1
 	for tau := 1; tau <= d.maxLag; tau++ {
 		eTau += h[tau+w-1]*h[tau+w-1] - h[tau-1]*h[tau-1]
-		v := math.Max(0, e0+eTau-2*d.a[tau])
+		v := max(0, e0+eTau-2*d.a[tau])
 		running += v
 		if running > 0 {
 			d.diff[tau] = v * float64(tau) / running
@@ -148,7 +150,7 @@ func (d *Detector) analyse() {
 		}
 	}
 	d.frequency = d.sampleRate / period
-	d.clarity = math.Max(0, 1-d.diff[best])
+	d.clarity = max(0, 1-d.diff[best])
 }
 
 // Reset clears the history and the estimate.

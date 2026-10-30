@@ -48,12 +48,17 @@ type Detector struct {
 	envelope    float64
 	holdCounter int
 
-	// RMS window
+	// RMS window: rmsWindow holds MaxRMSWindow, the first rmsWindowLen
+	// samples of it in use.
 	rmsWindow    []float64
 	rmsIndex     int
 	rmsSum       float64
 	rmsWindowLen int
 }
+
+// MaxRMSWindow is the longest RMS window in seconds. The window buffer is
+// allocated for it up front, so SetMode and SetRMSWindow do not allocate.
+const MaxRMSWindow = 1.0
 
 // NewDetector creates a new envelope detector
 func NewDetector(sampleRate float64, mode DetectorMode) *Detector {
@@ -61,33 +66,28 @@ func NewDetector(sampleRate float64, mode DetectorMode) *Detector {
 		sampleRate:   sampleRate,
 		mode:         mode,
 		detType:      TypeLinear,
-		attack:       0.001,                   // 1ms default
-		release:      0.100,                   // 100ms default
-		hold:         0.010,                   // 10ms default
-		rmsWindowLen: int(sampleRate * 0.003), // 3ms RMS window
-		envelope:     0.0,
-		holdCounter:  0,
+		attack:       0.001,                         // 1ms default
+		release:      0.100,                         // 100ms default
+		hold:         0.010,                         // 10ms default
+		rmsWindowLen: max(1, int(sampleRate*0.003)), // 3ms RMS window
+		rmsWindow:    make([]float64, max(1, int(sampleRate*MaxRMSWindow))),
 	}
-
-	// Initialize RMS window if needed
-	if mode == ModeRMS {
-		d.rmsWindow = make([]float64, d.rmsWindowLen)
-	}
-
 	d.updateCoefficients()
 	return d
 }
 
 // SetMode sets the detection mode
 func (d *Detector) SetMode(mode DetectorMode) {
-	d.mode = mode
-
-	// Initialize RMS window if switching to RMS mode
-	if mode == ModeRMS && d.rmsWindow == nil {
-		d.rmsWindow = make([]float64, d.rmsWindowLen)
-		d.rmsIndex = 0
-		d.rmsSum = 0
+	if mode == ModeRMS && d.mode != ModeRMS {
+		d.clearRMS()
 	}
+	d.mode = mode
+}
+
+func (d *Detector) clearRMS() {
+	clear(d.rmsWindow[:d.rmsWindowLen])
+	d.rmsIndex = 0
+	d.rmsSum = 0
 }
 
 // SetType sets the detector response type
@@ -98,40 +98,35 @@ func (d *Detector) SetType(detType DetectorType) {
 
 // SetAttack sets the attack time in seconds
 func (d *Detector) SetAttack(seconds float64) {
-	d.attack = math.Max(0.0001, seconds)
+	d.attack = max(0.0001, seconds)
 	d.updateCoefficients()
 }
 
 // SetRelease sets the release time in seconds
 func (d *Detector) SetRelease(seconds float64) {
-	d.release = math.Max(0.0001, seconds)
+	d.release = max(0.0001, seconds)
 	d.updateCoefficients()
 }
 
 // SetHold sets the hold time in seconds (for peak hold mode)
 func (d *Detector) SetHold(seconds float64) {
-	d.hold = math.Max(0.0, seconds)
+	d.hold = max(0.0, seconds)
 }
 
 // SetTimeConstants sets attack and release times together
 func (d *Detector) SetTimeConstants(attack, release float64) {
-	d.attack = math.Max(0.0001, attack)
-	d.release = math.Max(0.0001, release)
+	d.attack = max(0.0001, attack)
+	d.release = max(0.0001, release)
 	d.updateCoefficients()
 }
 
-// SetRMSWindow sets the RMS window length in milliseconds
+// SetRMSWindow sets the RMS window length in milliseconds, up to
+// MaxRMSWindow. A new length restarts the window.
 func (d *Detector) SetRMSWindow(ms float64) {
-	newLen := int(d.sampleRate * ms / 1000.0)
-	if newLen < 1 {
-		newLen = 1
-	}
-
+	newLen := max(1, min(len(d.rmsWindow), int(d.sampleRate*ms/1000.0)))
 	if newLen != d.rmsWindowLen {
 		d.rmsWindowLen = newLen
-		d.rmsWindow = make([]float64, d.rmsWindowLen)
-		d.rmsIndex = 0
-		d.rmsSum = 0
+		d.clearRMS()
 	}
 }
 
@@ -173,10 +168,12 @@ func (d *Detector) Detect(input float32) float32 {
 		oldValue := d.rmsWindow[d.rmsIndex]
 		d.rmsWindow[d.rmsIndex] = squared
 		d.rmsSum += squared - oldValue
-		d.rmsIndex = (d.rmsIndex + 1) % d.rmsWindowLen
+		if d.rmsIndex++; d.rmsIndex == d.rmsWindowLen {
+			d.rmsIndex = 0
+		}
 
-		// Calculate RMS
-		meanSquare := d.rmsSum / float64(d.rmsWindowLen)
+		// Calculate RMS (the running sum can drift a hair below zero)
+		meanSquare := max(0, d.rmsSum) / float64(d.rmsWindowLen)
 		inputLevel = math.Sqrt(meanSquare)
 	}
 
@@ -247,11 +244,5 @@ func (d *Detector) GetEnvelopeDB() float32 {
 func (d *Detector) Reset() {
 	d.envelope = 0
 	d.holdCounter = 0
-	if d.rmsWindow != nil {
-		for i := range d.rmsWindow {
-			d.rmsWindow[i] = 0
-		}
-		d.rmsSum = 0
-		d.rmsIndex = 0
-	}
+	d.clearRMS()
 }

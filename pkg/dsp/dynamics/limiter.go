@@ -117,20 +117,20 @@ func lanczos(x float64, a int) float64 {
 
 // SetThreshold sets the limiter ceiling in dB
 func (l *Limiter) SetThreshold(dB float64) {
-	l.threshold = math.Min(0.0, dB) // Can't be positive
+	l.threshold = min(0.0, dB) // Can't be positive
 	l.ceiling = math.Pow(10.0, l.threshold/20.0)
 }
 
 // SetRelease sets the release time in seconds
 func (l *Limiter) SetRelease(seconds float64) {
-	l.release = math.Max(0.001, seconds)
+	l.release = max(0.001, seconds)
 	l.releaseCoeff = math.Exp(-1.0 / (l.release * l.sampleRate))
 }
 
 // SetLookahead sets the lookahead time in seconds (0 to 10ms). Changing it
 // clears the delay line.
 func (l *Limiter) SetLookahead(seconds float64) {
-	l.lookahead = math.Max(0.0, math.Min(maxLookahead, seconds))
+	l.lookahead = max(0.0, min(maxLookahead, seconds))
 	samples := min(int(math.Round(l.lookahead*l.sampleRate)), len(l.delayL)-1)
 	if samples != l.delaySamples {
 		l.delaySamples = samples
@@ -166,7 +166,7 @@ func (l *Limiter) peak(history *[truePeakTaps]float32, input float32) float64 {
 		for k, c := range l.kernels[phase] {
 			v += c * float64(history[k])
 		}
-		p = math.Max(p, math.Abs(v))
+		p = max(p, math.Abs(v))
 	}
 	return p
 }
@@ -222,9 +222,9 @@ func (l *Limiter) gain(peak float64) float64 {
 			l.avgSum += v
 		}
 	}
-	g := math.Min(1.0, l.avgSum/float64(window))
+	g := min(1.0, l.avgSum/float64(window))
 
-	l.gainReduction = -20.0 * math.Log10(g)
+	l.gainReduction = -gainToDB(g)
 	return g
 }
 
@@ -268,7 +268,7 @@ func (l *Limiter) ProcessBuffer(input, output []float32) {
 // channels get the gain the louder one needs
 func (l *Limiter) ProcessStereo(inputL, inputR, outputL, outputR []float32) {
 	for i := range inputL {
-		peak := math.Max(l.peak(&l.historyL, inputL[i]), l.peak(&l.historyR, inputR[i]))
+		peak := max(l.peak(&l.historyL, inputL[i]), l.peak(&l.historyR, inputR[i]))
 		g := float32(l.gain(peak))
 		outL := l.delay(l.delayL, inputL[i])
 		outR := l.delay(l.delayR, inputR[i])

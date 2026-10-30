@@ -155,7 +155,9 @@ func (ps *PhaseScope) Process(samplesL, samplesR []float64) {
 		// Set brightness to maximum for new points
 		ps.brightness[ps.writePos] = 1.0
 
-		ps.writePos = (ps.writePos + 1) % ps.bufferSize
+		if ps.writePos++; ps.writePos == ps.bufferSize {
+			ps.writePos = 0
+		}
 		if ps.count < ps.bufferSize {
 			ps.count++
 		}
@@ -214,7 +216,7 @@ func scopeStatistics(left, right []float64) PhaseScopeStats {
 		r := right[i]
 		sumM += math.Abs((l + r) * 0.5)
 		sumS += math.Abs((l - r) * 0.5)
-		maxRadius = math.Max(maxRadius, math.Sqrt(l*l+r*r))
+		maxRadius = max(maxRadius, math.Sqrt(l*l+r*r))
 	}
 	stats.AverageMid = sumM / float64(len(left))
 	stats.AverageSide = sumS / float64(len(left))

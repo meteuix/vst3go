@@ -52,15 +52,13 @@ func (h *halfband) up(in []float64, out []float64) {
 	t := len(h.taps)
 	for k, x := range in {
 		h.upHist[h.upWrite], h.upHist[h.upWrite+t] = x, x
-		h.upWrite = (h.upWrite + 1) % t
+		if h.upWrite++; h.upWrite == t {
+			h.upWrite = 0
+		}
 		// Window oldest..newest is upHist[upWrite : upWrite+t]; tap i
 		// applies to x[k-i], the (t-1-i)-th oldest.
 		win := h.upHist[h.upWrite : h.upWrite+t]
-		even := 0.0
-		for i, c := range h.taps {
-			even += c * win[t-1-i]
-		}
-		out[2*k] = 2 * even
+		out[2*k] = 2 * symmetricDot(h.taps, win)
 		out[2*k+1] = win[t-1-h.m]
 	}
 }
@@ -71,18 +69,38 @@ func (h *halfband) down(in []float64, out []float64) {
 	for k := range out {
 		e, o := in[2*k], in[2*k+1]
 		h.evenHist[h.downPos], h.evenHist[h.downPos+t] = e, e
-		h.downPos = (h.downPos + 1) % t
-		win := h.evenHist[h.downPos : h.downPos+t]
-		y := 0.0
-		for i, c := range h.taps {
-			y += c * win[t-1-i]
+		if h.downPos++; h.downPos == t {
+			h.downPos = 0
 		}
+		y := symmetricDot(h.taps, h.evenHist[h.downPos:h.downPos+t])
 		// The centre tap meets the odd sample m+1 pairs back.
 		y += 0.5 * h.oddDelay[h.oddPos]
 		h.oddDelay[h.oddPos] = o
-		h.oddPos = (h.oddPos + 1) % len(h.oddDelay)
+		if h.oddPos++; h.oddPos == len(h.oddDelay) {
+			h.oddPos = 0
+		}
 		out[k] = y
 	}
+}
+
+// symmetricDot returns Σ taps[i]·win[t-1-i] for taps symmetric about
+// their centre (taps[i] = taps[t-1-i], t even): Σ taps[i]·(win[i] +
+// win[t-1-i]) over the first half, half the multiplies, in two running
+// sums.
+func symmetricDot(taps, win []float64) float64 {
+	t := len(taps)
+	win = win[:t]
+	half := taps[:t/2]
+	var s0, s1 float64
+	i := 0
+	for ; i+2 <= len(half); i += 2 {
+		s0 += half[i] * (win[i] + win[t-1-i])
+		s1 += half[i+1] * (win[i+1] + win[t-2-i])
+	}
+	if i < len(half) {
+		s0 += half[i] * (win[i] + win[t-1-i])
+	}
+	return s0 + s1
 }
 
 func (h *halfband) reset() {
@@ -183,12 +201,15 @@ func (o *Oversampler) Down(high []float32, out []float32) {
 	for i, x := range high[:n<<s] {
 		cur[i] = float64(x)
 	}
-	if len(o.pad) > 0 {
+	if pad := o.pad; len(pad) > 0 {
+		pos := o.padPos
 		for i, x := range cur {
-			cur[i] = o.pad[o.padPos]
-			o.pad[o.padPos] = x
-			o.padPos = (o.padPos + 1) % len(o.pad)
+			cur[i], pad[pos] = pad[pos], x
+			if pos++; pos == len(pad) {
+				pos = 0
+			}
 		}
+		o.padPos = pos
 	}
 	for s := len(o.stages) - 1; s >= 0; s-- {
 		next := o.bufs[s][:n<<s]

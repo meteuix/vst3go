@@ -96,8 +96,8 @@ func (sa *SpectrumAnalyzer) SetSmoothing(smoothing float64) {
 
 // SetFrequencyRange sets the frequency range to analyze
 func (sa *SpectrumAnalyzer) SetFrequencyRange(minFreq, maxFreq float64) {
-	sa.minFreq = math.Max(0, minFreq)
-	sa.maxFreq = math.Min(sa.sampleRate/2.0, maxFreq)
+	sa.minFreq = max(0, minFreq)
+	sa.maxFreq = min(sa.sampleRate/2.0, maxFreq)
 	sa.updateFrequencyRange()
 }
 

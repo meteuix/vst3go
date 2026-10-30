@@ -1,7 +1,11 @@
 // Package delay provides delay line implementations for audio effects
 package delay
 
-import "math"
+import (
+	"math"
+
+	"github.com/th-release/vst3go/pkg/dsp/fastmath"
+)
 
 // Line implements a basic delay line with linear interpolation
 type Line struct {
@@ -43,17 +47,26 @@ func (d *Line) Write(sample float32) {
 // interpolation, for reading before the next Write (as Process does). The
 // delay is clamped to [1, MaxDelay()].
 func (d *Line) Read(delaySamples float64) float32 {
-	delaySamples = math.Max(1, math.Min(float64(d.bufferSize-1), delaySamples))
+	delaySamples = max(1, min(float64(d.bufferSize-1), delaySamples))
 	readPos := float64(d.writePos) - delaySamples
 	if readPos < 0 {
 		readPos += float64(d.bufferSize)
 	}
 
 	// Interpolate between the sample at readPos and the next newer one.
+	// A position a hair below zero wraps to exactly bufferSize in float64.
 	readPosInt := int(readPos)
+	if readPosInt >= d.bufferSize {
+		readPosInt -= d.bufferSize
+		readPos -= float64(d.bufferSize)
+	}
 	frac := float32(readPos - float64(readPosInt))
 	s1 := d.buffer[readPosInt]
-	s2 := d.buffer[(readPosInt+1)%d.bufferSize]
+	next := readPosInt + 1
+	if next == d.bufferSize {
+		next = 0
+	}
+	s2 := d.buffer[next]
 	return s1*(1.0-frac) + s2*frac
 }
 
@@ -269,7 +282,7 @@ func (m *ModulatedDelay) SetCenterDelay(delayMs float64) {
 // Process with modulation
 func (m *ModulatedDelay) Process(input float32) float32 {
 	// Calculate modulated delay
-	lfo := math.Sin(2.0 * math.Pi * m.lfoPhase)
+	lfo := fastmath.Sin2Pi(m.lfoPhase)
 	delayMs := m.centerDelay + m.lfoDepth*lfo
 	delaySamples := delayMs * m.sampleRate / 1000.0
 

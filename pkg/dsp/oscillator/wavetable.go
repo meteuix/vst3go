@@ -58,7 +58,7 @@ func NewWavetableBank(frames [][]float32) (*WavetableBank, error) {
 			for j, x := range time {
 				table[j] = float32(x)
 				if l == 0 {
-					peak = math.Max(peak, math.Abs(x))
+					peak = max(peak, math.Abs(x))
 				}
 			}
 			table[tableSize] = table[0]
@@ -179,7 +179,7 @@ func (w *Wavetable) SetFrequency(hz float64) {
 
 // SetPosition morphs across the frames: 0 is the first, 1 the last.
 func (w *Wavetable) SetPosition(position float64) {
-	w.position = math.Max(0, math.Min(1, position))
+	w.position = max(0, min(1, position))
 }
 
 // SetPhase sets the phase in cycles (0..1).

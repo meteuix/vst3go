@@ -3,6 +3,8 @@ package pan
 
 import (
 	"math"
+
+	"github.com/th-release/vst3go/pkg/dsp/fastmath"
 )
 
 // Law represents different panning laws
@@ -105,8 +107,8 @@ func constantPowerPan(pan float32) (left, right float32) {
 	// Convert pan from [-1, 1] to [0, π/2]
 	angle := (float64(max(-1, min(1, pan))) + 1.0) * math.Pi / 4.0
 	// cos(pi/2) is -4e-17 in floating point; keep both gains in [0, 1].
-	left = float32(math.Max(0, math.Cos(angle)))
-	right = float32(math.Max(0, math.Sin(angle)))
+	left = float32(max(0, math.Cos(angle)))
+	right = float32(max(0, math.Sin(angle)))
 	return
 }
 
@@ -220,7 +222,7 @@ func (ap *AutoPan) Process(mono []float32, sampleRate float32, leftOut, rightOut
 
 	for i := 0; i < length; i++ {
 		// Calculate pan position from LFO
-		pan := float32(math.Sin(float64(ap.phase))) * ap.depth
+		pan := float32(fastmath.Sin2Pi(float64(ap.phase)*(0.5/math.Pi))) * ap.depth
 
 		// Apply panning
 		leftGain, rightGain := MonoToStereo(pan, ap.law)

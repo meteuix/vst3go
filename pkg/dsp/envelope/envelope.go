@@ -58,33 +58,33 @@ func New(sampleRate float64) *ADSR {
 
 // SetAttack sets the attack time in seconds
 func (e *ADSR) SetAttack(seconds float64) {
-	e.attack = math.Max(0.001, seconds) // Minimum 1ms
+	e.attack = max(0.001, seconds) // Minimum 1ms
 	e.updateCoefficients()
 }
 
 // SetDecay sets the decay time in seconds
 func (e *ADSR) SetDecay(seconds float64) {
-	e.decay = math.Max(0.001, seconds)
+	e.decay = max(0.001, seconds)
 	e.updateCoefficients()
 }
 
 // SetSustain sets the sustain level (0-1)
 func (e *ADSR) SetSustain(level float64) {
-	e.sustain = math.Max(0.0, math.Min(1.0, level))
+	e.sustain = max(0.0, min(1.0, level))
 }
 
 // SetRelease sets the release time in seconds
 func (e *ADSR) SetRelease(seconds float64) {
-	e.release = math.Max(0.001, seconds)
+	e.release = max(0.001, seconds)
 	e.updateCoefficients()
 }
 
 // SetADSR sets all parameters at once
 func (e *ADSR) SetADSR(attack, decay, sustain, release float64) {
-	e.attack = math.Max(0.001, attack)
-	e.decay = math.Max(0.001, decay)
-	e.sustain = math.Max(0.0, math.Min(1.0, sustain))
-	e.release = math.Max(0.001, release)
+	e.attack = max(0.001, attack)
+	e.decay = max(0.001, decay)
+	e.sustain = max(0.0, min(1.0, sustain))
+	e.release = max(0.001, release)
 	e.updateCoefficients()
 }
 
@@ -216,13 +216,13 @@ func NewAR(sampleRate float64) *AR {
 
 // SetAttack sets the attack time in seconds
 func (e *AR) SetAttack(seconds float64) {
-	e.attack = math.Max(0.001, seconds)
+	e.attack = max(0.001, seconds)
 	e.updateCoefficients()
 }
 
 // SetRelease sets the release time in seconds
 func (e *AR) SetRelease(seconds float64) {
-	e.release = math.Max(0.001, seconds)
+	e.release = max(0.001, seconds)
 	e.updateCoefficients()
 }
 
@@ -291,13 +291,13 @@ func NewFollower(sampleRate float64) *Follower {
 
 // SetAttack sets the attack time
 func (f *Follower) SetAttack(seconds float64) {
-	f.attack = math.Max(0.0001, seconds)
+	f.attack = max(0.0001, seconds)
 	f.updateCoefficients()
 }
 
 // SetRelease sets the release time
 func (f *Follower) SetRelease(seconds float64) {
-	f.release = math.Max(0.0001, seconds)
+	f.release = max(0.0001, seconds)
 	f.updateCoefficients()
 }
 

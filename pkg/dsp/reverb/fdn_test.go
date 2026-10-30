@@ -24,11 +24,6 @@ func TestFDNCreation(t *testing.T) {
 		if len(fdn.delayLines) != numDelays {
 			t.Errorf("Expected %d delay lines, got %d", numDelays, len(fdn.delayLines))
 		}
-
-		// Check feedback matrix dimensions
-		if len(fdn.feedbackMatrix) != numDelays {
-			t.Errorf("Expected %dx%d feedback matrix, got %d rows", numDelays, numDelays, len(fdn.feedbackMatrix))
-		}
 	}
 }
 
@@ -215,20 +210,24 @@ func TestFDNFeedbackMatrix(t *testing.T) {
 		fdn := NewFDN(n, 44100)
 		fdn.SetDecay(0.3)
 		fdn.SetDiffusion(0.7)
-		if len(fdn.feedbackMatrix) != n {
-			t.Fatalf("%dx%d feedback matrix has %d rows", n, n, len(fdn.feedbackMatrix))
+		// Column j of the matrix is M applied to unit vector j.
+		matrix := make([][]float32, n)
+		for j := range matrix {
+			matrix[j] = make([]float32, n)
+			matrix[j][j] = 1
+			fdn.mix(matrix[j])
 		}
 		for i := 0; i < n; i++ {
 			for k := 0; k < n; k++ {
 				dot := 0.0
 				for j := 0; j < n; j++ {
-					dot += fdn.feedbackMatrix[i][j] * fdn.feedbackMatrix[k][j]
+					dot += float64(matrix[i][j]) * float64(matrix[k][j])
 				}
 				want := 0.0
 				if i == k {
 					want = 1.0
 				}
-				if math.Abs(dot-want) > 1e-9 {
+				if math.Abs(dot-want) > 1e-6 {
 					t.Errorf("n=%d: row %d . row %d = %f, want %f", n, i, k, dot, want)
 				}
 			}

@@ -32,7 +32,7 @@ func (f *follower) step(level float64) float64 {
 }
 
 func followerDB(env float64) float64 {
-	return math.Max(transientFloorDB, 20*math.Log10(env+1e-12))
+	return max(transientFloorDB, gainToDB(env+1e-12))
 }
 
 // TransientShaper changes the level of a signal's attacks and sustain
@@ -63,12 +63,12 @@ func NewTransientShaper(sampleRate float64) *TransientShaper {
 
 // SetAttack sets the attack amount, -1 (softer) to 1 (punchier).
 func (t *TransientShaper) SetAttack(amount float64) {
-	t.attackAmount = math.Max(-1, math.Min(1, amount))
+	t.attackAmount = max(-1, min(1, amount))
 }
 
 // SetSustain sets the sustain amount, -1 (drier) to 1 (longer tails).
 func (t *TransientShaper) SetSustain(amount float64) {
-	t.sustainAmount = math.Max(-1, math.Min(1, amount))
+	t.sustainAmount = max(-1, min(1, amount))
 }
 
 // GainDB returns the gain applied to the last sample, in dB.
@@ -79,8 +79,8 @@ func (t *TransientShaper) gain(level float64) float32 {
 	attack := followerDB(t.fast.step(level)) - followerDB(t.slow.step(level))
 	sustain := followerDB(t.long.step(level)) - followerDB(t.short.step(level))
 	db := t.attackAmount*attack + t.sustainAmount*sustain
-	t.gainDB = math.Max(-transientMaxGainDB, math.Min(transientMaxGainDB, db))
-	return float32(math.Pow(10, t.gainDB/20))
+	t.gainDB = max(-transientMaxGainDB, min(transientMaxGainDB, db))
+	return float32(dbToGain(t.gainDB))
 }
 
 // ProcessBuffer shapes a mono buffer. input and output may be the same.
@@ -95,7 +95,7 @@ func (t *TransientShaper) ProcessBuffer(input, output []float32) {
 func (t *TransientShaper) ProcessStereo(inputL, inputR, outputL, outputR []float32) {
 	for i := range inputL {
 		l, r := inputL[i], inputR[i]
-		g := t.gain(math.Max(math.Abs(float64(l)), math.Abs(float64(r))))
+		g := t.gain(max(math.Abs(float64(l)), math.Abs(float64(r))))
 		outputL[i] = l * g
 		outputR[i] = r * g
 	}

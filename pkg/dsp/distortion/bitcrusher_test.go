@@ -150,7 +150,7 @@ func TestBitcrusher(t *testing.T) {
 		mixed := bc.Process(input)
 
 		// Should be between dry and wet
-		if mixed <= math.Min(dry, wet)-0.01 || mixed >= math.Max(dry, wet)+0.01 {
+		if mixed <= min(dry, wet)-0.01 || mixed >= max(dry, wet)+0.01 {
 			t.Errorf("50%% mix should be between dry (%f) and wet (%f) signals, got %f", dry, wet, mixed)
 		}
 	})

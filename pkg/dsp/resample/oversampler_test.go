@@ -49,7 +49,7 @@ func TestOversamplerPassband(t *testing.T) {
 		out := roundTrip(t, o, sineAt(f, 48000, 24000), 512)
 		peak := 0.0
 		for _, x := range out[12000:] {
-			peak = math.Max(peak, math.Abs(float64(x)))
+			peak = max(peak, math.Abs(float64(x)))
 		}
 		if db := 20 * math.Log10(peak); math.Abs(db) > 0.1 {
 			t.Errorf("%.0f Hz: %.3f dB through the round trip, want 0 ±0.1", f, db)
@@ -83,7 +83,7 @@ func TestOversamplerRejectsImagesAndAliases(t *testing.T) {
 		}
 		peak := 0.0
 		for _, x := range out[12000:] {
-			peak = math.Max(peak, math.Abs(float64(x)))
+			peak = max(peak, math.Abs(float64(x)))
 		}
 		if db := 20 * math.Log10(peak); db > -90 {
 			t.Errorf("factor %d: 30 kHz aliases at %.1f dB, want below -90", factor, db)
@@ -109,7 +109,7 @@ func imageLevel(x []float32, freq, rate float64) float64 {
 	peak := 0.0
 	for i, v := range x {
 		s, c := math.Sincos(2 * math.Pi * freq * float64(i) / rate)
-		peak = math.Max(peak, math.Abs(float64(v)-a*s-b*c))
+		peak = max(peak, math.Abs(float64(v)-a*s-b*c))
 	}
 	return 20 * math.Log10(peak)
 }

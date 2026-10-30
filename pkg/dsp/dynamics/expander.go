@@ -58,29 +58,29 @@ func (e *Expander) SetThreshold(dB float64) {
 
 // SetRatio sets the expansion ratio (1.0 = no expansion)
 func (e *Expander) SetRatio(ratio float64) {
-	e.ratio = math.Max(1.0, ratio)
+	e.ratio = max(1.0, ratio)
 }
 
 // SetAttack sets how fast the expander opens, in seconds
 func (e *Expander) SetAttack(seconds float64) {
-	e.attack = math.Max(0.0, seconds)
+	e.attack = max(0.0, seconds)
 	e.updateTimeConstants()
 }
 
 // SetRelease sets how fast the expander closes, in seconds
 func (e *Expander) SetRelease(seconds float64) {
-	e.release = math.Max(0.0, seconds)
+	e.release = max(0.0, seconds)
 	e.updateTimeConstants()
 }
 
 // SetKnee sets the knee width in dB
 func (e *Expander) SetKnee(dB float64) {
-	e.knee = math.Max(0.0, dB)
+	e.knee = max(0.0, dB)
 }
 
 // SetRange sets the maximum expansion range in dB
 func (e *Expander) SetRange(dB float64) {
-	e.range_ = math.Min(0.0, dB)
+	e.range_ = min(0.0, dB)
 }
 
 // GetGainReduction returns the current gain reduction in dB
@@ -151,9 +151,9 @@ func (e *Expander) gain(detection float32) float32 {
 	env := e.detector.Detect(detection)
 	inputDB := -96.0
 	if env > 0 {
-		inputDB = 20.0 * math.Log10(float64(env))
+		inputDB = gainToDB(float64(env))
 	}
-	targetGain := math.Pow(10.0, e.computeGain(inputDB)/20.0)
+	targetGain := dbToGain(e.computeGain(inputDB))
 
 	coeff := e.releaseCoeff // closing
 	if targetGain > e.currentGain {
@@ -163,7 +163,7 @@ func (e *Expander) gain(detection float32) float32 {
 
 	e.gainReduction = 0.0
 	if e.currentGain < 1.0 {
-		e.gainReduction = 20.0 * math.Log10(e.currentGain)
+		e.gainReduction = gainToDB(e.currentGain)
 	}
 	return float32(e.currentGain)
 }

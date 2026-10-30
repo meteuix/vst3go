@@ -15,6 +15,7 @@ const (
 type Bitcrusher struct {
 	// User parameters
 	bitDepth         float64
+	levels           float64 // 2^bitDepth quantization levels
 	sampleRateReduce float64
 	antiAlias        bool
 	dither           DitherType
@@ -39,6 +40,7 @@ type Bitcrusher struct {
 func NewBitcrusher(sampleRate float64) *Bitcrusher {
 	return &Bitcrusher{
 		bitDepth:           16.0,
+		levels:             1 << 16,
 		sampleRateReduce:   1.0,
 		antiAlias:          true,
 		dither:             DitherNone,
@@ -50,11 +52,12 @@ func NewBitcrusher(sampleRate float64) *Bitcrusher {
 }
 
 func (b *Bitcrusher) SetBitDepth(bits float64) {
-	b.bitDepth = math.Max(1.0, math.Min(32.0, bits))
+	b.bitDepth = max(1.0, min(32.0, bits))
+	b.levels = math.Exp2(b.bitDepth)
 }
 
 func (b *Bitcrusher) SetSampleRateReduction(factor float64) {
-	b.sampleRateReduce = math.Max(1.0, math.Min(100.0, factor))
+	b.sampleRateReduce = max(1.0, min(100.0, factor))
 	// One-pole low-pass just below the reduced rate's Nyquist frequency.
 	omega := 2.0 * math.Pi * 0.45 / b.sampleRateReduce
 	b.filterAlpha = math.Sin(omega) / (math.Sin(omega) + math.Cos(omega))
@@ -69,11 +72,11 @@ func (b *Bitcrusher) SetDither(dither DitherType) {
 }
 
 func (b *Bitcrusher) SetMix(mix float64) {
-	b.mix = math.Max(0.0, math.Min(1.0, mix))
+	b.mix = max(0.0, min(1.0, mix))
 }
 
 func (b *Bitcrusher) SetOutput(output float64) {
-	b.output = math.Max(0.0, math.Min(2.0, output))
+	b.output = max(0.0, min(2.0, output))
 }
 
 func (b *Bitcrusher) Process(input float64) float64 {
@@ -118,9 +121,7 @@ func (b *Bitcrusher) applyBitReduction(x float64) float64 {
 		return x
 	}
 
-	// Calculate quantization levels
-	levels := math.Pow(2.0, b.bitDepth)
-
+	levels := b.levels
 	// Add dither before quantization
 	dithered := x + b.generateDither()
 
@@ -131,7 +132,7 @@ func (b *Bitcrusher) applyBitReduction(x float64) float64 {
 	quantized := math.Round(scaled) / levels * 2.0
 
 	// Ensure output stays in bounds
-	return math.Max(-1.0, math.Min(1.0, quantized))
+	return max(-1.0, min(1.0, quantized))
 }
 
 // applySampleRateReduction holds one input sample for sampleRateReduce
@@ -157,7 +158,7 @@ func (b *Bitcrusher) applyAntiAliasFilter(x float64, channel int) float64 {
 // generateDither returns dither noise scaled to the quantization step:
 // white is uniform over one step, triangular spans two.
 func (b *Bitcrusher) generateDither() float64 {
-	step := 2.0 / math.Pow(2.0, b.bitDepth)
+	step := 2.0 / b.levels
 	switch b.dither {
 	case DitherWhite:
 		return (b.random() - 0.5) * step

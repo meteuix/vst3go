@@ -53,7 +53,7 @@ func NewSpectralShifter(size int) (*SpectralShifter, error) {
 }
 
 // SetRatio sets the pitch ratio (2 is an octave up), clamped to 0.25..4.
-func (s *SpectralShifter) SetRatio(ratio float64) { s.ratio = math.Max(0.25, math.Min(4, ratio)) }
+func (s *SpectralShifter) SetRatio(ratio float64) { s.ratio = max(0.25, min(4, ratio)) }
 
 // SetSemitones sets the shift in semitones.
 func (s *SpectralShifter) SetSemitones(semitones float64) { s.SetRatio(math.Exp2(semitones / 12)) }

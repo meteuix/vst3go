@@ -8,14 +8,23 @@ package fft
 import (
 	"fmt"
 	"math"
-	"math/bits"
+	"unsafe"
 )
 
-// Complex is an in-place radix-2 complex FFT of a fixed size.
+// Complex is a complex FFT of a fixed size: a radix-4 Stockham transform
+// (no bit-reversal pass; contiguous reads and writes) with a radix-2 pass
+// when the size is not a power of four.
 type Complex struct {
-	n       int
-	twiddle []complex128 // exp(-2πik/n) for k < n/2
-	reverse []int        // bit-reversed index of every index
+	n      int
+	stages []stage
+	work   []complex128
+}
+
+// stage is one radix-4 pass over sub-transforms of length n (stride s):
+// twiddles holds w^p, w^2p and w^3p for p < n/4, w = exp(-2πi/n).
+type stage struct {
+	n, s     int
+	twiddles []complex128
 }
 
 // NewComplex returns a complex FFT of size n, a power of two of at least 1.
@@ -23,16 +32,16 @@ func NewComplex(n int) (*Complex, error) {
 	if n < 1 || n&(n-1) != 0 {
 		return nil, fmt.Errorf("fft: size %d is not a power of two", n)
 	}
-	c := &Complex{n: n, twiddle: make([]complex128, n/2), reverse: make([]int, n)}
-	for k := range c.twiddle {
-		s, co := math.Sincos(-2 * math.Pi * float64(k) / float64(n))
-		c.twiddle[k] = complex(co, s)
-	}
-	shift := 64 - bits.Len(uint(n-1))
-	for i := range c.reverse {
-		if n > 1 {
-			c.reverse[i] = int(bits.Reverse64(uint64(i)) >> shift)
+	c := &Complex{n: n, work: make([]complex128, n)}
+	for m, s := n, 1; m >= 4; m, s = m/4, s*4 {
+		st := stage{n: m, s: s, twiddles: make([]complex128, 3*(m/4))}
+		for p := range m / 4 {
+			for j := 1; j <= 3; j++ {
+				sin, cos := math.Sincos(-2 * math.Pi * float64(j*p) / float64(m))
+				st.twiddles[3*p+j-1] = complex(cos, sin)
+			}
 		}
+		c.stages = append(c.stages, st)
 	}
 	return c, nil
 }
@@ -42,36 +51,87 @@ func (c *Complex) Size() int { return c.n }
 
 // Forward replaces x (length Size) with its discrete Fourier transform
 // X[k] = Σ x[n]·exp(-2πikn/N).
-func (c *Complex) Forward(x []complex128) { c.transform(x, false) }
+func (c *Complex) Forward(x []complex128) { c.transform(x[:c.n]) }
 
 // Inverse replaces X (length Size) with its inverse transform, scaled by
 // 1/N so Inverse undoes Forward.
 func (c *Complex) Inverse(x []complex128) {
-	c.transform(x, true)
-	scale := complex(1/float64(c.n), 0)
-	for i := range x[:c.n] {
-		x[i] *= scale
+	x = x[:c.n]
+	// conj(FFT(conj(X)))/N
+	for i, z := range x {
+		x[i] = complex(real(z), -imag(z))
+	}
+	c.transform(x)
+	scale := 1 / float64(c.n)
+	for i, z := range x {
+		x[i] = complex(real(z)*scale, -imag(z)*scale)
 	}
 }
 
-func (c *Complex) transform(x []complex128, inverse bool) {
-	x = x[:c.n]
-	for i, j := range c.reverse {
-		if i < j {
-			x[i], x[j] = x[j], x[i]
-		}
+func (c *Complex) transform(x []complex128) {
+	src, dst := x, c.work
+	for _, st := range c.stages {
+		radix4(st, src, dst)
+		src, dst = dst, src
 	}
-	for size := 2; size <= c.n; size <<= 1 {
-		half, step := size/2, c.n/size
-		for start := 0; start < c.n; start += size {
-			for k := range half {
-				w := c.twiddle[k*step]
-				if inverse {
-					w = complex(real(w), -imag(w))
-				}
-				a, b := x[start+k], x[start+k+half]*w
-				x[start+k], x[start+k+half] = a+b, a-b
-			}
+	// What remains are sub-transforms of length 2 (a radix-2 pass into x)
+	// or 1.
+	if c.n>>(2*len(c.stages)) == 2 {
+		s := c.n / 2
+		a, b := src[:s], src[s:2*s]
+		for q := range s {
+			u, v := a[q], b[q]
+			x[q], x[q+s] = u+v, u-v
+		}
+	} else if &src[0] != &x[0] {
+		copy(x, src)
+	}
+}
+
+// radix4 runs one Stockham pass from src to dst.
+func radix4(st stage, src, dst []complex128) {
+	n1, s := st.n/4, st.s
+	q4 := n1 * s // offset of each input quarter
+	tw := st.twiddles[:3*n1]
+	if s == 1 {
+		// The first pass: one butterfly per p.
+		a, b, c, d := src[:n1], src[n1:2*n1], src[2*n1:3*n1], src[3*n1:4*n1]
+		dst = dst[:4*n1]
+		for p := range a {
+			av, bv, cv, dv := a[p], b[p], c[p], d[p]
+			apc, amc := av+cv, av-cv
+			bpd, bmd := bv+dv, bv-dv
+			jbmd := complex(-imag(bmd), real(bmd))
+			w := tw[3*p : 3*p+3]
+			y := dst[4*p : 4*p+4]
+			y[0] = apc + bpd
+			y[1] = w[0] * (amc - jbmd)
+			y[2] = w[1] * (apc - bpd)
+			y[3] = w[2] * (amc + jbmd)
+		}
+		return
+	}
+	for p := range n1 {
+		w1, w2, w3 := tw[3*p], tw[3*p+1], tw[3*p+2]
+		in := p * s
+		out := 4 * p * s
+		a := src[in : in+s]
+		b := src[in+q4 : in+q4+s][:len(a)]
+		c := src[in+2*q4 : in+2*q4+s][:len(a)]
+		d := src[in+3*q4 : in+3*q4+s][:len(a)]
+		y0 := dst[out : out+s][:len(a)]
+		y1 := dst[out+s : out+2*s][:len(a)]
+		y2 := dst[out+2*s : out+3*s][:len(a)]
+		y3 := dst[out+3*s : out+4*s][:len(a)]
+		for q := range a {
+			av, bv, cv, dv := a[q], b[q], c[q], d[q]
+			apc, amc := av+cv, av-cv
+			bpd, bmd := bv+dv, bv-dv
+			jbmd := complex(-imag(bmd), real(bmd))
+			y0[q] = apc + bpd
+			y1[q] = w1 * (amc - jbmd)
+			y2[q] = w2 * (apc - bpd)
+			y3[q] = w3 * (amc + jbmd)
 		}
 	}
 }
@@ -82,7 +142,7 @@ type Real struct {
 	n       int
 	half    *Complex
 	work    []complex128 // N/2 points
-	twiddle []complex128 // exp(-2πik/N) for k <= N/4
+	twiddle []complex128 // exp(-2πik/N) for k < N/2
 }
 
 // NewReal returns a real FFT of size n, a power of two of at least 2.
@@ -113,20 +173,24 @@ func (r *Real) Bins() int { return r.n/2 + 1 }
 func (r *Real) Forward(in []float64, out []complex128) {
 	m := r.n / 2
 	in, out = in[:r.n], out[:m+1]
-	for i := range m {
-		r.work[i] = complex(in[2*i], in[2*i+1])
-	}
-	r.half.Forward(r.work)
+	w, tw := r.work[:m], r.twiddle[:m]
+	// The even and odd samples as the real and imaginary parts.
+	copy(w, unsafe.Slice((*complex128)(unsafe.Pointer(&in[0])), m))
+	r.half.Forward(w)
 	// Split the half-size transform Z into the even (E) and odd (O) sample
-	// spectra: X[k] = E[k] + W^k·O[k].
-	z0 := r.work[0]
+	// spectra: X[k] = E[k] + W^k·O[k] and X[m-k] = conj(E[k] - W^k·O[k]),
+	// with E[k] = (Z[k] + conj(Z[m-k]))/2 and O[k] = -i(Z[k] - conj(Z[m-k]))/2.
+	z0 := w[0]
 	out[0] = complex(real(z0)+imag(z0), 0)
 	out[m] = complex(real(z0)-imag(z0), 0)
-	for k := 1; k < m; k++ {
-		zk, zc := r.work[k], conj(r.work[m-k])
-		e := (zk + zc) * 0.5
-		o := (zk - zc) * complex(0, -0.5)
-		out[k] = e + r.twiddle[k]*o
+	for k := 1; k <= m/2; k++ {
+		zk, zm := w[k], w[m-k]
+		er, ei := 0.5*(real(zk)+real(zm)), 0.5*(imag(zk)-imag(zm))
+		t := tw[k] * complex(0.5*(imag(zk)+imag(zm)), 0.5*(real(zm)-real(zk)))
+		out[k] = complex(er+real(t), ei+imag(t))
+		if k != m-k {
+			out[m-k] = complex(er-real(t), imag(t)-ei)
+		}
 	}
 }
 
@@ -136,19 +200,20 @@ func (r *Real) Forward(in []float64, out []complex128) {
 func (r *Real) Inverse(in []complex128, out []float64) {
 	m := r.n / 2
 	in, out = in[:m+1], out[:r.n]
-	for k := range m {
-		xk, xc := in[k], conj(in[m-k])
-		if k == 0 {
-			xk, xc = complex(real(in[0]), 0), complex(real(in[m]), 0)
+	w, tw := r.work[:m], r.twiddle[:m]
+	// Z[k] = E[k] + i·O[k] and Z[m-k] = conj(E[k] - i·O[k]), with
+	// E[k] = (X[k] + conj(X[m-k]))/2 and O[k] = conj(W^k)(X[k] - conj(X[m-k]))/2.
+	x0, xm := real(in[0]), real(in[m])
+	w[0] = complex(0.5*(x0+xm), 0.5*(x0-xm))
+	for k := 1; k <= m/2; k++ {
+		xk, xc := in[k], in[m-k]
+		er, ei := 0.5*(real(xk)+real(xc)), 0.5*(imag(xk)-imag(xc))
+		o := complex(0.5*(real(xk)-real(xc)), 0.5*(imag(xk)+imag(xc))) * complex(real(tw[k]), -imag(tw[k]))
+		w[k] = complex(er-imag(o), ei+real(o))
+		if k != m-k {
+			w[m-k] = complex(er+imag(o), real(o)-ei)
 		}
-		e := (xk + xc) * 0.5
-		o := (xk - xc) * 0.5 * conj(r.twiddle[k])
-		r.work[k] = e + o*complex(0, 1)
 	}
-	r.half.Inverse(r.work)
-	for i, z := range r.work {
-		out[2*i], out[2*i+1] = real(z), imag(z)
-	}
+	r.half.Inverse(w)
+	copy(unsafe.Slice((*complex128)(unsafe.Pointer(&out[0])), m), w)
 }
-
-func conj(z complex128) complex128 { return complex(real(z), -imag(z)) }

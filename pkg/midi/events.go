@@ -123,7 +123,7 @@ func (e Event) Value7() uint8 { return unitTo7Bit(e.Value) }
 // (-8192 to 8191, 0 is center).
 func (e Event) PitchBend14() int16 {
 	v := math.Round(e.Value * 8192)
-	return int16(math.Max(-8192, math.Min(8191, v)))
+	return int16(max(-8192, min(8191, v)))
 }
 
 // Text returns Data as a string. It allocates; use Data on the audio thread.
@@ -233,7 +233,7 @@ const (
 )
 
 func unitTo7Bit(v float64) uint8 {
-	return uint8(math.Round(math.Max(0, math.Min(1, v)) * 127))
+	return uint8(math.Round(max(0, min(1, v)) * 127))
 }
 
 // AppendUTF16 appends UTF-16 text as UTF-8 to dst without allocating when
@@ -274,7 +274,7 @@ func FrequencyToNote(freq, tuningA4 float64) uint8 {
 		return 0
 	}
 	note := math.Round(69.0 + 12.0*math.Log2(freq/tuningA4))
-	return uint8(math.Max(0, math.Min(127, note)))
+	return uint8(max(0, min(127, note)))
 }
 
 var noteNames = [12]string{"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"}

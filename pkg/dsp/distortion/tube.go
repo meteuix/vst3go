@@ -44,27 +44,27 @@ func NewTubeSaturation(sampleRate float64) *TubeSaturation {
 }
 
 func (t *TubeSaturation) SetWarmth(warmth float64) {
-	t.warmth = math.Max(0.0, math.Min(1.0, warmth))
+	t.warmth = max(0.0, min(1.0, warmth))
 }
 
 func (t *TubeSaturation) SetHarmonics(harmonics float64) {
-	t.harmonics = math.Max(0.0, math.Min(1.0, harmonics))
+	t.harmonics = max(0.0, min(1.0, harmonics))
 }
 
 func (t *TubeSaturation) SetBias(bias float64) {
-	t.bias = math.Max(-1.0, math.Min(1.0, bias))
+	t.bias = max(-1.0, min(1.0, bias))
 }
 
 func (t *TubeSaturation) SetHysteresis(hysteresis float64) {
-	t.hysteresis = math.Max(0.0, math.Min(1.0, hysteresis))
+	t.hysteresis = max(0.0, min(1.0, hysteresis))
 }
 
 func (t *TubeSaturation) SetMix(mix float64) {
-	t.mix = math.Max(0.0, math.Min(1.0, mix))
+	t.mix = max(0.0, min(1.0, mix))
 }
 
 func (t *TubeSaturation) SetOutput(output float64) {
-	t.output = math.Max(0.0, math.Min(2.0, output))
+	t.output = max(0.0, min(2.0, output))
 }
 
 func (t *TubeSaturation) Process(input float64) float64 {

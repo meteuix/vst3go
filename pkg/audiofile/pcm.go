@@ -148,7 +148,7 @@ func putSample(b []byte, x float32, e Encoding) {
 	if math.IsNaN(v) {
 		v = 0
 	}
-	v = math.Max(-scale, math.Min(scale-1, v))
+	v = max(-scale, min(scale-1, v))
 	i := int32(v)
 	switch e {
 	case PCM16:

@@ -52,7 +52,7 @@ func TestSTFTFrameFuncFiltersTheSpectrum(t *testing.T) {
 		s.Process(buf, buf)
 		peak := 0.0
 		for _, x := range buf[24000:] {
-			peak = math.Max(peak, math.Abs(float64(x)))
+			peak = max(peak, math.Abs(float64(x)))
 		}
 		return peak
 	}

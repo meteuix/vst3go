@@ -48,14 +48,14 @@ func NewCombFilter(delaySamples int) *CombFilter {
 
 // SetFeedback sets the feedback amount (0-1)
 func (c *CombFilter) SetFeedback(feedback float64) {
-	c.feedback = math.Max(0.0, math.Min(1.0, feedback))
+	c.feedback = max(0.0, min(1.0, feedback))
 }
 
 // SetDamping sets the damping amount (0-1, where 0 = no damping and 1 = the
 // darkest tail). The feedback path always keeps unity gain at DC, so even the
 // maximum damping leaves a tail.
 func (c *CombFilter) SetDamping(damping float64) {
-	c.damp1 = math.Max(0.0, math.Min(1.0, damping)) * scaleDamping
+	c.damp1 = max(0.0, min(1.0, damping)) * scaleDamping
 	c.damp2 = 1.0 - c.damp1
 }
 
@@ -193,29 +193,29 @@ func NewSchroeder(sampleRate float64) *Schroeder {
 
 // SetRoomSize sets the room size (0-1)
 func (s *Schroeder) SetRoomSize(size float64) {
-	s.roomSize = math.Max(0.0, math.Min(1.0, size))
+	s.roomSize = max(0.0, min(1.0, size))
 	s.updateInternalParameters()
 }
 
 // SetDamping sets the damping amount (0-1)
 func (s *Schroeder) SetDamping(damping float64) {
-	s.damping = math.Max(0.0, math.Min(1.0, damping))
+	s.damping = max(0.0, min(1.0, damping))
 	s.updateInternalParameters()
 }
 
 // SetWetLevel sets the wet signal level (0-1)
 func (s *Schroeder) SetWetLevel(level float64) {
-	s.wetLevel = math.Max(0.0, math.Min(1.0, level))
+	s.wetLevel = max(0.0, min(1.0, level))
 }
 
 // SetDryLevel sets the dry signal level (0-1)
 func (s *Schroeder) SetDryLevel(level float64) {
-	s.dryLevel = math.Max(0.0, math.Min(1.0, level))
+	s.dryLevel = max(0.0, min(1.0, level))
 }
 
 // SetWidth sets the stereo width (0-1)
 func (s *Schroeder) SetWidth(width float64) {
-	s.width = math.Max(0.0, math.Min(1.0, width))
+	s.width = max(0.0, min(1.0, width))
 }
 
 // updateInternalParameters updates the internal filter parameters

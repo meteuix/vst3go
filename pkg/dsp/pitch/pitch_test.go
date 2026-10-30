@@ -86,7 +86,7 @@ func TestSpectralShifterShiftsATone(t *testing.T) {
 		}
 		peak := 0.0
 		for _, v := range x[16384:] {
-			peak = math.Max(peak, math.Abs(float64(v)))
+			peak = max(peak, math.Abs(float64(v)))
 		}
 		if math.Abs(peak-0.5) > 0.05 {
 			t.Errorf("%+.0f semitones: level %.3f, want about 0.5", semis, peak)
@@ -123,7 +123,7 @@ func TestStretchKeepsPitchAndChangesLength(t *testing.T) {
 		}
 		peak := 0.0
 		for _, v := range mid {
-			peak = math.Max(peak, math.Abs(float64(v)))
+			peak = max(peak, math.Abs(float64(v)))
 		}
 		if math.Abs(peak-0.5) > 0.05 {
 			t.Errorf("factor %v: level %.3f, want 0.5", factor, peak)
@@ -207,6 +207,90 @@ func TestPitchProcessorsDoNotAllocate(t *testing.T) {
 		s.Process(buf, buf)
 		v.Process(buf, buf)
 		d.Process(buf)
+	})
+	if allocs != 0 {
+		t.Fatalf("%v allocations", allocs)
+	}
+}
+
+func TestStretcherStreamsWhatStretchRenders(t *testing.T) {
+	x := tone(330, 12000)
+	want, err := Stretch(x, 1.5, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The same feed as Stretch, written and read in uneven blocks.
+	s, _ := NewStretcher(1024, 1.5)
+	s.SetFactor(1.5)
+	pad := 1024
+	offset := int(math.Round(float64(pad) * 1.5))
+	feed := append(make([]float32, pad), x...)
+	feed = append(feed, make([]float32, 4096)...)
+	var got []float32
+	buf := make([]float32, 53)
+	for len(got) < offset+len(want) {
+		feed = feed[s.Write(feed[:min(37, len(feed))]):]
+		got = append(got, buf[:s.Read(buf)]...)
+	}
+	for i, w := range want {
+		if g := got[offset+i]; g != w {
+			t.Fatalf("sample %d: streamed %v, offline %v", i, g, w)
+		}
+	}
+}
+
+func TestStretcherFollowsAChangingFactor(t *testing.T) {
+	s, err := NewStretcher(2048, 0.5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	x := tone(440, 96000)
+	out := make([]float32, 0, 200000)
+	buf := make([]float32, 512)
+	for i := 0; i < len(x); {
+		// The first half at 0.5, the second at 2.
+		if i < len(x)/2 {
+			s.SetFactor(0.5)
+		} else {
+			s.SetFactor(2)
+		}
+		i += s.Write(x[i:min(i+256, len(x))])
+		out = append(out, buf[:s.Read(buf)]...)
+	}
+	// 48000·0.5 + 48000·2 = 120000, less about a frame still in flight.
+	if len(out) < 120000-3*2048 || len(out) > 120000 {
+		t.Fatalf("%d samples out, want about 120000", len(out))
+	}
+	for _, part := range [][]float32{out[4096:20000], out[40000:110000]} {
+		if f := crossingFrequency(part); math.Abs(f-440) > 2 {
+			t.Fatalf("pitch moved to %.1f Hz", f)
+		}
+	}
+}
+
+// crossingFrequency estimates frequency from zero crossings.
+func crossingFrequency(x []float32) float64 {
+	crossings, first, last := 0, -1, -1
+	for i := 1; i < len(x); i++ {
+		if x[i-1] < 0 && x[i] >= 0 {
+			if first < 0 {
+				first = i
+			}
+			last = i
+			crossings++
+		}
+	}
+	return float64(crossings-1) * rate / float64(last-first)
+}
+
+func TestStretcherDoesNotAllocate(t *testing.T) {
+	s, _ := NewStretcher(1024, 0.5)
+	in := tone(220, 256)
+	out := make([]float32, 512)
+	allocs := testing.AllocsPerRun(50, func() {
+		s.SetFactor(0.8)
+		s.Write(in)
+		s.Read(out)
 	})
 	if allocs != 0 {
 		t.Fatalf("%v allocations", allocs)

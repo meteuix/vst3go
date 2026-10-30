@@ -119,7 +119,7 @@ func TestTubeSaturation(t *testing.T) {
 		mixed := tube.Process(input)
 
 		// Should be roughly between dry and wet
-		if mixed <= math.Min(dry, wet) || mixed >= math.Max(dry, wet) {
+		if mixed <= min(dry, wet) || mixed >= max(dry, wet) {
 			t.Errorf("50%% mix should be between dry and wet signals")
 		}
 	})
@@ -221,7 +221,7 @@ func TestTubeSaturationStereoBoundedWithoutDC(t *testing.T) {
 
 	peak, mean := 0.0, 0.0
 	for i := n / 2; i < n; i++ {
-		peak = math.Max(peak, math.Abs(outL[i]))
+		peak = max(peak, math.Abs(outL[i]))
 		mean += outL[i]
 	}
 	// The right channel must come out as if it ran alone.

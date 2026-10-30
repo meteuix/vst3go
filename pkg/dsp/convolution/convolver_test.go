@@ -1,6 +1,7 @@
 package convolution
 
 import (
+	"fmt"
 	"math"
 	"math/rand/v2"
 	"testing"
@@ -28,6 +29,8 @@ func TestConvolverMatchesDirectConvolutionWithoutLatency(t *testing.T) {
 	rng := rand.New(rand.NewPCG(7, 8))
 	for _, tc := range []struct{ irLen, block int }{
 		{1, 8}, {5, 8}, {8, 8}, {9, 8}, {100, 16}, {1000, 64}, {3000, 128}, {4096, 256},
+		// Every stage: the direct part, blocks of 8, 64 and 512.
+		{128, 8}, {129, 8}, {1024, 8}, {1025, 8}, {5000, 8}, {20000, 16},
 	} {
 		h := noise(rng, tc.irLen)
 		x := noise(rng, 6000)
@@ -100,10 +103,15 @@ func TestConvolverDoesNotAllocate(t *testing.T) {
 
 func BenchmarkConvolverTwoSecondResponse(b *testing.B) {
 	rng := rand.New(rand.NewPCG(1, 1))
-	c, _ := New(noise(rng, 96000), 256)
-	buf := make([]float32, 512)
-	b.SetBytes(512 * 4)
-	for b.Loop() {
-		c.Process(buf, buf)
+	ir := noise(rng, 96000)
+	for _, bs := range []int{32, 64, 128, 256} {
+		b.Run(fmt.Sprintf("block%d", bs), func(b *testing.B) {
+			c, _ := New(ir, bs)
+			buf := make([]float32, 512)
+			b.SetBytes(512 * 4)
+			for b.Loop() {
+				c.Process(buf, buf)
+			}
+		})
 	}
 }

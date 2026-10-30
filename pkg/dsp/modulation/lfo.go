@@ -3,6 +3,8 @@ package modulation
 
 import (
 	"math"
+
+	"github.com/th-release/vst3go/pkg/dsp/fastmath"
 )
 
 // Waveform represents the LFO waveform shape
@@ -64,7 +66,7 @@ func NewLFO(sampleRate float64) *LFO {
 
 // SetFrequency sets the LFO frequency in Hz
 func (l *LFO) SetFrequency(hz float64) {
-	l.frequency = math.Max(0.01, math.Min(20.0, hz)) // Limit to reasonable LFO range
+	l.frequency = max(0.01, min(20.0, hz)) // Limit to reasonable LFO range
 	l.updatePhaseIncrement()
 }
 
@@ -81,12 +83,12 @@ func (l *LFO) SetWaveform(waveform Waveform) {
 
 // SetDepth sets the modulation depth (0-1)
 func (l *LFO) SetDepth(depth float64) {
-	l.depth = math.Max(0.0, math.Min(1.0, depth))
+	l.depth = max(0.0, min(1.0, depth))
 }
 
 // SetOffset sets the DC offset (-1 to 1)
 func (l *LFO) SetOffset(offset float64) {
-	l.offset = math.Max(-1.0, math.Min(1.0, offset))
+	l.offset = max(-1.0, min(1.0, offset))
 }
 
 // SetPhase sets the current phase (0-1)
@@ -97,7 +99,7 @@ func (l *LFO) SetPhase(phase float64) {
 // EnableSync enables sync with configurable reset phase
 func (l *LFO) EnableSync(enabled bool, resetPhase float64) {
 	l.syncEnabled = enabled
-	l.syncPhase = math.Max(0.0, math.Min(1.0, resetPhase))
+	l.syncPhase = max(0.0, min(1.0, resetPhase))
 }
 
 // Sync resets the LFO phase (for tempo sync or note retrigger)
@@ -126,7 +128,7 @@ func (l *LFO) updateRandomPeriod() {
 func (l *LFO) generateWaveform() float64 {
 	switch l.waveform {
 	case WaveformSine:
-		return math.Sin(2.0 * math.Pi * l.phase)
+		return fastmath.Sin2Pi(l.phase)
 
 	case WaveformTriangle:
 		// Triangle wave: linear from -1 to 1 and back
@@ -175,7 +177,7 @@ func (l *LFO) Process() float64 {
 	}
 
 	// Clamp output to valid range
-	return math.Max(-1.0, math.Min(1.0, output))
+	return max(-1.0, min(1.0, output))
 }
 
 // ProcessBuffer fills a buffer with LFO values

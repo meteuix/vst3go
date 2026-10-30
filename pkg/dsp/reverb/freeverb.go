@@ -1,8 +1,6 @@
 package reverb
 
-import (
-	"math"
-)
+import ()
 
 // Freeverb tuning constants (scaled for 44.1kHz)
 const (
@@ -106,37 +104,37 @@ func NewFreeverb(sampleRate float64) *Freeverb {
 
 // SetRoomSize sets the room size (0-1)
 func (f *Freeverb) SetRoomSize(size float64) {
-	f.roomSize = math.Max(0.0, math.Min(1.0, size))
+	f.roomSize = max(0.0, min(1.0, size))
 	f.update()
 }
 
 // SetDamping sets the damping amount (0-1)
 func (f *Freeverb) SetDamping(damping float64) {
-	f.damping = math.Max(0.0, math.Min(1.0, damping))
+	f.damping = max(0.0, min(1.0, damping))
 	f.update()
 }
 
 // SetWetLevel sets the wet signal level (0-1)
 func (f *Freeverb) SetWetLevel(level float64) {
-	f.wetLevel = math.Max(0.0, math.Min(1.0, level))
+	f.wetLevel = max(0.0, min(1.0, level))
 	f.update()
 }
 
 // SetDryLevel sets the dry signal level (0-1)
 func (f *Freeverb) SetDryLevel(level float64) {
-	f.dryLevel = math.Max(0.0, math.Min(1.0, level))
+	f.dryLevel = max(0.0, min(1.0, level))
 	f.update()
 }
 
 // SetWidth sets the stereo width (0-1)
 func (f *Freeverb) SetWidth(width float64) {
-	f.width = math.Max(0.0, math.Min(1.0, width))
+	f.width = max(0.0, min(1.0, width))
 	f.update()
 }
 
 // SetMode sets the freeze mode (0=normal, 1=frozen)
 func (f *Freeverb) SetMode(mode float64) {
-	f.mode = math.Max(0.0, math.Min(1.0, mode))
+	f.mode = max(0.0, min(1.0, mode))
 	f.update()
 }
 

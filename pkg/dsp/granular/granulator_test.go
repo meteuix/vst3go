@@ -116,7 +116,7 @@ func TestGranulatorSpreadPansGrains(t *testing.T) {
 func peak(x []float32) float64 {
 	p := 0.0
 	for _, v := range x {
-		p = math.Max(p, math.Abs(float64(v)))
+		p = max(p, math.Abs(float64(v)))
 	}
 	return p
 }

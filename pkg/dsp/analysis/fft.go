@@ -2,16 +2,21 @@ package analysis
 
 import (
 	"math"
-	"math/cmplx"
+
+	"github.com/th-release/vst3go/pkg/dsp/fft"
 )
 
-// FFT performs a Fast Fourier Transform on the input data
+// FFT is a windowed spectrum transform of a fixed power-of-two size on
+// the transforms of pkg/dsp/fft.
 type FFT struct {
 	size       int
 	window     WindowFunc
 	windowData []float64
-	real       []float64
-	imag       []float64
+	real       *fft.Real
+	complex    *fft.Complex // made by the first ForwardComplex or Inverse
+	frame      []float64
+	spectrum   []complex128
+	work       []complex128 // for complex
 	magnitude  []float64
 	phase      []float64
 }
@@ -29,22 +34,25 @@ const (
 	FlatTopWindow
 )
 
-// NewFFT creates a new FFT processor with the specified size and window function
+// NewFFT creates a new FFT processor with the specified size, a power of
+// two of at least 2, and window function. It panics on other sizes.
 func NewFFT(size int, window WindowFunc) *FFT {
-	fft := &FFT{
+	r, err := fft.NewReal(size)
+	if err != nil {
+		panic(err)
+	}
+	f := &FFT{
 		size:       size,
 		window:     window,
 		windowData: make([]float64, size),
-		real:       make([]float64, size),
-		imag:       make([]float64, size),
+		real:       r,
+		frame:      make([]float64, size),
+		spectrum:   make([]complex128, r.Bins()),
 		magnitude:  make([]float64, size/2+1),
 		phase:      make([]float64, size/2+1),
 	}
-
-	// Pre-calculate window coefficients
-	fft.calculateWindow()
-
-	return fft
+	f.calculateWindow()
+	return f
 }
 
 // calculateWindow pre-calculates the window coefficients
@@ -108,133 +116,56 @@ func (f *FFT) calculateWindow() {
 	}
 }
 
-// Forward performs a forward FFT on the input data
-// Returns magnitude and phase spectra
+// Forward performs a forward FFT on the windowed input (zero-padded to the
+// size) and returns the magnitude and phase spectra (size/2+1 bins). The
+// slices are reused by the next call.
 func (f *FFT) Forward(input []float64) (magnitude, phase []float64) {
-	// Apply window
-	for i := 0; i < f.size && i < len(input); i++ {
-		f.real[i] = input[i] * f.windowData[i]
-		f.imag[i] = 0.0
+	n := min(len(input), f.size)
+	for i, x := range input[:n] {
+		f.frame[i] = x * f.windowData[i]
 	}
-
-	// Pad with zeros if input is shorter than FFT size
-	for i := len(input); i < f.size; i++ {
-		f.real[i] = 0.0
-		f.imag[i] = 0.0
+	clear(f.frame[n:])
+	f.real.Forward(f.frame, f.spectrum)
+	for i, z := range f.spectrum {
+		f.magnitude[i] = math.Hypot(real(z), imag(z))
+		f.phase[i] = math.Atan2(imag(z), real(z))
 	}
-
-	// Perform FFT
-	f.fft(f.real, f.imag)
-
-	// Calculate magnitude and phase
-	for i := 0; i <= f.size/2; i++ {
-		f.magnitude[i] = math.Sqrt(f.real[i]*f.real[i] + f.imag[i]*f.imag[i])
-		f.phase[i] = math.Atan2(f.imag[i], f.real[i])
-	}
-
 	return f.magnitude, f.phase
 }
 
-// ForwardComplex performs a forward FFT on complex input data
+// ForwardComplex performs a forward FFT on windowed complex input
+// (zero-padded to the size) and returns the size bins.
 func (f *FFT) ForwardComplex(input []complex128) []complex128 {
-	// Copy input to working arrays
-	for i := 0; i < f.size && i < len(input); i++ {
-		c := input[i] * complex(f.windowData[i], 0)
-		f.real[i] = real(c)
-		f.imag[i] = imag(c)
+	f.makeComplex()
+	n := min(len(input), f.size)
+	for i, z := range input[:n] {
+		f.work[i] = z * complex(f.windowData[i], 0)
 	}
-
-	// Pad with zeros if needed
-	for i := len(input); i < f.size; i++ {
-		f.real[i] = 0.0
-		f.imag[i] = 0.0
-	}
-
-	// Perform FFT
-	f.fft(f.real, f.imag)
-
-	// Convert back to complex
-	result := make([]complex128, f.size)
-	for i := 0; i < f.size; i++ {
-		result[i] = complex(f.real[i], f.imag[i])
-	}
-
-	return result
+	clear(f.work[n:])
+	f.complex.Forward(f.work)
+	return append([]complex128(nil), f.work...)
 }
 
-// Inverse performs an inverse FFT
-func (f *FFT) Inverse(real, imag []float64) []float64 {
-	// Copy input
-	copy(f.real, real)
-	copy(f.imag, imag)
-
-	// Conjugate
-	for i := 0; i < f.size; i++ {
-		f.imag[i] = -f.imag[i]
+func (f *FFT) makeComplex() {
+	if f.complex == nil {
+		f.complex, _ = fft.NewComplex(f.size)
+		f.work = make([]complex128, f.size)
 	}
+}
 
-	// Forward FFT
-	f.fft(f.real, f.imag)
-
-	// Conjugate and scale
+// Inverse performs an inverse FFT of the size bins re + i·im and returns
+// the real part of the signal.
+func (f *FFT) Inverse(re, im []float64) []float64 {
+	f.makeComplex()
+	for i := range f.work {
+		f.work[i] = complex(re[i], im[i])
+	}
+	f.complex.Inverse(f.work)
 	result := make([]float64, f.size)
-	scale := 1.0 / float64(f.size)
-	for i := 0; i < f.size; i++ {
-		result[i] = f.real[i] * scale
+	for i, z := range f.work {
+		result[i] = real(z)
 	}
-
 	return result
-}
-
-// fft performs the actual FFT using Cooley-Tukey algorithm
-func (f *FFT) fft(real, imag []float64) {
-	n := f.size
-
-	// Bit reversal
-	j := 0
-	for i := 0; i < n; i++ {
-		if i < j {
-			real[i], real[j] = real[j], real[i]
-			imag[i], imag[j] = imag[j], imag[i]
-		}
-		m := n >> 1
-		for m >= 1 && j >= m {
-			j -= m
-			m >>= 1
-		}
-		j += m
-	}
-
-	// Cooley-Tukey FFT
-	for stage := 2; stage <= n; stage <<= 1 {
-		theta := -2.0 * math.Pi / float64(stage)
-		wReal := math.Cos(theta)
-		wImag := math.Sin(theta)
-
-		for k := 0; k < n; k += stage {
-			wTempReal := 1.0
-			wTempImag := 0.0
-
-			for j := 0; j < stage/2; j++ {
-				i1 := k + j
-				i2 := i1 + stage/2
-
-				tempReal := wTempReal*real[i2] - wTempImag*imag[i2]
-				tempImag := wTempReal*imag[i2] + wTempImag*real[i2]
-
-				real[i2] = real[i1] - tempReal
-				imag[i2] = imag[i1] - tempImag
-
-				real[i1] += tempReal
-				imag[i1] += tempImag
-
-				// Update twiddle factor
-				oldWReal := wTempReal
-				wTempReal = oldWReal*wReal - wTempImag*wImag
-				wTempImag = oldWReal*wImag + wTempImag*wReal
-			}
-		}
-	}
 }
 
 // GetMagnitudeDB returns the magnitude spectrum in decibels
@@ -297,56 +228,36 @@ func ApplyHannWindow(data []float64) []float64 {
 	return windowed
 }
 
-// CrossCorrelation computes the cross-correlation between two signals using FFT
+// CrossCorrelation computes the cross-correlation of two signals of the
+// same length with FFTs: element n-1+k is Σ a[i]·b[i+k] for lags k from
+// -(n-1) to n-1, so b delayed by d samples peaks at n-1+d.
 func CrossCorrelation(a, b []float64) []float64 {
 	n := len(a)
 	if len(b) != n {
 		panic("signals must have the same length")
 	}
-
-	// Pad to next power of 2 for FFT efficiency
-	size := 1
+	size := 2
 	for size < 2*n {
 		size <<= 1
 	}
-
-	fft := NewFFT(size, RectangularWindow)
-
-	// Zero-pad inputs
+	r, _ := fft.NewReal(size)
 	paddedA := make([]float64, size)
 	paddedB := make([]float64, size)
 	copy(paddedA, a)
 	copy(paddedB, b)
-
-	// Forward FFT
-	magA, phaseA := fft.Forward(paddedA)
-	magB, phaseB := fft.Forward(paddedB)
-
-	// Multiply A with conjugate of B
-	realResult := make([]float64, size)
-	imagResult := make([]float64, size)
-	for i := 0; i < size; i++ {
-		// Convert to complex, multiply, then back to real/imag
-		aComplex := cmplx.Rect(magA[i%len(magA)], phaseA[i%len(phaseA)])
-		bComplex := cmplx.Rect(magB[i%len(magB)], -phaseB[i%len(phaseB)]) // conjugate
-		result := aComplex * bComplex
-		realResult[i] = real(result)
-		imagResult[i] = imag(result)
+	specA := make([]complex128, r.Bins())
+	specB := make([]complex128, r.Bins())
+	r.Forward(paddedA, specA)
+	r.Forward(paddedB, specB)
+	for k, x := range specA {
+		specA[k] = complex(real(x), -imag(x)) * specB[k]
 	}
+	correlation := paddedA
+	r.Inverse(specA, correlation)
 
-	// Inverse FFT
-	correlation := fft.Inverse(realResult, imagResult)
-
-	// Extract valid correlation values
 	result := make([]float64, 2*n-1)
-	// Negative lags
-	for i := 0; i < n-1; i++ {
-		result[i] = correlation[size-n+1+i]
-	}
-	// Zero and positive lags
-	for i := 0; i < n; i++ {
-		result[n-1+i] = correlation[i]
-	}
-
+	// Negative lags wrap to the end.
+	copy(result, correlation[size-n+1:])
+	copy(result[n-1:], correlation[:n])
 	return result
 }

@@ -64,14 +64,14 @@ func NewTremolo(sampleRate float64) *Tremolo {
 
 // SetRate sets the tremolo rate in Hz
 func (t *Tremolo) SetRate(hz float64) {
-	t.rate = math.Max(0.01, math.Min(20.0, hz))
+	t.rate = max(0.01, min(20.0, hz))
 	t.lfoL.SetFrequency(t.rate)
 	t.lfoR.SetFrequency(t.rate)
 }
 
 // SetDepth sets the modulation depth (0-1)
 func (t *Tremolo) SetDepth(depth float64) {
-	t.depth = math.Max(0.0, math.Min(1.0, depth))
+	t.depth = max(0.0, min(1.0, depth))
 }
 
 // SetWaveform sets the LFO waveform
@@ -98,7 +98,7 @@ func (t *Tremolo) SetStereo(stereo bool) {
 
 // SetStereoPhase sets the phase offset between L/R channels (0-1)
 func (t *Tremolo) SetStereoPhase(phase float64) {
-	t.phase = math.Max(0.0, math.Min(1.0, phase))
+	t.phase = max(0.0, min(1.0, phase))
 	t.updateLFOs()
 }
 

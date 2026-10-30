@@ -62,7 +62,7 @@ func NewChorus(sampleRate float64) *Chorus {
 
 // SetRate sets the LFO rate in Hz
 func (c *Chorus) SetRate(hz float64) {
-	c.rate = math.Max(0.01, math.Min(10.0, hz))
+	c.rate = max(0.01, min(10.0, hz))
 	for _, lfo := range c.lfos {
 		lfo.SetFrequency(c.rate)
 	}
@@ -70,28 +70,28 @@ func (c *Chorus) SetRate(hz float64) {
 
 // SetDepth sets the modulation depth in milliseconds
 func (c *Chorus) SetDepth(ms float64) {
-	c.depth = math.Max(0.0, math.Min(chorusMaxDepthMs, ms))
+	c.depth = max(0.0, min(chorusMaxDepthMs, ms))
 }
 
 // SetDelay sets the base delay time in milliseconds
 func (c *Chorus) SetDelay(ms float64) {
-	c.delay = math.Max(1.0, math.Min(chorusMaxDelayMs, ms))
+	c.delay = max(1.0, min(chorusMaxDelayMs, ms))
 }
 
 // SetMix sets the wet/dry mix (0=dry, 1=wet)
 func (c *Chorus) SetMix(mix float64) {
-	c.mix = math.Max(0.0, math.Min(1.0, mix))
+	c.mix = max(0.0, min(1.0, mix))
 }
 
 // SetFeedback sets the feedback amount
 func (c *Chorus) SetFeedback(feedback float64) {
-	c.feedback = math.Max(0.0, math.Min(0.5, feedback))
+	c.feedback = max(0.0, min(0.5, feedback))
 }
 
 // SetSpread sets the stereo spread: 0 keeps every voice in the center, 1
 // spreads them from left to right.
 func (c *Chorus) SetSpread(spread float64) {
-	c.spread = math.Max(0.0, math.Min(1.0, spread))
+	c.spread = max(0.0, min(1.0, spread))
 	c.updatePans()
 }
 
@@ -133,7 +133,15 @@ func (c *Chorus) read(line []float32, delaySamples float64) float32 {
 	}
 	i := int(pos)
 	frac := float32(pos - float64(i))
-	return line[i%size]*(1-frac) + line[(i+1)%size]*frac
+	// pos can round up to size.
+	if i >= size {
+		i -= size
+	}
+	j := i + 1
+	if j == size {
+		j = 0
+	}
+	return line[i]*(1-frac) + line[j]*frac
 }
 
 // Process processes mono input
@@ -150,13 +158,15 @@ func (c *Chorus) ProcessStereo(inputL, inputR float32) (outputL, outputR float32
 	var wetL, wetR float32
 	for v := range c.voices {
 		delayMs := c.delay + c.depth*c.lfos[v].Process()
-		delaySamples := math.Max(1.0, math.Min(maxDelay, delayMs*c.sampleRate/1000.0))
+		delaySamples := max(1.0, min(maxDelay, delayMs*c.sampleRate/1000.0))
 		wetL += c.read(c.delayL, delaySamples) * c.panL[v]
 		wetR += c.read(c.delayR, delaySamples) * c.panR[v]
 	}
 	c.feedbackL = wetL
 	c.feedbackR = wetR
-	c.writePos = (c.writePos + 1) % len(c.delayL)
+	if c.writePos++; c.writePos == len(c.delayL) {
+		c.writePos = 0
+	}
 
 	dry, wet := float32(1.0-c.mix), float32(c.mix)
 	return inputL*dry + wetL*wet, inputR*dry + wetR*wet

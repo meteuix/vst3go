@@ -93,30 +93,30 @@ func (g *Gate) SetThreshold(dB float64) {
 
 // SetHysteresis sets the hysteresis in dB
 func (g *Gate) SetHysteresis(dB float64) {
-	g.hysteresis = math.Max(0.0, dB)
+	g.hysteresis = max(0.0, dB)
 }
 
 // SetAttack sets the attack time in seconds
 func (g *Gate) SetAttack(seconds float64) {
-	g.attack = math.Max(0.0, seconds)
+	g.attack = max(0.0, seconds)
 	g.updateCoefficients()
 }
 
 // SetHold sets the hold time in seconds
 func (g *Gate) SetHold(seconds float64) {
-	g.hold = math.Max(0.0, seconds)
+	g.hold = max(0.0, seconds)
 	g.holdSamples = int(g.hold * g.sampleRate)
 }
 
 // SetRelease sets the release time in seconds
 func (g *Gate) SetRelease(seconds float64) {
-	g.release = math.Max(0.0, seconds)
+	g.release = max(0.0, seconds)
 	g.updateCoefficients()
 }
 
 // SetRange sets the gate range (max attenuation) in dB
 func (g *Gate) SetRange(dB float64) {
-	g.range_ = math.Min(0.0, dB) // Can't be positive
+	g.range_ = min(0.0, dB) // Can't be positive
 	g.closedGain = math.Pow(10.0, g.range_/20.0)
 
 	switch g.state {
@@ -132,7 +132,7 @@ func (g *Gate) SetRange(dB float64) {
 // SetSidechainFilter enables/disables the sidechain high-pass filter
 func (g *Gate) SetSidechainFilter(enabled bool, frequency float64) {
 	g.hpfEnabled = enabled
-	g.hpfFrequency = math.Max(20.0, math.Min(frequency, g.sampleRate/2))
+	g.hpfFrequency = max(20.0, min(frequency, g.sampleRate/2))
 	g.hpfCoeff = math.Exp(-2.0 * math.Pi * g.hpfFrequency / g.sampleRate)
 }
 
@@ -169,7 +169,7 @@ func (g *Gate) detect(ch int, input float32) float64 {
 func (g *Gate) step(level float64) float32 {
 	inputDB := -96.0
 	if level > 0 {
-		inputDB = 20.0 * math.Log10(level)
+		inputDB = gainToDB(level)
 	}
 	closeDB := g.threshold - g.hysteresis
 
@@ -222,7 +222,7 @@ func (g *Gate) step(level float64) float32 {
 	}
 
 	// Gain reduction for metering
-	g.gainReduction = 20.0 * math.Log10(g.currentGain)
+	g.gainReduction = gainToDB(g.currentGain)
 	if g.gainReduction > -0.1 {
 		g.gainReduction = 0.0
 	}
@@ -246,7 +246,7 @@ func (g *Gate) ProcessBuffer(input, output []float32) {
 func (g *Gate) ProcessStereo(inputL, inputR, outputL, outputR []float32) {
 	for i := range inputL {
 		l, r := inputL[i], inputR[i]
-		gain := g.step(math.Max(g.detect(0, l), g.detect(1, r)))
+		gain := g.step(max(g.detect(0, l), g.detect(1, r)))
 		outputL[i] = l * gain
 		outputR[i] = r * gain
 	}
@@ -264,7 +264,7 @@ func (g *Gate) ProcessSidechain(input, key, output []float32) {
 // For a mono key pass the same slice as keyL and keyR.
 func (g *Gate) ProcessStereoSidechain(inputL, inputR, keyL, keyR, outputL, outputR []float32) {
 	for i := range inputL {
-		gain := g.step(math.Max(g.detect(0, keyL[i]), g.detect(1, keyR[i])))
+		gain := g.step(max(g.detect(0, keyL[i]), g.detect(1, keyR[i])))
 		outputL[i] = inputL[i] * gain
 		outputR[i] = inputR[i] * gain
 	}

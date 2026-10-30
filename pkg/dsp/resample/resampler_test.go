@@ -21,7 +21,7 @@ func TestResamplerConvertsATone(t *testing.T) {
 		worst := 0.0
 		for k := len(y) / 4; k < len(y)*3/4; k++ {
 			ideal := math.Sin(2 * math.Pi * freq * float64(k) / out)
-			worst = math.Max(worst, math.Abs(float64(y[k])-ideal))
+			worst = max(worst, math.Abs(float64(y[k])-ideal))
 		}
 		if db := 20 * math.Log10(worst); db > -90 {
 			t.Errorf("%v: error %.1f dB, want below -90", rates, db)
@@ -34,7 +34,7 @@ func TestResamplerPassbandAndStopband(t *testing.T) {
 		y, _ := Convert(sineAt(freq, in, int(in)), in, out)
 		peak := 0.0
 		for _, v := range y[len(y)/4 : len(y)*3/4] {
-			peak = math.Max(peak, math.Abs(float64(v)))
+			peak = max(peak, math.Abs(float64(v)))
 		}
 		return 20 * math.Log10(peak)
 	}
@@ -84,7 +84,13 @@ func TestResamplerDoesNotAllocate(t *testing.T) {
 }
 
 func TestSincKernel(t *testing.T) {
-	k := SincKernel()
+	for _, k := range []*Kernel{SincKernel(), ShortSincKernel()} {
+		checkKernel(t, k)
+	}
+}
+
+func checkKernel(t *testing.T, k *Kernel) {
+	t.Helper()
 	if k.Weight(0) != 1 {
 		t.Errorf("Weight(0) = %v", k.Weight(0))
 	}
@@ -93,7 +99,7 @@ func TestSincKernel(t *testing.T) {
 			t.Errorf("Weight(%v) = %v, want 0 at a zero crossing", n, w)
 		}
 	}
-	if k.Weight(24) != 0 || k.Weight(-25) != 0 {
+	if z := float64(k.Zeros()); k.Weight(z) != 0 || k.Weight(-z-1) != 0 {
 		t.Error("kernel is not zero outside its span")
 	}
 	// Interpolating a sampled sine halfway between samples.
@@ -105,6 +111,73 @@ func TestSincKernel(t *testing.T) {
 	}
 	want := math.Sin(2 * math.Pi * 1000 * pos / 48000)
 	if math.Abs(y-want) > 1e-3 {
-		t.Errorf("interpolated %v, want %v", y, want)
+		t.Errorf("%d zeros: interpolated %v, want %v", k.Zeros(), y, want)
+	}
+}
+
+func TestKernelInterpolateMatchesWeight(t *testing.T) {
+	for _, k := range []*Kernel{SincKernel(), ShortSincKernel()} {
+		checkInterpolate(t, k)
+	}
+}
+
+func checkInterpolate(t *testing.T, k *Kernel) {
+	t.Helper()
+	x0 := make([]float32, 400)
+	x1 := make([]float32, 400)
+	for i := range x0 {
+		x0[i] = float32(math.Sin(float64(i) * 0.37))
+		x1[i] = float32(math.Cos(float64(i) * 0.11))
+	}
+	for _, c := range []float64{1, 0.9, 0.51, 0.25} {
+		for _, p := range []float64{200, 200.25, 200.5, 201.999} {
+			var w0, w1 float64
+			span := float64(k.Zeros()) / c
+			for i := int(math.Ceil(p - span)); i <= int(math.Floor(p+span)); i++ {
+				w := c * k.Weight(c*(p-float64(i)))
+				w0 += w * float64(x0[i])
+				w1 += w * float64(x1[i])
+			}
+			a, b := k.Interpolate(x0, x1, p, c)
+			m, _ := k.Interpolate(x0, nil, p, c)
+			if math.Abs(a-w0) > 1e-12 || math.Abs(b-w1) > 1e-12 || m != a {
+				t.Fatalf("c=%v p=%v: (%v, %v, %v), want (%v, %v)", c, p, a, b, m, w0, w1)
+			}
+		}
+	}
+}
+
+// kernelResponse returns the kernel's gain in dB at frequency f, in units
+// of the cutoff (half a cycle per sample at c = 1).
+func kernelResponse(k *Kernel, f float64) float64 {
+	const os = 64
+	var re, im float64
+	for i := -k.Zeros() * os; i <= k.Zeros()*os; i++ {
+		x := float64(i) / os
+		w := k.Weight(x) / os
+		re += w * math.Cos(math.Pi*f*x)
+		im += w * math.Sin(math.Pi*f*x)
+	}
+	return 20 * math.Log10(math.Hypot(re, im))
+}
+
+func TestKernelResponses(t *testing.T) {
+	for _, tc := range []struct {
+		k          *Kernel
+		flat, stop float64 // within 0.1 dB up to flat; 80 dB down from stop
+	}{
+		{SincKernel(), 0.9, 1.11},
+		{ShortSincKernel(), 0.75, 1.33},
+	} {
+		for f := 0.0; f <= tc.flat; f += 0.01 {
+			if db := kernelResponse(tc.k, f); math.Abs(db) > 0.1 {
+				t.Errorf("%d zeros: %.2f of the cutoff at %.3f dB", tc.k.Zeros(), f, db)
+			}
+		}
+		for f := tc.stop; f < 4; f += 0.01 {
+			if db := kernelResponse(tc.k, f); db > -80 {
+				t.Errorf("%d zeros: %.2f of the cutoff at %.1f dB", tc.k.Zeros(), f, db)
+			}
+		}
 	}
 }

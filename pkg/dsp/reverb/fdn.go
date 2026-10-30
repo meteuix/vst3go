@@ -2,7 +2,8 @@ package reverb
 
 import (
 	"math"
-	"math/bits"
+
+	"github.com/th-release/vst3go/pkg/dsp/fastmath"
 )
 
 // FDN implements a Feedback Delay Network reverb: several delay lines whose
@@ -20,10 +21,11 @@ type FDN struct {
 	delayTimes   []int
 	writeIndices []int
 
-	// feedbackMatrix is orthogonal (a normalized Hadamard matrix for
-	// power-of-two sizes, a Householder reflection otherwise). Decay and
-	// diffusion are applied when the matrix is used, never stored into it.
-	feedbackMatrix [][]float64
+	// The feedback matrix is orthogonal: a normalized Hadamard matrix for
+	// power-of-two sizes, a Householder reflection otherwise, applied by
+	// mix in O(n log n) and O(n). Decay and diffusion are applied when the
+	// matrix is used, never stored into it.
+	hadamard bool
 
 	// Input and output gains
 	inputGains  []float64
@@ -75,7 +77,7 @@ func NewDampingFilter() *DampingFilter {
 // SetDamping sets the damping (0-1, where 0 passes the signal unchanged and
 // 1 is the lowest cutoff).
 func (d *DampingFilter) SetDamping(damping float64) {
-	d.coeff = math.Max(0.0, math.Min(1.0, damping)) * maxDampingCoeff
+	d.coeff = max(0.0, min(1.0, damping)) * maxDampingCoeff
 }
 
 // Process applies the damping filter
@@ -132,76 +134,74 @@ func NewFDN(numDelays int, sampleRate float64) *FDN {
 		f.outputGains[i] = 1.0 / math.Sqrt(float64(numDelays))
 	}
 
-	f.createFeedbackMatrix()
+	f.hadamard = numDelays&(numDelays-1) == 0
 	f.updateInternalParameters()
 
 	return f
 }
 
-// createFeedbackMatrix fills feedbackMatrix with an orthogonal matrix: a
-// normalized Hadamard matrix (Sylvester construction) when numDelays is a
-// power of two, otherwise the Householder reflection I - (2/n)*1*1^T.
-func (f *FDN) createFeedbackMatrix() {
-	n := f.numDelays
-	f.feedbackMatrix = make([][]float64, n)
-	for i := range f.feedbackMatrix {
-		f.feedbackMatrix[i] = make([]float64, n)
-	}
-
-	if n&(n-1) == 0 {
-		scale := 1.0 / math.Sqrt(float64(n))
-		for i := 0; i < n; i++ {
-			for j := 0; j < n; j++ {
-				// H[i][j] = (-1)^popcount(i & j)
-				if bits.OnesCount(uint(i&j))%2 == 0 {
-					f.feedbackMatrix[i][j] = scale
-				} else {
-					f.feedbackMatrix[i][j] = -scale
+// mix replaces x with M·x for the orthogonal feedback matrix M: the
+// normalized Hadamard matrix (H[i][j] = (-1)^popcount(i&j)/√n, a fast
+// Walsh-Hadamard transform) when the size is a power of two, otherwise the
+// Householder reflection I - (2/n)·1·1ᵀ.
+func (f *FDN) mix(x []float32) {
+	n := len(x)
+	if f.hadamard {
+		for h := 1; h < n; h *= 2 {
+			for i := 0; i < n; i += 2 * h {
+				a, b := x[i:i+h], x[i+h:i+2*h]
+				for j := range a {
+					a[j], b[j] = a[j]+b[j], a[j]-b[j]
 				}
 			}
 		}
+		scale := float32(1 / math.Sqrt(float64(n)))
+		for i := range x {
+			x[i] *= scale
+		}
 		return
 	}
-
-	for i := 0; i < n; i++ {
-		for j := 0; j < n; j++ {
-			f.feedbackMatrix[i][j] = -2.0 / float64(n)
-		}
-		f.feedbackMatrix[i][i] += 1.0
+	var sum float32
+	for _, v := range x {
+		sum += v
+	}
+	sum *= 2 / float32(n)
+	for i := range x {
+		x[i] -= sum
 	}
 }
 
 // SetDecay sets the decay time (0-1, where 0 = short, 1 = long)
 func (f *FDN) SetDecay(decay float64) {
-	f.decay = math.Max(0.0, math.Min(1.0, decay))
+	f.decay = max(0.0, min(1.0, decay))
 	f.updateInternalParameters()
 }
 
 // SetDamping sets the damping amount (0-1)
 func (f *FDN) SetDamping(damping float64) {
-	f.damping = math.Max(0.0, math.Min(1.0, damping))
+	f.damping = max(0.0, min(1.0, damping))
 	f.updateInternalParameters()
 }
 
 // SetDiffusion sets the diffusion amount (0-1): 0 keeps the delay lines
 // independent, 1 mixes them fully through the feedback matrix.
 func (f *FDN) SetDiffusion(diffusion float64) {
-	f.diffusion = math.Max(0.0, math.Min(1.0, diffusion))
+	f.diffusion = max(0.0, min(1.0, diffusion))
 }
 
 // SetModulation sets the modulation amount (0-1)
 func (f *FDN) SetModulation(modulation float64) {
-	f.modulation = math.Max(0.0, math.Min(1.0, modulation))
+	f.modulation = max(0.0, min(1.0, modulation))
 }
 
 // SetWetLevel sets the wet signal level (0-1)
 func (f *FDN) SetWetLevel(level float64) {
-	f.wetLevel = math.Max(0.0, math.Min(1.0, level))
+	f.wetLevel = max(0.0, min(1.0, level))
 }
 
 // SetDryLevel sets the dry signal level (0-1)
 func (f *FDN) SetDryLevel(level float64) {
-	f.dryLevel = math.Max(0.0, math.Min(1.0, level))
+	f.dryLevel = max(0.0, min(1.0, level))
 }
 
 // updateInternalParameters updates the damping filters and the feedback
@@ -228,7 +228,7 @@ func (f *FDN) tick(input float32) {
 		// Delay in samples, modulated within [delayTime, delayTime+modDepth].
 		delay := float64(f.delayTimes[i])
 		if f.modulation > 0 {
-			delay += f.modDepth * f.modulation * 0.5 * (1 + math.Sin(f.modPhases[i]))
+			delay += f.modDepth * f.modulation * 0.5 * (1 + fastmath.Sin2Pi(f.modPhases[i]*(0.5/math.Pi)))
 			f.modPhases[i] += phaseStep
 			if f.modPhases[i] >= 2.0*math.Pi {
 				f.modPhases[i] -= 2.0 * math.Pi
@@ -251,14 +251,12 @@ func (f *FDN) tick(input float32) {
 
 	// feedback = gain * ((1-diffusion)*I + diffusion*M) * outputs
 	gain := float32(f.feedbackGain)
-	direct := float32(1.0 - f.diffusion)
-	for i := 0; i < n; i++ {
-		row := f.feedbackMatrix[i]
-		var mixed float32
-		for j := 0; j < n; j++ {
-			mixed += f.delayOutputs[j] * float32(row[j])
-		}
-		f.feedbackInputs[i] = gain * (direct*f.delayOutputs[i] + float32(f.diffusion)*mixed)
+	direct, diffuse := gain*float32(1.0-f.diffusion), gain*float32(f.diffusion)
+	mixed := f.feedbackInputs
+	copy(mixed, f.delayOutputs)
+	f.mix(mixed)
+	for i, out := range f.delayOutputs {
+		mixed[i] = direct*out + diffuse*mixed[i]
 	}
 
 	for i := 0; i < n; i++ {
