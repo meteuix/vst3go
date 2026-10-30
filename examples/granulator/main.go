@@ -59,7 +59,7 @@ func (granulatorPlugin) CreateProcessor() plugin.Processor {
 	p := &granulatorProcessor{BaseProcessor: frameworkplugin.NewBaseProcessor(bus.NewEffectStereo())}
 	p.Parameters().Add(
 		param.TimeParameter(paramSize, "Size", 5, 500, 80).Build(),
-		param.New(paramDensity, "Density").Range(1, 100).Default(20).Unit("/s").Build(),
+		param.New(paramDensity, "Density").Range(1, 100).Default(20).Logarithmic().Unit("/s").Build(),
 		param.TimeParameter(paramPosition, "Position", 0, 3500, 200).Build(),
 		param.TimeParameter(paramSpray, "Spray", 0, 500, 0).Build(),
 		param.New(paramPitch, "Pitch").Range(-24, 24).Default(0).Steps(48).Unit("st").Build(),

@@ -84,18 +84,18 @@ func (fmPlugin) CreateProcessor() plugin.Processor {
 	}).Build())
 	for op, def := range []float64{1, 1, 2, 3} {
 		reg.Add(param.New(paramRatio1+uint32(op), fmt.Sprintf("Op%d Ratio", op+1)).
-			Range(0.5, 16).Default(def).Build())
+			Range(0.5, 16).Default(def).Logarithmic().Build())
 	}
 	for op, def := range []float64{100, 30, 0, 0} {
 		reg.Add(percent(paramLevel1+uint32(op), fmt.Sprintf("Op%d Level", op+1), def).Build())
 	}
 	reg.Add(
 		percent(paramFeedback, "Feedback", 0).Build(),
-		param.New(paramAttack, "Attack").Range(0.001, 2).Default(0.002).Unit("s").Build(),
-		param.New(paramDecay, "Decay").Range(0.001, 4).Default(0.5).Unit("s").Build(),
+		param.New(paramAttack, "Attack").Range(0.001, 2).Default(0.002).Logarithmic().Unit("s").Build(),
+		param.New(paramDecay, "Decay").Range(0.001, 4).Default(0.5).Logarithmic().Unit("s").Build(),
 		percent(paramSustain, "Sustain", 70).Build(),
-		param.New(paramRelease, "Release").Range(0.001, 5).Default(0.3).Unit("s").Build(),
-		param.New(paramModDecay, "Mod Decay").Range(0.001, 4).Default(0.8).Unit("s").Build(),
+		param.New(paramRelease, "Release").Range(0.001, 5).Default(0.3).Logarithmic().Unit("s").Build(),
+		param.New(paramModDecay, "Mod Decay").Range(0.001, 4).Default(0.8).Logarithmic().Unit("s").Build(),
 		percent(paramModSustain, "Mod Sustain", 40).Build(),
 		percent(paramVolume, "Volume", 50).Smooth(0.01).Build(),
 	)

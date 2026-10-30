@@ -60,6 +60,7 @@ func (gainPlugin) CreateProcessor() plugin.Processor {
 		param.New(paramSmoothingTime, "Smoothing Time").
 			Range(minSmoothingMs, maxSmoothingMs).
 			Default(defaultSmoothingMs).
+			Logarithmic().
 			Unit("ms").
 			Build(),
 	)
@@ -138,7 +139,7 @@ func (p *gainProcessor) ProcessAudio(ctx *process.Context) {
 	}
 
 	meter := p.Parameters().Get(paramOutputLevel)
-	ctx.SetOutputParameter(paramOutputLevel, meter.Normalize(math.Max(-60, float64(gain.LinearToDb32(peak)))))
+	ctx.SetOutputParameter(paramOutputLevel, meter.Normalize(max(-60, float64(gain.LinearToDb32(peak)))))
 }
 
 func init() {

@@ -205,7 +205,7 @@ func (p *debugProcessor) ProcessAudio(ctx *process.Context) {
 			}
 		}
 		result := p.analyzer.Analyze(out[:n])
-		peak = math.Max(peak, float64(result.Peak))
+		peak = max(peak, float64(result.Peak))
 		p.stats.clipped.Add(uint64(result.ClippedSamples))
 	}
 	for {
@@ -216,11 +216,11 @@ func (p *debugProcessor) ProcessAudio(ctx *process.Context) {
 	}
 
 	p.profiler.End(start, n)
-	ctx.SetOutputParameter(paramCPULoad, math.Min(p.profiler.LastLoad(), 100)/100)
+	ctx.SetOutputParameter(paramCPULoad, min(p.profiler.LastLoad(), 100)/100)
 	meter := p.Parameters().Get(paramPeak)
 	db := -60.0
 	if peak > 0 {
-		db = math.Max(-60, 20*math.Log10(peak))
+		db = max(-60, 20*math.Log10(peak))
 	}
 	ctx.SetOutputParameter(paramPeak, meter.Normalize(db))
 }

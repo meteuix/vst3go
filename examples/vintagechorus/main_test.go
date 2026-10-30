@@ -44,7 +44,7 @@ func TestVintageChorusModulatesAndSpreads(t *testing.T) {
 	lo, hi := math.Inf(1), math.Inf(-1)
 	for start := 4800; start+2400 <= 48000; start += 2400 {
 		f := plugintest.ZeroCrossingFrequency(out[0][start:start+2400], 48000)
-		lo, hi = math.Min(lo, f), math.Max(hi, f)
+		lo, hi = min(lo, f), max(hi, f)
 	}
 	if hi-lo < 5 {
 		t.Errorf("frequency stayed within %.1f-%.1f Hz: no modulation", lo, hi)

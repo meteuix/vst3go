@@ -45,6 +45,7 @@ func (delayPlugin) CreateProcessor() plugin.Processor {
 		param.New(paramDelayTime, "Delay Time").
 			Range(1, maxDelaySeconds*1000).
 			Default(250).
+			Logarithmic().
 			Unit("ms").
 			Formatter(param.TimeFormatter, param.TimeParser).
 			SmoothMultiplicative(0.05).

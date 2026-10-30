@@ -162,7 +162,7 @@ func (p *autoParamsProcessor) updateBand(ctx *process.Context, i int) {
 	ids := p.bands[i]
 	s := bandState{
 		enabled:            ctx.ParamPlain(ids.enable) >= 0.5,
-		freq:               math.Min(ctx.ParamPlain(ids.freq), p.sampleRate*0.45),
+		freq:               min(ctx.ParamPlain(ids.freq), p.sampleRate*0.45),
 		gain:               ctx.ParamPlain(ids.gain),
 		q:                  ctx.ParamPlain(ids.q),
 		kind:               int(math.Round(ctx.ParamPlain(ids.kind))),

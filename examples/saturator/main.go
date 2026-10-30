@@ -201,11 +201,11 @@ func (p *saturatorProcessor) ProcessAudio(ctx *process.Context) {
 	peak := 0.0
 	for _, out := range ctx.Output[:2] {
 		for _, x := range out[:n] {
-			peak = math.Max(peak, math.Abs(float64(x)))
+			peak = max(peak, math.Abs(float64(x)))
 		}
 	}
 	meter := p.Parameters().Get(paramOutputPeak)
-	ctx.SetOutputParameter(paramOutputPeak, meter.Normalize(20*math.Log10(math.Max(peak, 1e-3))))
+	ctx.SetOutputParameter(paramOutputPeak, meter.Normalize(20*math.Log10(max(peak, 1e-3))))
 }
 
 func init() {

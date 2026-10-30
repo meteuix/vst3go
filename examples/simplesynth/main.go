@@ -40,11 +40,11 @@ func (synthPlugin) GetInfo() frameworkplugin.Info {
 func (synthPlugin) CreateProcessor() plugin.Processor {
 	p := &synthProcessor{BaseProcessor: frameworkplugin.NewBaseProcessor(bus.NewGenerator())}
 	p.Parameters().Add(
-		param.New(paramAttack, "Attack").Range(0.001, 2).Default(0.01).Unit("s").Build(),
-		param.New(paramDecay, "Decay").Range(0.001, 2).Default(0.1).Unit("s").Build(),
+		param.New(paramAttack, "Attack").Range(0.001, 2).Default(0.01).Logarithmic().Unit("s").Build(),
+		param.New(paramDecay, "Decay").Range(0.001, 2).Default(0.1).Logarithmic().Unit("s").Build(),
 		param.New(paramSustain, "Sustain").Range(0, 100).Default(70).Unit("%").
 			Formatter(param.PercentFormatter, param.PercentParser).Build(),
-		param.New(paramRelease, "Release").Range(0.001, 5).Default(0.3).Unit("s").Build(),
+		param.New(paramRelease, "Release").Range(0.001, 5).Default(0.3).Logarithmic().Unit("s").Build(),
 		param.New(paramVolume, "Volume").Range(0, 100).Default(80).Unit("%").
 			Formatter(param.PercentFormatter, param.PercentParser).Smooth(0.01).Build(),
 	)

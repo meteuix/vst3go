@@ -37,9 +37,9 @@ func aliasLevel(t *testing.T, x []float32, f0 float64) float64 {
 		h := math.Round(freq / f0)
 		switch {
 		case math.Abs(freq-f0) < 6*bin:
-			fund = math.Max(fund, a)
+			fund = max(fund, a)
 		case freq < 18000 && (h == 0 || math.Abs(freq-h*f0) > 6*bin):
-			worst = math.Max(worst, a)
+			worst = max(worst, a)
 		}
 	}
 	return 20 * math.Log10(worst/fund)

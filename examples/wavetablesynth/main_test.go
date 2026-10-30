@@ -35,7 +35,7 @@ func at(amp []float64, freq float64) float64 {
 	c := int(math.Round(freq * 32768 / 48000))
 	best := 0.0
 	for k := c - 2; k <= c+2; k++ {
-		best = math.Max(best, amp[k])
+		best = max(best, amp[k])
 	}
 	return best
 }
@@ -79,7 +79,7 @@ func TestWavetableSynthHighNotesDoNotAlias(t *testing.T) {
 	for k := 10; k < len(amp); k++ {
 		f := float64(k) * bin
 		if math.Abs(f-math.Round(f/f0)*f0) > 8*bin {
-			worst = math.Max(worst, amp[k])
+			worst = max(worst, amp[k])
 		}
 	}
 	if db := 20 * math.Log10(worst/fund); db > -80 {

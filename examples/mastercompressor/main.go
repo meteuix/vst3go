@@ -196,12 +196,12 @@ func (p *masterCompressorProcessor) ProcessAudio(ctx *process.Context) {
 	peak := 0.0
 	for _, out := range ctx.Output[:2] {
 		for _, x := range out {
-			peak = math.Max(peak, math.Abs(float64(x)))
+			peak = max(peak, math.Abs(float64(x)))
 		}
 	}
 	params := p.Parameters()
 	ctx.SetOutputParameter(paramReduction, params.Get(paramReduction).Normalize(c.GetGainReduction()))
-	ctx.SetOutputParameter(paramOutputPeak, params.Get(paramOutputPeak).Normalize(20*math.Log10(math.Max(peak, 1e-3))))
+	ctx.SetOutputParameter(paramOutputPeak, params.Get(paramOutputPeak).Normalize(20*math.Log10(max(peak, 1e-3))))
 }
 
 func init() {

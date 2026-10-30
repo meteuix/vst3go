@@ -34,7 +34,7 @@ const (
 )
 
 const (
-	blockSize   = 128
+	blockSize   = 64
 	fadeSamples = 4096
 	maxSeconds  = 12.0
 )
@@ -54,7 +54,7 @@ func (convReverbPlugin) GetInfo() frameworkplugin.Info {
 func (convReverbPlugin) CreateProcessor() plugin.Processor {
 	p := &convReverbProcessor{BaseProcessor: frameworkplugin.NewBaseProcessor(bus.NewEffectStereo())}
 	p.Parameters().Add(
-		param.New(paramDecay, "Decay").Range(0.2, 10).Default(2).Unit("s").Build(),
+		param.New(paramDecay, "Decay").Range(0.2, 10).Default(2).Logarithmic().Unit("s").Build(),
 		param.New(paramDamping, "Damping").Range(0, 100).Default(50).Unit("%").
 			Formatter(param.PercentFormatter, param.PercentParser).Build(),
 		param.TimeParameter(paramPreDelay, "Pre-Delay", 0, 200, 10).Build(),
@@ -214,7 +214,7 @@ func (p *convReverbProcessor) ProcessAudio(ctx *process.Context) {
 
 // build generates a stereo impulse response and its convolvers.
 func build(s settings, sampleRate float64) (*reverb, error) {
-	length := int(math.Min(maxSeconds, 1.5*s.decay) * sampleRate)
+	length := int(min(maxSeconds, 1.5*s.decay) * sampleRate)
 	pre := int(s.preDelay * sampleRate)
 	highDecay := s.decay * (1 - 0.85*s.damping)
 	// One-pole crossover at 2 kHz splitting the noise into two bands.

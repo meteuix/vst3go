@@ -43,7 +43,7 @@ func TestDelayTimeAutomationGlides(t *testing.T) {
 	out := p.Render(in, 2)
 	maxStep := 0.0
 	for i := 1000; i < len(out[0]); i++ {
-		maxStep = math.Max(maxStep, math.Abs(float64(out[0][i]-out[0][i-1])))
+		maxStep = max(maxStep, math.Abs(float64(out[0][i]-out[0][i-1])))
 	}
 	// A 200 Hz sine at 0.5 moves at most 2*pi*200/48000*0.5 = 0.013 per
 	// sample; a glide raises that only slightly.

@@ -71,12 +71,23 @@ func TestDebugExampleReportsProblemsOffTheAudioThread(t *testing.T) {
 		t.Fatalf("NaN reached the output: %v", out[0][3000])
 	}
 
+	// The reporter logs on its own clock: wait until every line is there.
+	wants := []string{"[ERROR] [DebugExample] 1 NaN/Inf output samples", "[WARN] [DebugExample] ", " output samples clipped", "[DEBUG] [DebugExample] blocks 1,"}
+	logged := func() bool {
+		got := logs.String()
+		for _, want := range wants {
+			if !strings.Contains(got, want) {
+				return false
+			}
+		}
+		return true
+	}
 	deadline := time.Now().Add(2 * time.Second)
-	for !strings.Contains(logs.String(), "clipped") && time.Now().Before(deadline) {
+	for !logged() && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	got := logs.String()
-	for _, want := range []string{"[ERROR] [DebugExample] 1 NaN/Inf output samples", "[WARN] [DebugExample] ", " output samples clipped", "[DEBUG] [DebugExample] blocks 1,"} {
+	for _, want := range wants {
 		if !strings.Contains(got, want) {
 			t.Errorf("log missing %q:\n%s", want, got)
 		}

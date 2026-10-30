@@ -86,7 +86,7 @@ func (p *filterProcessor) ProcessAudio(ctx *process.Context) {
 	nyquistGuard := sampleRate * 0.49
 	for i := 0; i < ctx.NumSamples(); i++ {
 		resonance := q.Next()
-		p.svf.SetFrequencyAndQ(sampleRate, math.Min(cutoff.Next(), nyquistGuard), resonance)
+		p.svf.SetFrequencyAndQ(sampleRate, min(cutoff.Next(), nyquistGuard), resonance)
 		amount := float32(wet.Next() / 100)
 		for ch := 0; ch < channels; ch++ {
 			dry := ctx.Input[ch][i]

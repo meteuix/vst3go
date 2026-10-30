@@ -49,7 +49,7 @@ func TestJetFlangerSweeps(t *testing.T) {
 	lo, hi := math.Inf(1), math.Inf(-1)
 	for start := 4800; start+1200 <= 48000; start += 1200 {
 		db := plugintest.DB(plugintest.RMS(out[0][start : start+1200]))
-		lo, hi = math.Min(lo, db), math.Max(hi, db)
+		lo, hi = min(lo, db), max(hi, db)
 	}
 	if hi-lo < 6 {
 		t.Errorf("level only moved %.1f dB: the comb is not sweeping", hi-lo)

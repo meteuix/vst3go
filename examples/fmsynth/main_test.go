@@ -35,7 +35,7 @@ func at(amp []float64, freq float64) float64 {
 	c := int(math.Round(freq * 32768 / 48000))
 	best := 0.0
 	for k := c - 2; k <= c+2; k++ {
-		best = math.Max(best, amp[k])
+		best = max(best, amp[k])
 	}
 	return best
 }

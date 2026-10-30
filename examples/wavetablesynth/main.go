@@ -52,11 +52,11 @@ func (wavetablePlugin) CreateProcessor() plugin.Processor {
 		param.New(paramPosition, "Position").Range(0, 100).Default(0).Unit("%").
 			Formatter(param.PercentFormatter, param.PercentParser).Build(),
 		param.New(paramDetune, "Detune").Range(0, 50).Default(7).Unit("ct").Build(),
-		param.New(paramAttack, "Attack").Range(0.001, 2).Default(0.005).Unit("s").Build(),
-		param.New(paramDecay, "Decay").Range(0.001, 2).Default(0.2).Unit("s").Build(),
+		param.New(paramAttack, "Attack").Range(0.001, 2).Default(0.005).Logarithmic().Unit("s").Build(),
+		param.New(paramDecay, "Decay").Range(0.001, 2).Default(0.2).Logarithmic().Unit("s").Build(),
 		param.New(paramSustain, "Sustain").Range(0, 100).Default(80).Unit("%").
 			Formatter(param.PercentFormatter, param.PercentParser).Build(),
-		param.New(paramRelease, "Release").Range(0.001, 5).Default(0.2).Unit("s").Build(),
+		param.New(paramRelease, "Release").Range(0.001, 5).Default(0.2).Logarithmic().Unit("s").Build(),
 		param.New(paramVolume, "Volume").Range(0, 100).Default(50).Unit("%").
 			Formatter(param.PercentFormatter, param.PercentParser).Smooth(0.01).Build(),
 	)
