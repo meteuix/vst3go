@@ -57,6 +57,10 @@ type FactoryInfo struct {
 	Vendor string
 	URL    string
 	Email  string
+	// License is the URI of the plugins' license, e.g.
+	// "https://spdx.org/licenses/MIT" or a page with a commercial EULA;
+	// LV2 bundles declare it as doap:license (only http and https URIs).
+	License string
 }
 
 var globalFactoryInfo = FactoryInfo{

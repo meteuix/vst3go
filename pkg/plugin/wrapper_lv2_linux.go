@@ -19,3 +19,14 @@ func GoLV2Email() *C.char {
 	}
 	return C.CString(globalFactoryInfo.Email)
 }
+
+// GoLV2License is the factory license URI (doap:license of the plugins),
+// or NULL. The Turtle writer frees it.
+//
+//export GoLV2License
+func GoLV2License() *C.char {
+	if globalFactoryInfo.License == "" {
+		return nil
+	}
+	return C.CString(globalFactoryInfo.License)
+}

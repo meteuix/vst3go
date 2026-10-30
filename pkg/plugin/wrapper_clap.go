@@ -41,6 +41,11 @@ type clapInstance struct {
 	edits          *mpscQueue[clapEdit]
 	editorPending  atomic.Bool // host automation changed values the editor shows
 	hostChanged    bool        // audio thread: the block had host parameter changes
+	// changed holds the values MIDI controllers changed through the MIDI
+	// mapping in this block (audio thread), reported to the host after
+	// processing.
+	changed      [clapChangedSize]paramValue
+	changedCount int
 
 	editorSession
 }
@@ -53,6 +58,10 @@ var (
 )
 
 const clapEditQueueSize = 4096
+
+// clapChangedSize bounds the MIDI-mapped parameter changes reported per
+// block; later ones in a full block still reach the processor.
+const clapChangedSize = 128
 
 // clap.h defines these as static const variables, which cgo cannot link.
 const (
@@ -287,6 +296,7 @@ func GoClapProcess(id C.uintptr_t, proc *C.clap_process_t) C.clap_process_status
 	out := proc.out_events
 	inst.drainEdits(out)
 	inst.hostChanged = false
+	inst.changedCount = 0
 	inst.collectEvents(ctx, proc.in_events, true)
 
 	ctx.Dispatch(c.processor.ProcessAudio)
@@ -299,17 +309,27 @@ func GoClapProcess(id C.uintptr_t, proc *C.clap_process_t) C.clap_process_status
 		outputs[b].constant_mask = C.uint64_t(ctx.OutputSilenceFlags(b))
 	}
 	c.publishOutputParameters(ctx)
-	inst.writeEvents(ctx, out)
+	// Values the plugin changed itself go to the host as parameter events
+	// (at frame 0, before the block's other output events, which keeps the
+	// list sorted): MIDI-mapped controllers, then a newly selected program.
+	for _, v := range inst.changed[:inst.changedCount] {
+		inst.pushValue(out, v)
+	}
 	if c.programs != nil {
-		// Host automation selected a program: its values changed in the
-		// registry and the host must re-read them.
+		// A program change (host automation or MIDI) changed the values of
+		// the program's parameters, which the host must re-read.
 		if index := c.programs.audioProgram.Load(); index != inst.seenProgram {
 			inst.seenProgram = index
 			c.programs.uiProgram.Store(index)
+			inst.pushValue(out, paramValue{id: ProgramParamID, normalized: c.programs.param.Normalize(float64(index))})
+			for _, v := range c.programs.valuesOf(index) {
+				inst.pushValue(out, v)
+			}
 			inst.rescanPending.Store(true)
 			C.vst3go_clap_request_callback(inst.plugin)
 		}
 	}
+	inst.writeEvents(ctx, out)
 	return clapProcessContinue
 }
 
@@ -549,6 +569,10 @@ func (inst *clapInstance) routeMIDI(ctx *process.Context, port int32, msg clapMI
 	case msg.isCtrl:
 		if id, ok := c.MIDIControllerAssignment(port, int16(msg.event.Channel), msg.controller); ok {
 			c.queueParameterChange(ctx, id, msg.value, int(offset))
+			if inst.changedCount < len(inst.changed) {
+				inst.changed[inst.changedCount] = paramValue{id: id, normalized: msg.value}
+				inst.changedCount++
+			}
 		}
 	case msg.program >= 0 && c.programs != nil && msg.program < c.programs.count():
 		c.queueParameterChange(ctx, ProgramParamID, c.programs.param.Normalize(float64(msg.program)), int(offset))
@@ -575,6 +599,16 @@ func (inst *clapInstance) drainEdits(out *C.clap_output_events_t) {
 			C.vst3go_clap_push_param(out, 0, C.clap_id(e.id), C.double(e.plain))
 		}
 	}
+}
+
+// pushValue reports a parameter value the plugin changed itself to the
+// host. Hidden MIDI controller parameters and meters are not host-visible.
+func (inst *clapInstance) pushValue(out *C.clap_output_events_t, v paramValue) {
+	p, ok := inst.param(v.id)
+	if out == nil || !ok || inst.c.midiCC.owns(v.id) {
+		return
+	}
+	C.vst3go_clap_push_param(out, 0, C.clap_id(v.id), C.double(clapPlain(p, v.normalized)))
 }
 
 // writeEvents sends the block's output events.

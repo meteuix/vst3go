@@ -21,6 +21,16 @@
 // Control port changes reach the plugin as parameter events at the start
 // of the block. The plugin state (state:interface) is the CLAP state.
 //
+// Values the plugin changes itself (Host.EditParameter, a program or a
+// MIDI-mapped controller selected by MIDI, a preset it loads) belong in
+// the host's control input ports, which only the host writes. Hosts with
+// the KXStudio control-input-port-change-request feature (Carla, Qtractor,
+// DPF-style hosts; optional in plugins.ttl) get a request_change from run
+// for each of them, with or without an open UI; while the host has not
+// applied a request yet, its port still holding the old value is not
+// sent back to the plugin. Other hosts see these values only through the
+// UI, which writes them to the ports while it is open.
+//
 // run never enters Go when the plugin has a deadline (DeadlineProcessor):
 // the CLAP plugin runs it through the deadline guard, and plugins.ttl then
 // declares lv2:hardRTCapable. A latency change is read when the plugin
@@ -41,6 +51,7 @@
 #include <lv2/atom/forge.h>
 #include <lv2/atom/util.h>
 #include <lv2/buf-size/buf-size.h>
+#include <lv2/control-input-port-change-request/control-input-port-change-request.h>
 #include <lv2/core/lv2.h>
 #include <lv2/core/lv2_util.h>
 #include <lv2/midi/midi.h>
@@ -54,12 +65,17 @@
 
 extern const clap_plugin_entry_t clap_entry;
 extern char* GoLV2Email(void);
+extern char* GoLV2License(void);
 
 enum {
     LV2_PROGRAM_PARAM_ID = 0x7EFFFFFF,
     LV2_MAX_EVENTS = 2048,
     LV2_DEFAULT_MAX_FRAMES = 4096,
 };
+
+// How long a requested port change may take to reach the port, in seconds,
+// before the port's old value counts as the host's again.
+#define LV2_REQUEST_TIMEOUT 0.5
 
 #define LV2_URI_PREFIX "urn:vst3go:"
 #define LV2_STATE_KEY "urn:vst3go:state"
@@ -181,6 +197,13 @@ struct LV2Instance {
     float* last;              // per port: control value last sent to the plugin
     _Atomic double* values;   // per parameter: last value from the plugin
     atomic_bool resend;       // send every control port on the next block
+
+    // Plugin-side changes for the host's control input ports.
+    const LV2_ControlInputPort_Change_Request* changeRequest;  // NULL without the feature
+    atomic_bool* requested;  // per parameter: values[i] waits to be requested
+    float* asked;            // per port: the value requested from the host
+    float* before;           // per port: the port's value when it was requested
+    uint32_t* waiting;       // per port: frames waited for the host to apply it, 0 when none
     clap_audio_buffer_t* inBuffers;
     clap_audio_buffer_t* outBuffers;
     float** inPointers;
@@ -233,9 +256,24 @@ static const clap_host_thread_check_t hostThreadCheck = { host_is_main_thread, h
 // The host runs the plugin continuously, so edits reach it on the next
 // block. Values the plugin changed itself (a program chosen in the editor)
 // go to the host ports from the UI.
+static bool param_visible(const LV2Instance* in, uint32_t i);
+
 static void host_params_rescan(const clap_host_t* h, clap_param_rescan_flags flags) {
     LV2Instance* in = host_instance(h);
-    if (in && (flags & (CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_ALL))) atomic_store(&in->rescanValues, true);
+    if (!in || !(flags & (CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_ALL))) return;
+    atomic_store(&in->rescanValues, true);
+    // Rescans come from the plugin's main thread, where the values can be
+    // read at once (as CLAP hosts do); the next run requests them.
+    if (!in->changeRequest || lv2InAudioThread || !in->params) return;
+    for (uint32_t i = 0; i < in->paramCount; i++) {
+        double v;
+        if (!param_visible(in, i) || (in->paramInfo[i].flags & CLAP_PARAM_IS_READONLY) ||
+            !in->params->get_value(in->plugin, in->paramInfo[i].id, &v)) {
+            continue;
+        }
+        atomic_store(&in->values[i], v);
+        atomic_store(&in->requested[i], true);
+    }
 }
 static void host_params_clear(const clap_host_t* h, clap_id id, clap_param_clear_flags flags) { (void)h; (void)id; (void)flags; }
 static void host_params_request_flush(const clap_host_t* h) { (void)h; }
@@ -327,6 +365,10 @@ static void destroy_instance(LV2Instance* in) {
     free(in->ports);
     free(in->data);
     free(in->last);
+    free((void*)in->requested);
+    free(in->asked);
+    free(in->before);
+    free(in->waiting);
     free(in->inBuffers);
     free(in->outBuffers);
     free(in->inPointers);
@@ -370,7 +412,8 @@ static LV2Instance* create_instance(uint32_t index) {
     in->paramCount = in->params ? in->params->count(in->plugin) : 0;
     in->paramInfo = (clap_param_info_t*)calloc(in->paramCount ? in->paramCount : 1, sizeof(clap_param_info_t));
     in->values = (_Atomic double*)calloc(in->paramCount ? in->paramCount : 1, sizeof(double));
-    if (!in->paramInfo || !in->values) goto fail;
+    in->requested = (atomic_bool*)calloc(in->paramCount ? in->paramCount : 1, sizeof(atomic_bool));
+    if (!in->paramInfo || !in->values || !in->requested) goto fail;
     for (uint32_t i = 0; i < in->paramCount; i++) {
         if (!in->params->get_info(in->plugin, i, &in->paramInfo[i])) goto fail;
         const clap_param_info_t* p = &in->paramInfo[i];
@@ -401,7 +444,10 @@ static LV2Instance* create_instance(uint32_t index) {
     }
     in->data = (void**)calloc(in->portCount, sizeof(void*));
     in->last = (float*)calloc(in->portCount, sizeof(float));
-    if (!in->data || !in->last) goto fail;
+    in->asked = (float*)calloc(in->portCount, sizeof(float));
+    in->before = (float*)calloc(in->portCount, sizeof(float));
+    in->waiting = (uint32_t*)calloc(in->portCount, sizeof(uint32_t));
+    if (!in->data || !in->last || !in->asked || !in->before || !in->waiting) goto fail;
     atomic_store(&in->resend, true);
     return in;
 fail:
@@ -462,10 +508,13 @@ static LV2_Handle lv2_instantiate(const LV2_Descriptor* d, double rate, const ch
     (void)bundle;
     LV2_URID_Map* map = NULL;
     const LV2_Options_Option* options = NULL;
-    const char* missing = lv2_features_query(features, LV2_URID__map, &map, true, LV2_OPTIONS__options, &options, false, NULL);
+    const LV2_ControlInputPort_Change_Request* changeRequest = NULL;
+    const char* missing = lv2_features_query(features, LV2_URID__map, &map, true, LV2_OPTIONS__options, &options, false,
+                                             LV2_CONTROL_INPUT_PORT_CHANGE_REQUEST_URI, &changeRequest, false, NULL);
     if (missing || rate <= 0) return NULL;
     LV2Instance* in = create_instance(descriptor_index(d));
     if (!in) return NULL;
+    if (changeRequest && changeRequest->request_change) in->changeRequest = changeRequest;
     in->map = map;
     in->rate = rate;
     map_urids(in);
@@ -587,7 +636,10 @@ static bool out_try_push(const clap_output_events_t* list, const clap_event_head
         int32_t i = param_index(in, v->param_id);
         if (i >= 0) {
             atomic_store(&in->values[i], v->value);
-            if (!(in->paramInfo[i].flags & CLAP_PARAM_IS_READONLY)) push_ui_edit(in, VST3GO_LV2_UI_VALUE, (uint32_t)i, v->value);
+            if (!(in->paramInfo[i].flags & CLAP_PARAM_IS_READONLY)) {
+                push_ui_edit(in, VST3GO_LV2_UI_VALUE, (uint32_t)i, v->value);
+                if (in->changeRequest) atomic_store(&in->requested[i], true);
+            }
         }
         break;
     }
@@ -667,6 +719,16 @@ static void collect_events(LV2Instance* in, uint32_t frames) {
     for (uint32_t i = 0; i < in->portCount; i++) {
         if (in->ports[i].kind != PORT_PARAM_IN || !in->data[i]) continue;
         float value = *(const float*)in->data[i];
+        if (in->waiting[i]) {
+            // A plugin-side value was requested: the port keeps its old
+            // value until the host applies it.
+            if (value == in->asked[i] || value != in->before[i] || in->waiting[i] > in->rate * LV2_REQUEST_TIMEOUT) {
+                in->waiting[i] = 0;
+            } else {
+                in->waiting[i] += frames ? frames : 1;
+                continue;
+            }
+        }
         if (!resend && value == in->last[i]) continue;
         in->last[i] = value;
         const clap_param_info_t* p = &in->paramInfo[in->ports[i].index];
@@ -738,6 +800,24 @@ static void advance_position(LV2Instance* in, uint32_t frames) {
     }
 }
 
+// request_changes asks the host (from run, as the extension requires) to
+// set the control input ports whose parameters the plugin changed.
+static void request_changes(LV2Instance* in) {
+    if (!in->changeRequest) return;
+    for (uint32_t i = 0; i < in->portCount; i++) {
+        const PortDef* port = &in->ports[i];
+        if (port->kind != PORT_PARAM_IN || !atomic_exchange(&in->requested[port->index], false) || !in->data[i]) continue;
+        float value = (float)atomic_load(&in->values[port->index]);
+        float current = *(const float*)in->data[i];
+        if (value == current) continue;
+        if (in->changeRequest->request_change(in->changeRequest->handle, i, value) != LV2_CONTROL_INPUT_PORT_CHANGE_SUCCESS) continue;
+        in->asked[i] = value;
+        in->before[i] = current;
+        in->waiting[i] = 1;
+        in->last[i] = value;  // the plugin already has it
+    }
+}
+
 static void lv2_run(LV2_Handle h, uint32_t frames) {
     LV2Instance* in = (LV2Instance*)h;
     lv2InAudioThread = true;
@@ -804,6 +884,7 @@ static void lv2_run(LV2_Handle h, uint32_t frames) {
         if (frames == 0) break;
     }
     in->eventCount = 0;
+    request_changes(in);
 
     for (uint32_t i = 0; i < in->portCount; i++) {
         if (!in->data[i]) continue;
@@ -1179,6 +1260,12 @@ static void write_ports(Text* t, LV2Instance* in) {
     text_printf(t, " ");
 }
 
+// iri_safe reports whether s is an http(s) IRI that needs no escaping in
+// Turtle.
+static bool iri_safe(const char* s) {
+    return (!strncmp(s, "http://", 7) || !strncmp(s, "https://", 8)) && !strpbrk(s, "<>\" {}|\\^`");
+}
+
 static void plugin_uri(Text* t, const LV2Instance* in) {
     text_printf(t, "<%s%s>", LV2_URI_PREFIX, in->descriptor->id);
 }
@@ -1207,8 +1294,11 @@ static void write_plugin(Text* t, LV2Instance* in, const char* binary) {
     if (d->version) sscanf(d->version, "%u.%u.%u", &major, &minor, &micro);
     text_printf(t, "  lv2:minorVersion %u ;\n  lv2:microVersion %u ;\n", minor, micro);
     text_printf(t, "  lv2:binary <%s> ;\n", binary);
-    text_printf(t, "  lv2:requiredFeature urid:map ;\n  lv2:optionalFeature opts:options%s ;\n",
-                vst3go_clap_deadline(in->plugin) > 0 ? ", lv2:hardRTCapable" : "");
+    text_printf(t, "  lv2:requiredFeature urid:map ;\n  lv2:optionalFeature opts:options, <%s>%s ;\n",
+                LV2_CONTROL_INPUT_PORT_CHANGE_REQUEST_URI, vst3go_clap_deadline(in->plugin) > 0 ? ", lv2:hardRTCapable" : "");
+    char* license = GoLV2License();
+    if (license && iri_safe(license)) text_printf(t, "  doap:license <%s> ;\n", license);
+    free(license);
     text_printf(t, "  opts:supportedOption bufsz:maxBlockLength ;\n  lv2:extensionData state:interface ;\n");
     if (vst3go_lv2_ui_supported(in)) {
         text_printf(t, "  ui:ui ");
@@ -1223,7 +1313,7 @@ static void write_plugin(Text* t, LV2Instance* in, const char* binary) {
         text_string(t, d->name);
         text_printf(t, " ;\n  doap:maintainer [\n    foaf:name ");
         text_string(t, d->vendor);
-        if (d->url && (!strncmp(d->url, "http://", 7) || !strncmp(d->url, "https://", 8)) && !strpbrk(d->url, "<>\" {}|\\^`")) {
+        if (d->url && iri_safe(d->url)) {
             text_printf(t, " ;\n    foaf:homepage <%s>", d->url);
         }
         char* email = GoLV2Email();
@@ -1314,6 +1404,8 @@ const char* VST3GoLV2WriteBundle(const char* dir, const char* binaryName) {
     const char* err = NULL;
     text_printf(&manifest, "%s", turtlePrefixes);
     text_printf(&plugins, "%s", turtlePrefixes);
+    // The KXStudio extension has no schema in the LV2 specifications.
+    text_printf(&plugins, "<%s>\n  a lv2:Feature .\n\n", LV2_CONTROL_INPUT_PORT_CHANGE_REQUEST_URI);
     text_printf(&presets, "%s", turtlePrefixes);
     bool anyPresets = false;
     for (uint32_t i = 0; i < lv2DescriptorCount && !err; i++) {

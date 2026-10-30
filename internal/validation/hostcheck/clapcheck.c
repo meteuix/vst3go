@@ -378,6 +378,27 @@ static void test_synth(const char* path) {
     p.plugin->on_main_thread(p.plugin);
     CHECK(hostLog.rescanValues > rescans, "program change rescans values");
 
+    // A MIDI program change is the plugin's own edit: it reports the
+    // program and its values as output parameter events, in time order.
+    in_init(&in);
+    out_init(&out);
+    add_midi(&in, 0, 0xC0, 2, 0); // Square Pad: release 1500 ms
+    CHECK(p.plugin->process(p.plugin, &proc) == CLAP_PROCESS_CONTINUE, "process");
+    double padRelease = log(1500.0) / log(2000.0);
+    bool sawProgram = false, sawRelease = false;
+    uint32_t lastTime = 0;
+    for (uint32_t i = 0; i < out.count; i++) {
+        CHECK(out.events[i].header.time >= lastTime, "output events in time order");
+        lastTime = out.events[i].header.time;
+        if (out.events[i].header.type != CLAP_EVENT_PARAM_VALUE) continue;
+        const clap_event_param_value_t* v = &out.events[i].param;
+        if (v->param_id == program.id) sawProgram = v->value == 2;
+        if (v->param_id == release.id) sawRelease = fabs(v->value - padRelease) < 1e-6;
+    }
+    CHECK(sawProgram && sawRelease, "MIDI program change reports its values (%u events)", out.count);
+    p.plugin->on_main_thread(p.plugin);
+    out_init(&out);
+
     // The Keyswitched program names its keyswitches.
     in_init(&in);
     add_param(&in, 0, program.id, 3);

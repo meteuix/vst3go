@@ -1,1 +1,7 @@
 LV2 headers from https://github.com/lv2/lv2 (revision 3c57dae600a5ad8d05acd53ee3490f7d91cb7be6), ISC license (LICENSE).
+
+control-input-port-change-request/ is the KXStudio LV2 extension
+<http://kx.studio/ns/lv2ext/control-input-port-change-request> from
+https://github.com/falkTX/Carla (source/includes/lv2/control-input-port-change-request.h,
+copyright 2020 Filipe Coelho, ISC license, in the file), with its lv2.h include
+pointed at lv2/core/lv2.h.

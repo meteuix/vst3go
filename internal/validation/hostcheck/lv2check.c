@@ -3,7 +3,9 @@
 // ports and their properties, sample-accurate audio through the control
 // ports, MIDI in and out through the atom ports, state round trips,
 // factory programs as presets, latency reporting, side chains and the
-// deadline guard.
+// deadline guard, and the KXStudio control-input-port-change-request
+// feature, through which values the plugin changes itself (a program
+// selected by MIDI) reach the host's control ports without a UI.
 //
 // Built with -DLV2CHECK_UI (and X11/XTest), "lv2check --ui [--custom]
 // <bundle.lv2>" opens the X11 UI of a webkitgtk build in an X window the
@@ -19,6 +21,7 @@
 #include <lv2/atom/forge.h>
 #include <lv2/atom/util.h>
 #include <lv2/buf-size/buf-size.h>
+#include <lv2/control-input-port-change-request/control-input-port-change-request.h>
 #include <lv2/core/lv2.h>
 #include <lv2/midi/midi.h>
 #include <lv2/options/options.h>
@@ -70,6 +73,10 @@ typedef struct {
     uint8_t eventsOut[8192];
     LV2_Atom_Forge forge;
     LV2_Atom_Forge_Frame frame;
+    // Port change requests, applied after run as a host's main thread would.
+    LV2_ControlInputPort_Change_Request changeRequest;
+    uint32_t requestCount, requestPorts[256];
+    float requestValues[256];
 } Plugin;
 
 static LilvNode* uri(Plugin* p, const char* s) { return lilv_new_uri(p->world, s); }
@@ -94,6 +101,21 @@ static Plugin load(const char* bundle) {
     return p;
 }
 
+static LV2_ControlInputPort_Change_Status request_change(LV2_ControlInputPort_Change_Request_Handle h, uint32_t index, float value) {
+    Plugin* p = (Plugin*)h;
+    if (index >= lilv_plugin_get_num_ports(p->plugin)) return LV2_CONTROL_INPUT_PORT_CHANGE_ERR_INVALID_INDEX;
+    CHECK(p->requestCount < 256, "too many requests");
+    p->requestPorts[p->requestCount] = index;
+    p->requestValues[p->requestCount++] = value;
+    return LV2_CONTROL_INPUT_PORT_CHANGE_SUCCESS;
+}
+
+// run runs a block and then applies the port change requests it made.
+static void run(Plugin* p, uint32_t frames) {
+    lilv_instance_run(p->instance, frames);
+    for (uint32_t i = 0; i < p->requestCount; i++) p->controls[p->requestPorts[i]] = p->requestValues[i];
+}
+
 static void instantiate(Plugin* p) {
     static int32_t maxBlock = N;
     LV2_Options_Option options[] = {
@@ -102,7 +124,9 @@ static void instantiate(Plugin* p) {
     };
     LV2_Feature mapFeature = { LV2_URID__map, &map }, unmapFeature = { LV2_URID__unmap, &unmap };
     LV2_Feature optionsFeature = { LV2_OPTIONS__options, options };
-    const LV2_Feature* features[] = { &mapFeature, &unmapFeature, &optionsFeature, NULL };
+    p->changeRequest = (LV2_ControlInputPort_Change_Request){ p, request_change };
+    LV2_Feature changeFeature = { LV2_CONTROL_INPUT_PORT_CHANGE_REQUEST_URI, &p->changeRequest };
+    const LV2_Feature* features[] = { &mapFeature, &unmapFeature, &optionsFeature, &changeFeature, NULL };
     p->instance = lilv_plugin_instantiate(p->plugin, RATE, features);
     CHECK(p->instance, "instantiate");
     uint32_t ports = lilv_plugin_get_num_ports(p->plugin);
@@ -252,6 +276,9 @@ static void check_common(Plugin* p) {
     LilvNode* hardRT = uri(p, LV2_CORE__hardRTCapable);
     LilvNodes* optional = lilv_plugin_get_optional_features(p->plugin);
     CHECK(optional && lilv_nodes_contains(optional, hardRT), "hardRTCapable");
+    LilvNode* changeRequest = uri(p, LV2_CONTROL_INPUT_PORT_CHANGE_REQUEST_URI);
+    CHECK(lilv_nodes_contains(optional, changeRequest), "optional control-input-port-change-request");
+    lilv_node_free(changeRequest);
     lilv_nodes_free(optional);
     lilv_node_free(hardRT);
     uint32_t freewheel = port_index(p, "freewheel");
@@ -277,6 +304,14 @@ static void test_gain(const char* bundle) {
     CHECK(def == 0 && min < -40 && max > 0, "gain range %g..%g default %g", min, max, def);
     CHECK(!strcmp(port_unit(&p, gain), LV2_UNITS__db), "gain unit %s", port_unit(&p, gain));
     CHECK(port_has(&p, bypass, LV2_CORE__toggled) && port_has(&p, bypass, LV2_CORE__integer), "bypass is a toggle");
+    // The factory license (plugin.FactoryInfo.License) is doap:license.
+    LilvNode* licenseProp = uri(&p, "http://usefulinc.com/ns/doap#license");
+    LilvNodes* license = lilv_plugin_get_value(p.plugin, licenseProp);
+    CHECK(license && lilv_node_is_uri(lilv_nodes_get_first(license)) &&
+              !strcmp(lilv_node_as_uri(lilv_nodes_get_first(license)), "https://spdx.org/licenses/MIT"),
+          "doap:license");
+    lilv_nodes_free(license);
+    lilv_node_free(licenseProp);
 
     instantiate(&p);
     static float io[2][N];
@@ -407,6 +442,29 @@ static void test_synth(const char* bundle) {
         events_end(&p);
     }
     CHECK(peak(out[0], N) < 1e-4f, "released after 80 ms: %f", peak(out[0], N));
+
+    // Without a UI, a MIDI program change that selects Square Pad asks the host
+    // to set the program's values on its control ports, from run.
+    p.requestCount = 0;
+    events_begin(&p);
+    const uint8_t program[] = { 0xC0, 2 };
+    events_midi(&p, 0, program, sizeof(program));
+    events_end(&p);
+    run(&p, N);
+    bool releaseRequested = false;
+    for (uint32_t i = 0; i < p.requestCount; i++) releaseRequested |= p.requestPorts[i] == release;
+    CHECK(releaseRequested, "program change requests the release port (%u requests)", p.requestCount);
+    float padRelease = p.controls[release];
+    CHECK(fabsf(padRelease - logf(1500.0f) / logf(2000.0f)) < 1e-4f, "Square Pad release %f", padRelease);
+    // The applied values do not come back as new requests or reverts.
+    for (int block = 0; block < 8; block++) {
+        p.requestCount = 0;
+        events_begin(&p);
+        events_end(&p);
+        run(&p, N);
+        CHECK(p.requestCount == 0, "no further requests, got %u", p.requestCount);
+        CHECK(p.controls[release] == padRelease, "release port stays %f", p.controls[release]);
+    }
     lilv_instance_deactivate(p.instance);
     lilv_instance_free(p.instance);
     printf("synth ok\n");

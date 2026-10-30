@@ -117,6 +117,11 @@ func applyGain[T float32 | float64](in, out [][]T, gain T) float64 {
 }
 
 func init() {
+	plugin.SetFactoryInfo(plugin.FactoryInfo{
+		Vendor:  "VST3Go",
+		URL:     "https://github.com/meteuix/vst3go",
+		License: "https://spdx.org/licenses/MIT",
+	})
 	plugin.Register(gainPlugin{})
 }
 
