@@ -21,7 +21,7 @@ func TestGoflagsTags(t *testing.T) {
 
 func TestRenderEveryKind(t *testing.T) {
 	for _, kind := range kinds {
-		p := project{Name: "My Plug", Kind: kind, ID: "com.example.myplug", Vendor: "Acme", Module: "example.com/myplug", Replace: "/src/vst3go", VST3GoVersion: "v0.0.0-00010101000000-000000000000"}
+		p := project{Name: "My Plug", Kind: kind, ID: "com.example.myplug", Vendor: "Acme", Module: "example.com/myplug", Replace: "/src/vst3go", VST3GoVersion: "v2.0.0-00010101000000-000000000000"}
 		files, err := p.render()
 		if err != nil {
 			t.Fatalf("%s: %v", kind, err)

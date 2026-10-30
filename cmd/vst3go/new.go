@@ -147,11 +147,12 @@ func (p project) render() (map[string][]byte, error) {
 }
 
 // vst3goVersion is the vst3go version the new module requires: the one this
-// command was built from, a placeholder under a replace directive, or empty
-// for go mod tidy to pick the latest release.
+// command was built from, a placeholder under a replace directive (of the
+// module's major version, v2, as go.mod requires), or empty for go mod
+// tidy to pick the latest release.
 func vst3goVersion(replaced bool) string {
 	if replaced {
-		return "v0.0.0-00010101000000-000000000000"
+		return "v2.0.0-00010101000000-000000000000"
 	}
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
