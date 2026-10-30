@@ -87,6 +87,60 @@ func TestCLAPParamDomains(t *testing.T) {
 	}
 }
 
+func TestCLAPScaledParamsUseTheirNormalizedValue(t *testing.T) {
+	cutoff := param.FrequencyParameter(1, "Cutoff", 20, 20000, 1000).Build()
+	if lo, hi := clapParamRange(cutoff); lo != 0 || hi != 1 {
+		t.Fatalf("log range exposed as %v..%v, want 0..1", lo, hi)
+	}
+	n := cutoff.Normalize(1000)
+	if got := clapNormalized(cutoff, clapPlain(cutoff, n)); math.Abs(got-n) > 1e-12 {
+		t.Fatalf("round trip %v -> %v", n, got)
+	}
+	if text := clapParamText(cutoff, 0.5); text != "632.5 Hz" {
+		t.Fatalf("midpoint text %q, want the geometric mean", text)
+	}
+	if v, err := clapParamValue(cutoff, "1 kHz"); err != nil || math.Abs(v-n) > 1e-12 {
+		t.Fatalf("parse 1 kHz = %v, %v; want %v", v, err, n)
+	}
+}
+
+// Text round trips the way clap-validator checks them: value to text, back
+// to a value, and to the same text again, including formatters that switch
+// units ("1.00 s" for a parameter in ms).
+func TestCLAPParamTextRoundTrips(t *testing.T) {
+	params := []*param.Parameter{
+		param.TimeParameter(1, "Release", 1, 2000, 100).Build(),
+		param.TimeParameter(2, "Delay", 0, 2000, 250).Build(),
+		param.FrequencyParameter(3, "Cutoff", 20, 20000, 1000).Build(),
+		param.New(4, "Depth").Range(0, 100).Unit("%").Build(),
+	}
+	for _, p := range params {
+		lo, hi := clapParamRange(p)
+		// 10/11 is the value clap-validator found where Release (1 to
+		// 2000 ms) sits a hair over 1000 ms and reads back a hair under.
+		for i := 0; i <= 21; i++ {
+			value := lo + (hi-lo)*float64(i)/20
+			if i == 21 {
+				value = lo + (hi-lo)*10/11
+			}
+			text := clapParamText(p, value)
+			parsed, err := clapParamValue(p, text)
+			if err != nil {
+				t.Fatalf("%s: %v -> %q does not parse: %v", p.Name, value, text, err)
+			}
+			if again := clapParamText(p, parsed); again != text {
+				t.Fatalf("%s: %v -> %q -> %v -> %q", p.Name, value, text, parsed, again)
+			}
+		}
+	}
+	if text := clapParamText(params[0], 1); text != "2.00 s" {
+		t.Fatalf("Release at its maximum reads %q, want 2.00 s", text)
+	}
+	if text := clapParamText(params[3], 50); text != "50.00 %" {
+		t.Fatalf("bare number text %q, want the unit appended", text)
+	}
+}
+
 func TestCLAPParamFlags(t *testing.T) {
 	cases := []struct {
 		p    param.Parameter
@@ -204,6 +258,70 @@ func TestCLAPRawMIDI(t *testing.T) {
 	}
 	if sys := clapRawMIDI(&notes, [3]byte{0xF8, 0, 0}, 0); sys.isEvent || sys.isCtrl || sys.program >= 0 {
 		t.Fatalf("clock produced %+v", sys)
+	}
+}
+
+func TestCLAPMIDI2(t *testing.T) {
+	var notes clapNotes
+	// MIDI 2.0 note on, group 0, channel 3, key 60, velocity 0x8000 with
+	// the pitch 7.9 attribute at 60.5 (50 cents up).
+	on := clapMIDI2(&notes, [4]uint32{0x4093_3C03, 0x8000_0000 | 60<<9 | 256}, 4)
+	if !on.isEvent || on.event.Type != midi.EventTypeNoteOn || on.event.Channel != 3 || on.event.Note != 60 || on.event.Offset != 4 || on.event.NoteID < 0 {
+		t.Fatalf("note on %+v", on.event)
+	}
+	if math.Abs(float64(on.event.Velocity)-32768.0/65535) > 1e-7 || on.event.Tuning != 50 {
+		t.Fatalf("velocity %v tuning %v", on.event.Velocity, on.event.Tuning)
+	}
+	// Velocity 0 is still a note on.
+	if soft := clapMIDI2(&notes, [4]uint32{0x4093_4000, 0}, 0); soft.event.Type != midi.EventTypeNoteOn || soft.event.Velocity <= 0 {
+		t.Fatalf("velocity 0 %+v", soft.event)
+	}
+	// 32-bit poly pressure keeps its resolution.
+	pressure := clapMIDI2(&notes, [4]uint32{0x40A3_3C00, 0x4000_0000}, 0)
+	if pressure.event.Type != midi.EventTypePolyPressure || pressure.event.NoteID != on.event.NoteID || math.Abs(pressure.event.Value-0.25) > 1e-9 {
+		t.Fatalf("poly pressure %+v", pressure.event)
+	}
+	// Per-note pitch bend: a quarter of the range up is 12 semitones.
+	bend := clapMIDI2(&notes, [4]uint32{0x4063_3C00, 0xA000_0000}, 0)
+	if bend.event.Type != midi.EventTypeNoteExpression || bend.event.ExpressionType != midi.NoteExpressionTuning ||
+		bend.event.NoteID != on.event.NoteID || math.Abs(bend.event.Value-(0.5+12.0/240)) > 1e-9 {
+		t.Fatalf("per-note bend %+v", bend.event)
+	}
+	// Registered per-note controller 74 is brightness.
+	bright := clapMIDI2(&notes, [4]uint32{0x4003_3C4A, 0xFFFF_FFFF}, 0)
+	if bright.event.ExpressionType != midi.NoteExpressionBrightness || bright.event.Value != 1 {
+		t.Fatalf("brightness %+v", bright.event)
+	}
+	// Per-note messages for a key that is not sounding are dropped.
+	if none := clapMIDI2(&notes, [4]uint32{0x4063_3D00, 0xA000_0000}, 0); none.isEvent {
+		t.Fatalf("bend of a silent key %+v", none.event)
+	}
+	off := clapMIDI2(&notes, [4]uint32{0x4083_3C00, 0xFFFF_0000}, 9)
+	if off.event.Type != midi.EventTypeNoteOff || off.event.NoteID != on.event.NoteID || off.event.Velocity != 1 {
+		t.Fatalf("note off %+v", off.event)
+	}
+
+	cc := clapMIDI2(&notes, [4]uint32{0x40B0_0700, 0x8000_0000}, 0)
+	if !cc.isCtrl || cc.controller != 7 || math.Abs(cc.value-0.5) > 1e-9 {
+		t.Fatalf("cc %+v", cc)
+	}
+	chanBend := clapMIDI2(&notes, [4]uint32{0x40E1_0000, 0xFFFF_FFFF}, 0)
+	if chanBend.controller != MIDIControllerPitchBend || chanBend.value != 1 || chanBend.event.Channel != 1 {
+		t.Fatalf("pitch bend %+v", chanBend)
+	}
+	if at := clapMIDI2(&notes, [4]uint32{0x40D0_0000, 0}, 0); at.controller != MIDIControllerAfterTouch || at.value != 0 {
+		t.Fatalf("channel pressure %+v", at)
+	}
+	if pc := clapMIDI2(&notes, [4]uint32{0x40C0_0000, 5 << 24}, 0); pc.program != 5 {
+		t.Fatalf("program change %+v", pc)
+	}
+	// MIDI 1.0 in a universal packet goes through the MIDI 1.0 path.
+	if one := clapMIDI2(&notes, [4]uint32{0x2090_407F}, 0); one.event.Type != midi.EventTypeNoteOn || one.event.Note != 64 || one.event.Velocity != 1 {
+		t.Fatalf("MIDI 1.0 packet %+v", one.event)
+	}
+	// Utility and data messages are ignored.
+	if util := clapMIDI2(&notes, [4]uint32{0x0010_0000}, 0); util.isEvent || util.isCtrl || util.program >= 0 {
+		t.Fatalf("utility message produced %+v", util)
 	}
 }
 

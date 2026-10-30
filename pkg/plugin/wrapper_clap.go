@@ -36,9 +36,8 @@ type clapInstance struct {
 	active         atomic.Bool
 	latencyPending atomic.Bool // latency changed while active
 	rescanPending  atomic.Bool // the audio thread changed the program
-	mode           atomic.Int32
-	notes          clapNotes // audio thread
-	seenProgram    int32     // audio thread: last program applied by process
+	notes          clapNotes   // audio thread
+	seenProgram    int32       // audio thread: last program applied by process
 	edits          *mpscQueue[clapEdit]
 	editorPending  atomic.Bool // host automation changed values the editor shows
 	hostChanged    bool        // audio thread: the block had host parameter changes
@@ -140,6 +139,7 @@ func GoClapCreate(index C.uint32_t, plugin *C.VST3GoClapPlugin) (id C.uintptr_t)
 		inst.seenProgram = component.programs.audioProgram.Load()
 	}
 	component.wrapper = inst
+	component.ara = newARAInstance(int(index))
 	inst.id = nextInstanceID()
 	clapInstances.add(inst.id, inst)
 	return C.uintptr_t(inst.id)
@@ -177,6 +177,7 @@ func GoClapDestroy(id C.uintptr_t) {
 	if aware, ok := inst.c.processor.(HostAwareProcessor); ok {
 		aware.SetHost(nil)
 	}
+	inst.c.ara.release()
 }
 
 //export GoClapActivate
@@ -187,7 +188,7 @@ func GoClapActivate(id C.uintptr_t, sampleRate C.double, minFrames, maxFrames C.
 	if maxFrames == 0 || maxFrames > math.MaxInt32 {
 		return false
 	}
-	if c.SetupProcessing(float64(sampleRate), int32(maxFrames), process.ProcessMode(inst.mode.Load()), c.double) != nil {
+	if c.SetupProcessing(float64(sampleRate), int32(maxFrames), inst.processMode(), c.double) != nil {
 		return false
 	}
 	// CLAP has no bus activation: every port is active.
@@ -209,22 +210,17 @@ func GoClapActivate(id C.uintptr_t, sampleRate C.double, minFrames, maxFrames C.
 	return true
 }
 
+//export GoClapRealtimeConfig
+func GoClapRealtimeConfig(id C.uintptr_t, share *C.double, channels *C.uint32_t) {
+	s, n := getClap(id).c.realtimeConfig()
+	*share, *channels = C.double(s), C.uint32_t(n)
+}
+
 //export GoClapDeactivate
 func GoClapDeactivate(id C.uintptr_t) {
 	inst := getClap(id)
 	inst.active.Store(false)
 	_ = inst.c.SetActive(false)
-}
-
-//export GoClapStartProcessing
-func GoClapStartProcessing(id C.uintptr_t) C.bool {
-	getClap(id).c.SetProcessing(true)
-	return true
-}
-
-//export GoClapStopProcessing
-func GoClapStopProcessing(id C.uintptr_t) {
-	getClap(id).c.SetProcessing(false)
 }
 
 //export GoClapReset
@@ -282,7 +278,7 @@ func GoClapProcess(id C.uintptr_t, proc *C.clap_process_t) C.clap_process_status
 		ctx.BeginBlock(n)
 	}
 	ctx.SampleRate = c.sampleRate
-	ctx.ProcessMode = process.ProcessMode(inst.mode.Load())
+	ctx.ProcessMode = inst.processMode()
 	clapTransport(ctx.Transport, proc.transport, int64(proc.steady_time), c.sampleRate)
 	if n > 0 {
 		mapClapBuffers(ctx, inputs, outputs, n, double)
@@ -454,7 +450,11 @@ func (inst *clapInstance) collectEvents(ctx *process.Context, in *C.clap_input_e
 			inst.noteExpression(ctx, (*C.clap_event_note_expression_t)(unsafe.Pointer(header)), offset)
 		case C.CLAP_EVENT_MIDI:
 			ev := (*C.clap_event_midi_t)(unsafe.Pointer(header))
-			inst.rawMIDI(ctx, int32(ev.port_index), [3]byte{byte(ev.data[0]), byte(ev.data[1]), byte(ev.data[2])}, offset)
+			inst.routeMIDI(ctx, int32(ev.port_index), clapRawMIDI(&inst.notes, [3]byte{byte(ev.data[0]), byte(ev.data[1]), byte(ev.data[2])}, offset), offset)
+		case C.CLAP_EVENT_MIDI2:
+			ev := (*C.clap_event_midi2_t)(unsafe.Pointer(header))
+			words := [4]uint32{uint32(ev.data[0]), uint32(ev.data[1]), uint32(ev.data[2]), uint32(ev.data[3])}
+			inst.routeMIDI(ctx, int32(ev.port_index), clapMIDI2(&inst.notes, words, offset), offset)
 		case C.CLAP_EVENT_MIDI_SYSEX:
 			ev := (*C.clap_event_midi_sysex_t)(unsafe.Pointer(header))
 			if ev.buffer == nil || ev.size == 0 {
@@ -538,12 +538,11 @@ func (inst *clapInstance) noteExpression(ctx *process.Context, ev *C.clap_event_
 	})
 }
 
-// rawMIDI routes a MIDI 1.0 message: notes and pressure become events,
-// controllers go through the MIDI mapping like on VST3 hosts, and program
-// changes select a program.
-func (inst *clapInstance) rawMIDI(ctx *process.Context, port int32, data [3]byte, offset int32) {
+// routeMIDI routes a converted MIDI message: notes, pressure and note
+// expressions become events, controllers go through the MIDI mapping like
+// on VST3 hosts, and program changes select a program.
+func (inst *clapInstance) routeMIDI(ctx *process.Context, port int32, msg clapMIDIMessage, offset int32) {
 	c := inst.c
-	msg := clapRawMIDI(&inst.notes, data, offset)
 	switch {
 	case msg.isEvent:
 		ctx.AddInputEvent(msg.event)
@@ -886,8 +885,9 @@ func clapDirection(isInput C.bool) bus.Direction {
 const clapOutputPortID = 1 << 16
 
 var (
-	clapPortMono   = C.CString("mono")
-	clapPortStereo = C.CString("stereo")
+	clapPortMono     = C.CString("mono")
+	clapPortStereo   = C.CString("stereo")
+	clapPortSurround = C.CString("surround")
 )
 
 //export GoClapAudioPortsGet
@@ -910,14 +910,131 @@ func GoClapAudioPortsGet(id C.uintptr_t, index C.uint32_t, isInput C.bool, info 
 		info.flags |= C.CLAP_AUDIO_PORT_SUPPORTS_64BITS
 	}
 	info.channel_count = C.uint32_t(b.ChannelCount)
-	switch b.ChannelCount {
-	case 1:
+	switch arrangement := b.SpeakerArrangement(); {
+	case b.ChannelCount == 1:
 		info.port_type = clapPortMono
-	case 2:
+	case arrangement == bus.ArrangementStereo:
 		info.port_type = clapPortStereo
+	case clapSurroundArrangement(arrangement):
+		info.port_type = clapPortSurround
 	}
 	info.in_place_pair = clapInvalidID
 	return true
+}
+
+// clapSurroundSpeakers is the number of CLAP surround channel IDs that are
+// VST3 speaker bits: IDs 0 to 17 (front left to top back right) name the
+// speaker of the bit with the same number, and both order the channels of
+// a port by it.
+const clapSurroundSpeakers = 18
+
+// clapSurroundArrangement reports whether an arrangement of three or more
+// speakers has only speakers with CLAP surround IDs.
+func clapSurroundArrangement(a bus.SpeakerArrangement) bool {
+	return a.ChannelCount() >= 3 && a>>clapSurroundSpeakers == 0
+}
+
+// clapRequestArrangement converts a configurable-audio-ports request to a
+// speaker arrangement: mono and stereo ports, surround ports by their
+// channel map (in speaker order), and ports without a type by their
+// channel count.
+func clapRequestArrangement(r *C.clap_audio_port_configuration_request_t) (bus.SpeakerArrangement, bool) {
+	channels := int32(r.channel_count)
+	if r.port_type == nil {
+		a := bus.ArrangementForChannels(channels)
+		return a, a.ChannelCount() == channels
+	}
+	switch C.GoString(r.port_type) {
+	case "mono":
+		return bus.ArrangementMono, channels == 1
+	case "stereo":
+		return bus.ArrangementStereo, channels == 2
+	case "surround":
+		if r.port_details == nil || channels < 1 || channels > clapSurroundSpeakers {
+			return 0, false
+		}
+		var a bus.SpeakerArrangement
+		last := -1
+		for _, id := range unsafe.Slice((*uint8)(r.port_details), channels) {
+			if int(id) <= last || id >= clapSurroundSpeakers {
+				return 0, false
+			}
+			last = int(id)
+			a |= 1 << id
+		}
+		return a, true
+	}
+	return 0, false
+}
+
+// GoClapConfigurePorts checks (apply false) or applies a configurable-audio-ports
+// request; the plugin is deactivated.
+//
+//export GoClapConfigurePorts
+func GoClapConfigurePorts(id C.uintptr_t, requests *C.clap_audio_port_configuration_request_t, count C.uint32_t, apply C.bool) C.bool {
+	inst := getClap(id)
+	c := inst.c
+	if inst.active.Load() || (count > 0 && requests == nil) {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	inputs, outputs := c.busArrangements(bus.DirectionInput), c.busArrangements(bus.DirectionOutput)
+	for _, r := range unsafe.Slice(requests, count) {
+		ports := outputs
+		if r.is_input {
+			ports = inputs
+		}
+		a, ok := clapRequestArrangement(&r)
+		if !ok || int(r.port_index) >= len(ports) {
+			return false
+		}
+		ports[r.port_index] = a
+	}
+	return C.bool(c.applyBusArrangements(inputs, outputs, bool(apply)))
+}
+
+// GoClapSurroundMaskSupported reports whether the main ports accept a
+// surround channel mask.
+//
+//export GoClapSurroundMaskSupported
+func GoClapSurroundMaskSupported(id C.uintptr_t, mask C.uint64_t) C.bool {
+	a := bus.SpeakerArrangement(mask)
+	if a == 0 || a>>clapSurroundSpeakers != 0 {
+		return false
+	}
+	c := getClap(id).c
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	inputs, outputs := c.busArrangements(bus.DirectionInput), c.busArrangements(bus.DirectionOutput)
+	for _, ports := range [][]bus.SpeakerArrangement{inputs, outputs} {
+		if len(ports) > 0 {
+			ports[0] = a
+		}
+	}
+	return C.bool(c.applyBusArrangements(inputs, outputs, false))
+}
+
+// GoClapSurroundChannelMap writes the surround channel IDs of a port in
+// channel order and returns their number.
+//
+//export GoClapSurroundChannelMap
+func GoClapSurroundChannelMap(id C.uintptr_t, isInput C.bool, index C.uint32_t, channelMap *C.uint8_t, capacity C.uint32_t) C.uint32_t {
+	b := getClap(id).c.buses.GetBusInfo(bus.MediaTypeAudio, clapDirection(isInput), int32(index))
+	if b == nil || !clapSurroundArrangement(b.SpeakerArrangement()) {
+		return 0
+	}
+	out := unsafe.Slice((*uint8)(channelMap), capacity)
+	n := 0
+	for speaker := range clapSurroundSpeakers {
+		if b.SpeakerArrangement()&(1<<speaker) != 0 {
+			if n < len(out) {
+				out[n] = uint8(speaker)
+			}
+			n++
+		}
+	}
+	return C.uint32_t(n)
 }
 
 //export GoClapNotePortsCount
@@ -934,6 +1051,9 @@ func GoClapNotePortsGet(id C.uintptr_t, index C.uint32_t, isInput C.bool, info *
 	*info = C.clap_note_port_info_t{}
 	info.id = C.clap_id(index)
 	info.supported_dialects = C.CLAP_NOTE_DIALECT_CLAP | C.CLAP_NOTE_DIALECT_MIDI
+	if isInput {
+		info.supported_dialects |= C.CLAP_NOTE_DIALECT_MIDI2
+	}
 	info.preferred_dialect = C.CLAP_NOTE_DIALECT_CLAP
 	copyCString(&info.name[0], len(info.name), b.Name)
 	return true
@@ -950,18 +1070,12 @@ func GoClapTail(id C.uintptr_t) C.uint32_t {
 	return C.uint32_t(getClap(id).c.GetTailSamples())
 }
 
-//export GoClapRenderSet
-func GoClapRenderSet(id C.uintptr_t, mode C.int32_t) C.bool {
-	inst := getClap(id)
-	switch mode {
-	case C.CLAP_RENDER_REALTIME:
-		inst.mode.Store(int32(process.ProcessModeRealtime))
-	case C.CLAP_RENDER_OFFLINE:
-		inst.mode.Store(int32(process.ProcessModeOffline))
-	default:
-		return false
+// processMode is the render mode the host set (clap_bridge.c keeps it).
+func (inst *clapInstance) processMode() process.ProcessMode {
+	if C.vst3go_clap_offline(inst.plugin) {
+		return process.ProcessModeOffline
 	}
-	return true
+	return process.ProcessModeRealtime
 }
 
 //export GoClapTrackInfoChanged

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -34,9 +36,10 @@ type componentImpl struct {
 	buses      *bus.Configuration
 	midiCC     *midiControllers
 	mapper     MIDIMappingProcessor
-	programs   *programs // nil without ProgramListProcessor
-	double     bool      // processor supports 64-bit samples
-	editor     Editor    // editorSpec of the processor
+	programs   *programs    // nil without ProgramListProcessor
+	double     bool         // processor supports 64-bit samples
+	editor     Editor       // editorSpec of the processor
+	ara        *araInstance // nil unless the plugin is an ARAPlugin
 
 	mu           sync.Mutex
 	processCtx   *process.Context
@@ -44,7 +47,6 @@ type componentImpl struct {
 	maxBlockSize int32
 	processMode  process.ProcessMode
 	active       bool
-	processing   atomic.Bool
 	use64        atomic.Bool // host set up 64-bit processing
 
 	wrapper frontend // the plugin format talking to the host; nil in pure-Go tests
@@ -65,6 +67,7 @@ type frontend interface {
 }
 
 func newComponent(processor Processor, info plugin.Info) (*componentImpl, error) {
+	startGCPolicy()
 	params := processor.GetParameters()
 	if params == nil {
 		return nil, fmt.Errorf("processor %q has no parameter registry", info.Name)
@@ -208,7 +211,13 @@ func (c *componentImpl) SetActive(active bool) error {
 		c.processCtx.ResetParameterChanges()
 		c.processCtx.ClearAllEvents()
 	}
-	return c.processor.SetActive(active)
+	if err := c.processor.SetActive(active); err != nil {
+		return err
+	}
+	if active {
+		collectBeforeProcessing()
+	}
+	return nil
 }
 
 func (c *componentImpl) SetState(stateData []byte) error {
@@ -234,7 +243,24 @@ func (c *componentImpl) GetState() ([]byte, error) {
 func (c *componentImpl) SetBusArrangements(inputs, outputs []bus.SpeakerArrangement) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.applyBusArrangements(inputs, outputs, true)
+}
 
+// busArrangements returns the arrangement of every audio bus in direction.
+func (c *componentImpl) busArrangements(direction bus.Direction) []bus.SpeakerArrangement {
+	count := c.buses.GetBusCount(bus.MediaTypeAudio, direction)
+	arrangements := make([]bus.SpeakerArrangement, count)
+	for i := range count {
+		if info := c.buses.GetBusInfo(bus.MediaTypeAudio, direction, i); info != nil {
+			arrangements[i] = info.SpeakerArrangement()
+		}
+	}
+	return arrangements
+}
+
+// applyBusArrangements checks (apply false) or sets the arrangements of
+// every audio bus. Caller holds mu.
+func (c *componentImpl) applyBusArrangements(inputs, outputs []bus.SpeakerArrangement, apply bool) bool {
 	if int32(len(inputs)) != c.buses.GetBusCount(bus.MediaTypeAudio, bus.DirectionInput) ||
 		int32(len(outputs)) != c.buses.GetBusCount(bus.MediaTypeAudio, bus.DirectionOutput) {
 		return false
@@ -246,6 +272,9 @@ func (c *componentImpl) SetBusArrangements(inputs, outputs []bus.SpeakerArrangem
 	flexible, ok := c.processor.(BusArrangementProcessor)
 	if !ok || !flexible.AcceptBusArrangements(inputs, outputs) {
 		return false
+	}
+	if !apply {
+		return true
 	}
 	for i, arrangement := range inputs {
 		if err := c.buses.SetArrangement(bus.DirectionInput, int32(i), arrangement); err != nil {
@@ -318,8 +347,34 @@ func (c *componentImpl) SetupProcessing(sampleRate float64, maxBlockSize int32, 
 	return nil
 }
 
-func (c *componentImpl) SetProcessing(state bool) {
-	c.processing.Store(state)
+// deadlineEnv overrides DeadlineProcessor for every plugin in the process
+// (a share from 0 to 1), to run a host's checks through the deadline guard.
+const deadlineEnv = "VST3GO_PROCESS_DEADLINE"
+
+// realtimeConfig returns the share of each block's duration the host waits
+// for it (deadlineEnv, DeadlineProcessor or plugin.DefaultProcessDeadline,
+// 0 to 1; 0 when nothing bounds it) and the channels of every audio bus,
+// for the C deadline guard.
+func (c *componentImpl) realtimeConfig() (share float64, channels int32) {
+	share = plugin.DefaultProcessDeadline
+	if d, ok := c.processor.(DeadlineProcessor); ok {
+		share = d.ProcessDeadline()
+	}
+	if env := os.Getenv(deadlineEnv); env != "" {
+		share, _ = strconv.ParseFloat(env, 64)
+	}
+	if !(share > 0) {
+		return 0, 0
+	}
+	buses := c.processor.GetBuses()
+	for _, dir := range []bus.Direction{bus.DirectionInput, bus.DirectionOutput} {
+		for i := range buses.GetBusCount(bus.MediaTypeAudio, dir) {
+			if info := buses.GetBusInfo(bus.MediaTypeAudio, dir, i); info != nil {
+				channels += info.ChannelCount
+			}
+		}
+	}
+	return min(share, 1), channels
 }
 
 // IEditController

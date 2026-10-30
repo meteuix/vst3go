@@ -1,4 +1,6 @@
 #include "vst3_component.h"
+#include "vst3_rt.h"
+#include "rtguard.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -30,6 +32,8 @@ struct Component {
     SubInterface keyswitch;
     SubInterface infoListener;
     SubInterface connectionPoint;
+    SubInterface araEntry;
+    SubInterface araEntry2;
     int32_t refCount;
     int32_t kind;
     int32_t caps;
@@ -37,6 +41,8 @@ struct Component {
     Steinberg_TUID controllerCid;
     struct Steinberg_FUnknown* hostContext;     // from initialize, one reference
     struct Steinberg_Vst_IConnectionPoint* peer; // distributed plugins, one reference
+    struct Steinberg_Vst_ProcessSetup setup;     // from setupProcessing
+    VST3GoRT* rt;                                // deadline guard while active, or NULL
 };
 
 #define OWNER(ptr) (((SubInterface*)(ptr))->component)
@@ -66,6 +72,7 @@ Steinberg_uint32 componentRelease(void* thisInterface) {
     if (count == 0) {
         releaseUnknown((struct Steinberg_FUnknown**)&component->peer);
         releaseUnknown(&component->hostContext);
+        vst3go_rt_free(component->rt);
         GoReleaseComponent(component->goComponent);
         free(component);
     }
@@ -159,8 +166,26 @@ static Steinberg_tresult SMTG_STDMETHODCALLTYPE component_activateBus(void* this
     return GoComponentActivateBus(SELF_GO(thisInterface), type, dir, index, state);
 }
 
+// setActive starts the deadline guard (DeadlineProcessor) for real-time
+// processing and stops it, after its last block, on deactivation.
 static Steinberg_tresult SMTG_STDMETHODCALLTYPE component_setActive(void* thisInterface, Steinberg_TBool state) {
-    return GoComponentSetActive(SELF_GO(thisInterface), state);
+    Component* component = (Component*)thisInterface;
+    VST3GoRT* rt = __atomic_exchange_n(&component->rt, NULL, __ATOMIC_ACQ_REL);
+    vst3go_rt_free(rt);
+    Steinberg_tresult result = GoComponentSetActive(component->goComponent, state);
+    if (!state || result != Steinberg_kResultOk || component->setup.processMode == Steinberg_Vst_ProcessModes_kOffline ||
+        component->setup.maxSamplesPerBlock <= 0) {
+        return result;
+    }
+    double share = 0;
+    int32_t channels = 0;
+    GoAudioRealtimeConfig(component->goComponent, &share, &channels);
+    if (share > 0) {
+        rt = vst3go_rt_new(component->goComponent, component->setup.sampleRate, component->setup.maxSamplesPerBlock,
+            component->setup.symbolicSampleSize, channels, share);
+        __atomic_store_n(&component->rt, rt, __ATOMIC_RELEASE);
+    }
+    return result;
 }
 
 static Steinberg_tresult SMTG_STDMETHODCALLTYPE component_setState(void* thisInterface, struct Steinberg_IBStream* state) {
@@ -222,18 +247,33 @@ static Steinberg_tresult SMTG_STDMETHODCALLTYPE audio_setupProcessing(void* this
     if (!setup) {
         return Steinberg_kInvalidArgument;
     }
-    return GoAudioSetupProcessing(GO(thisInterface), setup);
+    Steinberg_tresult result = GoAudioSetupProcessing(GO(thisInterface), setup);
+    if (result == Steinberg_kResultOk) {
+        OWNER(thisInterface)->setup = *setup;
+    }
+    return result;
 }
 
+// setProcessing may come on the audio thread and needs nothing from the
+// processor, so it does not enter Go.
 static Steinberg_tresult SMTG_STDMETHODCALLTYPE audio_setProcessing(void* thisInterface, Steinberg_TBool state) {
-    return GoAudioSetProcessing(GO(thisInterface), state);
+    (void)thisInterface;
+    (void)state;
+    return Steinberg_kResultOk;
 }
 
 static Steinberg_tresult SMTG_STDMETHODCALLTYPE audio_process(void* thisInterface, struct Steinberg_Vst_ProcessData* data) {
     if (!data) {
         return Steinberg_kInvalidArgument;
     }
-    return GoAudioProcess(GO(thisInterface), data);
+    VST3GoRT* rt = __atomic_load_n(&OWNER(thisInterface)->rt, __ATOMIC_ACQUIRE);
+    if (rt) {
+        return vst3go_rt_process(rt, data);
+    }
+    rtguard_fp fp = rtguard_flush_denormals();
+    Steinberg_tresult result = GoAudioProcess(GO(thisInterface), data);
+    rtguard_restore_fp(fp);
+    return result;
 }
 
 static Steinberg_uint32 SMTG_STDMETHODCALLTYPE audio_getTailSamples(void* thisInterface) {
@@ -773,6 +813,44 @@ Steinberg_tresult vst3go_send_message(void* thisComponent, const char* id, const
     return result;
 }
 
+// ARA IPlugInEntryPoint and IPlugInEntryPoint2
+
+typedef struct {
+    Steinberg_tresult (SMTG_STDMETHODCALLTYPE* queryInterface)(void*, const Steinberg_TUID, void**);
+    Steinberg_uint32 (SMTG_STDMETHODCALLTYPE* addRef)(void*);
+    Steinberg_uint32 (SMTG_STDMETHODCALLTYPE* release)(void*);
+    const ARAFactory* (SMTG_STDMETHODCALLTYPE* getFactory)(void*);
+    const ARAPlugInExtensionInstance* (SMTG_STDMETHODCALLTYPE* bindToDocumentController)(void*, ARADocumentControllerRef);
+} ARAEntryVtbl;
+
+typedef struct {
+    Steinberg_tresult (SMTG_STDMETHODCALLTYPE* queryInterface)(void*, const Steinberg_TUID, void**);
+    Steinberg_uint32 (SMTG_STDMETHODCALLTYPE* addRef)(void*);
+    Steinberg_uint32 (SMTG_STDMETHODCALLTYPE* release)(void*);
+    const ARAPlugInExtensionInstance* (SMTG_STDMETHODCALLTYPE* bindToDocumentControllerWithRoles)(void*, ARADocumentControllerRef, ARAPlugInInstanceRoleFlags, ARAPlugInInstanceRoleFlags);
+} ARAEntry2Vtbl;
+
+static const ARAFactory* SMTG_STDMETHODCALLTYPE araEntry_getFactory(void* thisInterface) {
+    return GoARAComponentFactory(GO(thisInterface));
+}
+
+// The ARA 1 binding: no known roles, so the instance takes every role.
+static const ARAPlugInExtensionInstance* SMTG_STDMETHODCALLTYPE araEntry_bind(void* thisInterface, ARADocumentControllerRef controller) {
+    return GoARAComponentBind(GO(thisInterface), controller, 0, 0);
+}
+
+static const ARAPlugInExtensionInstance* SMTG_STDMETHODCALLTYPE araEntry2_bind(void* thisInterface, ARADocumentControllerRef controller, ARAPlugInInstanceRoleFlags known, ARAPlugInInstanceRoleFlags assigned) {
+    return GoARAComponentBind(GO(thisInterface), controller, known, assigned);
+}
+
+static const ARAEntryVtbl araEntryVtbl = {
+    sub_queryInterface, sub_addRef, sub_release, araEntry_getFactory, araEntry_bind
+};
+
+static const ARAEntry2Vtbl araEntry2Vtbl = {
+    sub_queryInterface, sub_addRef, sub_release, araEntry2_bind
+};
+
 // Object creation and interface lookup
 
 static void initSub(SubInterface* sub, const void* vtbl, Component* component) {
@@ -801,6 +879,8 @@ void* createComponent(uintptr_t goComponent, int32_t kind, int32_t caps, const c
     initSub(&component->keyswitch, &keyswitchVtbl, component);
     initSub(&component->infoListener, &infoListenerVtbl, component);
     initSub(&component->connectionPoint, &connectionPointVtbl, component);
+    initSub(&component->araEntry, &araEntryVtbl, component);
+    initSub(&component->araEntry2, &araEntry2Vtbl, component);
     component->refCount = 1;
     component->kind = kind;
     component->caps = caps;
@@ -831,6 +911,12 @@ static void* findInterface(Component* component, const Steinberg_TUID iid) {
         }
         if ((caps & VST3GO_CAP_PROGRAM_DATA) && iid_equal(iid, Steinberg_Vst_IProgramListData_iid)) {
             return &component->programListData;
+        }
+        if ((caps & VST3GO_CAP_ARA) && iid_equal(iid, ARA_IPlugInEntryPoint_iid)) {
+            return &component->araEntry;
+        }
+        if ((caps & VST3GO_CAP_ARA) && iid_equal(iid, ARA_IPlugInEntryPoint2_iid)) {
+            return &component->araEntry2;
         }
     }
     if (controllerSide) {

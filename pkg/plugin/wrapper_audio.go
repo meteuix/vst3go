@@ -90,15 +90,13 @@ func GoAudioSetupProcessing(componentID C.uintptr_t, setup *C.struct_Steinberg_V
 	return resultFromError(err)
 }
 
-//export GoAudioSetProcessing
-func GoAudioSetProcessing(componentID C.uintptr_t, state C.int32_t) C.Steinberg_tresult {
-	wrapper := getComponent(componentID)
-	if wrapper == nil {
-		return resultFalse
-	}
-	wrapper.component.SetProcessing(state != 0)
-	return resultOK
-}
+// GoRTEnter is the deadline guard worker's call into Go: once when it
+// starts (binding the thread to the runtime off the audio path) and first
+// in every job (rtguard_entered), where returning means the runtime let the
+// worker in.
+//
+//export GoRTEnter
+func GoRTEnter() {}
 
 //export GoAudioProcess
 func GoAudioProcess(componentID C.uintptr_t, data *C.struct_Steinberg_Vst_ProcessData) (result C.Steinberg_tresult) {
@@ -111,6 +109,15 @@ func GoAudioProcess(componentID C.uintptr_t, data *C.struct_Steinberg_Vst_Proces
 		return resultInvalidArgument
 	}
 	return resultOK
+}
+
+//export GoAudioRealtimeConfig
+func GoAudioRealtimeConfig(componentID C.uintptr_t, share *C.double, channels *C.int32_t) {
+	*share, *channels = 0, 0
+	if wrapper := getComponent(componentID); wrapper != nil {
+		s, n := wrapper.component.realtimeConfig()
+		*share, *channels = C.double(s), C.int32_t(n)
+	}
 }
 
 //export GoAudioGetTailSamples

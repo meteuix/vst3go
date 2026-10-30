@@ -109,23 +109,33 @@ func MixParameter(id uint32, name string) *Builder {
 		Formatter(PercentFormatter, PercentParser)
 }
 
-// FrequencyParameter creates a standard frequency parameter with logarithmic scaling
+// FrequencyParameter creates a frequency parameter on a logarithmic scale
+// (the range must be positive).
 func FrequencyParameter(id uint32, name string, min, max, defaultVal float64) *Builder {
 	return New(id, name).
 		Range(min, max).
 		Default(defaultVal).
+		Logarithmic().
 		Unit("Hz").
 		Formatter(FrequencyFormatter, FrequencyParser)
 }
 
-// TimeParameter creates a time parameter (ms or s depending on range)
+// TimeParameter creates a time parameter in milliseconds (shown in ms or
+// s). A positive range is logarithmic; a range from zero is skewed so the
+// middle of the knob sits at an eighth of the range.
 func TimeParameter(id uint32, name string, minMs, maxMs, defaultMs float64) *Builder {
-	return New(id, name).
-		Range(minMs, maxMs).
+	b := New(id, name).Range(minMs, maxMs)
+	if minMs > 0 {
+		b.Logarithmic()
+	} else {
+		b.Center(minMs + (maxMs-minMs)/8)
+	}
+	return b.
 		Default(defaultMs).
 		Unit("ms").
 		Formatter(func(v float64) string {
-			if v >= 1000 {
+			// Switch to seconds where the rounded text reaches 1000.0 ms.
+			if math.Round(v*10) >= 1e4 {
 				return fmt.Sprintf("%.2f s", v/1000.0)
 			}
 			return fmt.Sprintf("%.1f ms", v)

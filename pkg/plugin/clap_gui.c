@@ -33,6 +33,7 @@ struct VST3GoClapGui {
         struct Steinberg_Linux_ITimerHandler* handler;
     } timers[VST3GO_CLAP_MAX_TIMERS];
     bool attached;
+    void* floating;  // the window of a floating gui
 };
 
 static bool iid_equal(const Steinberg_TUID a, const Steinberg_TUID b) {
@@ -59,10 +60,16 @@ static Steinberg_tresult SMTG_STDMETHODCALLTYPE frame_queryInterface(void* self,
 
 static Steinberg_tresult SMTG_STDMETHODCALLTYPE frame_resizeView(void* self, struct Steinberg_IPlugView* view, struct Steinberg_ViewRect* rect) {
     VST3GoClapPlugin* p = ((VST3GoClapFrame*)self)->gui->plugin;
-    if (!rect || !view || !p->hostGui) {
+    if (!rect || !view || (!p->hostGui && !p->gui->floating)) {
         return Steinberg_kResultFalse;
     }
     uint32_t width = (uint32_t)(rect->right - rect->left), height = (uint32_t)(rect->bottom - rect->top);
+    if (p->gui->floating) {
+        // The plugin owns a floating window.
+        VST3GoFloatingWindowSetSize(p->gui->floating, (int32_t)width, (int32_t)height);
+        view->lpVtbl->onSize(view, rect);
+        return Steinberg_kResultOk;
+    }
     if (!p->hostGui->request_resize(p->host, width, height)) {
         return Steinberg_kResultFalse;
     }
@@ -158,6 +165,9 @@ static const clap_plugin_timer_support_t extTimer = { timer_on_timer };
 static const char* clapAPI(void) {
     if (!VST3GoEditorPlatformType) return NULL;
     if (!strcmp(VST3GoEditorPlatformType, Steinberg_kPlatformTypeNSView)) return CLAP_WINDOW_API_COCOA;
+    // CLAP has no iOS window API; the AUv3 front end passes the UIView as
+    // the Cocoa handle.
+    if (!strcmp(VST3GoEditorPlatformType, Steinberg_kPlatformTypeUIView)) return CLAP_WINDOW_API_COCOA;
     if (!strcmp(VST3GoEditorPlatformType, Steinberg_kPlatformTypeHWND)) return CLAP_WINDOW_API_WIN32;
     if (!strcmp(VST3GoEditorPlatformType, Steinberg_kPlatformTypeX11EmbedWindowID)) return CLAP_WINDOW_API_X11;
     return NULL;
@@ -167,9 +177,22 @@ static VST3GoClapGui* guiOf(const clap_plugin_t* plugin) {
     return ((VST3GoClapPlugin*)plugin->plugin_data)->gui;
 }
 
+// Both embedded and floating windows of the platform API.
 static bool gui_is_api_supported(const clap_plugin_t* plugin, const char* api, bool isFloating) {
-    (void)plugin;
-    return !isFloating && api && clapAPI() && !strcmp(api, clapAPI());
+    (void)plugin; (void)isFloating;
+    return api && clapAPI() && !strcmp(api, clapAPI());
+}
+
+// floating_closed: the user closed the floating window, which hid it.
+static void floating_closed(void* ctx) {
+    VST3GoClapPlugin* p = (VST3GoClapPlugin*)ctx;
+    if (p->hostGui) p->hostGui->closed(p->host, false);
+}
+
+static void floating_resized(void* ctx, int32_t width, int32_t height) {
+    VST3GoClapGui* gui = ((VST3GoClapPlugin*)ctx)->gui;
+    struct Steinberg_ViewRect rect = { 0, 0, width, height };
+    if (gui && gui->attached && width > 0 && height > 0) gui->view->lpVtbl->onSize(gui->view, &rect);
 }
 
 static bool gui_get_preferred_api(const clap_plugin_t* plugin, const char** api, bool* isFloating) {
@@ -199,6 +222,19 @@ static bool gui_create(const clap_plugin_t* plugin, const char* api, bool isFloa
         return false;
     }
     gui->view->lpVtbl->setFrame(gui->view, (struct Steinberg_IPlugFrame*)&gui->frame);
+    if (isFloating) {
+        struct Steinberg_ViewRect rect;
+        gui->view->lpVtbl->getSize(gui->view, &rect);
+        bool resizable = gui->view->lpVtbl->canResize(gui->view) == Steinberg_kResultOk;
+        VST3GoFloatingCallbacks callbacks = { floating_closed, floating_resized, p };
+        gui->floating = VST3GoFloatingWindowCreate(rect.right - rect.left, rect.bottom - rect.top, resizable, callbacks);
+        if (!gui->floating) {
+            gui->view->lpVtbl->setFrame(gui->view, NULL);
+            gui->view->lpVtbl->release(gui->view);
+            free(gui);
+            return false;
+        }
+    }
     p->gui = gui;
     return true;
 }
@@ -213,6 +249,7 @@ void vst3go_clap_gui_destroy(VST3GoClapPlugin* p) {
     }
     gui->view->lpVtbl->setFrame(gui->view, NULL);
     gui->view->lpVtbl->release(gui->view);
+    if (gui->floating) VST3GoFloatingWindowDestroy(gui->floating);
     for (int i = 0; i < VST3GO_CLAP_MAX_TIMERS; i++) {
         if (gui->timers[i].handler) {
             p->hostTimer->unregister_timer(p->host, gui->timers[i].id);
@@ -277,12 +314,13 @@ static bool gui_adjust_size(const clap_plugin_t* plugin, uint32_t* width, uint32
 static bool gui_set_size(const clap_plugin_t* plugin, uint32_t width, uint32_t height) {
     VST3GoClapGui* gui = guiOf(plugin);
     struct Steinberg_ViewRect rect = { 0, 0, (Steinberg_int32)width, (Steinberg_int32)height };
+    if (gui && gui->floating) VST3GoFloatingWindowSetSize(gui->floating, (int32_t)width, (int32_t)height);
     return gui && gui->view->lpVtbl->onSize(gui->view, &rect) == Steinberg_kResultOk;
 }
 
 static bool gui_set_parent(const clap_plugin_t* plugin, const clap_window_t* window) {
     VST3GoClapGui* gui = guiOf(plugin);
-    if (!gui || !window || !window->api || !clapAPI() || strcmp(window->api, clapAPI()) != 0) {
+    if (!gui || gui->floating || !window || !window->api || !clapAPI() || strcmp(window->api, clapAPI()) != 0) {
         return false;
     }
     void* parent;
@@ -299,17 +337,41 @@ static bool gui_set_parent(const clap_plugin_t* plugin, const clap_window_t* win
 }
 
 static bool gui_set_transient(const clap_plugin_t* plugin, const clap_window_t* window) {
-    (void)plugin; (void)window;
-    return false;
+    VST3GoClapGui* gui = guiOf(plugin);
+    if (!gui || !gui->floating || !window || !window->api || strcmp(window->api, clapAPI()) != 0) {
+        return false;
+    }
+    VST3GoFloatingWindowSetTransient(gui->floating, !strcmp(window->api, CLAP_WINDOW_API_X11) ? (void*)(uintptr_t)window->x11 : window->ptr);
+    return true;
 }
 
 static void gui_suggest_title(const clap_plugin_t* plugin, const char* title) {
-    (void)plugin; (void)title;
+    VST3GoClapGui* gui = guiOf(plugin);
+    if (gui && gui->floating) VST3GoFloatingWindowSetTitle(gui->floating, title);
 }
 
-// The embedded view is shown and hidden with its parent window.
-static bool gui_show(const clap_plugin_t* plugin) { return guiOf(plugin) != NULL; }
-static bool gui_hide(const clap_plugin_t* plugin) { return guiOf(plugin) != NULL; }
+// The embedded view is shown and hidden with its parent window; a floating
+// one attaches to its window when first shown.
+static bool gui_show(const clap_plugin_t* plugin) {
+    VST3GoClapGui* gui = guiOf(plugin);
+    if (!gui) return false;
+    if (gui->floating) {
+        if (!gui->attached) {
+            if (gui->view->lpVtbl->attached(gui->view, VST3GoFloatingWindowParent(gui->floating), VST3GoEditorPlatformType) != Steinberg_kResultOk) {
+                return false;
+            }
+            gui->attached = true;
+        }
+        VST3GoFloatingWindowShow(gui->floating, 1);
+    }
+    return true;
+}
+
+static bool gui_hide(const clap_plugin_t* plugin) {
+    VST3GoClapGui* gui = guiOf(plugin);
+    if (gui && gui->floating) VST3GoFloatingWindowShow(gui->floating, 0);
+    return gui != NULL;
+}
 
 static const clap_plugin_gui_t extGui = {
     gui_is_api_supported, gui_get_preferred_api, gui_create, gui_destroy, gui_set_scale,

@@ -27,6 +27,8 @@ typedef struct {
     const clap_host_timer_support_t* hostTimer;
     const clap_host_preset_load_t* hostPresetLoad;
     struct VST3GoClapGui* gui; // open editor (clap_gui.c)
+    struct VST3GoClapRT* rt;   // deadline guard while active (clap_rt.c), or NULL
+    bool offline;              // offline render mode
     uintptr_t id;
     uint32_t sysexUsed;
     uint8_t sysex[VST3GO_CLAP_SYSEX_SCRATCH];
@@ -50,6 +52,13 @@ void vst3go_clap_metadata_flags(clap_preset_discovery_metadata_receiver_t* r, ui
 void vst3go_clap_metadata_timestamps(clap_preset_discovery_metadata_receiver_t* r, uint64_t modified);
 void vst3go_clap_metadata_feature(clap_preset_discovery_metadata_receiver_t* r, const char* feature);
 void vst3go_clap_metadata_extra(clap_preset_discovery_metadata_receiver_t* r, const char* key, const char* value);
+
+// vst3go_clap_deadline returns the plugin's deadline share (0 to 1; see
+// DeadlineProcessor), 0 when it runs on the host's audio thread.
+double vst3go_clap_deadline(const clap_plugin_t* plugin);
+
+// vst3go_clap_offline reports whether the host set the offline render mode.
+bool vst3go_clap_offline(VST3GoClapPlugin* p);
 
 // Host extension calls (no-ops when the host lacks the extension).
 void vst3go_clap_request_flush(VST3GoClapPlugin* p);

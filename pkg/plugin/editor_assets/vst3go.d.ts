@@ -16,6 +16,12 @@ interface Vst3goParam {
   /** Plain range: continuous parameters span min..max. */
   readonly min: number;
   readonly max: number;
+  /**
+   * How a continuous range maps onto 0..1: evenly ("linear"), equal ratios
+   * per equal travel ("log"), or min + (max - min) * n ** exponent ("power").
+   */
+  readonly scale: "linear" | "log" | "power";
+  readonly exponent: number;
   /** Default as a plain value. */
   readonly defaultValue: number;
   readonly defaultNormalized: number;
@@ -108,6 +114,18 @@ interface Vst3go {
   readonly size: Vst3goEditorSize;
   /** Asks the host for a new editor size, clamped to the limits. */
   resize(width: number, height: number): void;
+  /**
+   * Shows the platform's open file dialog; resolves to the chosen file's
+   * path, or null when the user cancels.
+   */
+  chooseFile(options?: Vst3goChooseFileOptions): Promise<string | null>;
+}
+
+interface Vst3goChooseFileOptions {
+  /** The dialog's prompt. */
+  title?: string;
+  /** Accepted file name extensions without the dot ("wav"); any file without them. */
+  extensions?: string[];
 }
 
 interface Window {

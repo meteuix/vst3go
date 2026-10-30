@@ -7,6 +7,8 @@ import "C"
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -79,8 +81,9 @@ type editorMessage struct {
 
 // handleEditorMessage serves a JSON message the page posted: parameter
 // gestures ("begin-edit", "param-change", "end-edit"), preset browsing
-// ("preset-list", "preset-save", "preset-load"), "resize" and the custom
-// messages of vst3go.send ("message").
+// ("preset-list", "preset-save", "preset-load"), "resize", the open file
+// dialog ("choose-file") and the custom messages of vst3go.send
+// ("message").
 func (s *editorSession) handleEditorMessage(c *componentImpl, host Host, data []byte) {
 	var msg editorMessage
 	if json.Unmarshal(data, &msg) != nil {
@@ -97,6 +100,8 @@ func (s *editorSession) handleEditorMessage(c *componentImpl, host Host, data []
 		s.handlePresetMessage(c, host, msg.Type, msg.Name)
 	case "resize":
 		s.requestResize(c, msg.Width, msg.Height)
+	case "choose-file":
+		s.chooseFile(msg.ID, msg.Name, msg.Data)
 	case "message":
 		if receiver, ok := c.processor.(EditorMessageProcessor); ok && msg.Name != "" {
 			receiver.EditorMessage(msg.Name, msg.Data)
@@ -119,6 +124,69 @@ func (s *editorSession) requestResize(c *componentImpl, width, height int) {
 	}
 }
 
+// fileRequest is the data of a "choose-file" message (vst3go.chooseFile).
+type fileRequest struct {
+	Extensions []string `json:"extensions"`
+}
+
+// fileChosenMessage answers vst3go.chooseFile: the path, "" when the user
+// cancelled, or the error that kept the dialog from opening.
+type fileChosenMessage struct {
+	Type  string `json:"type"` // "file-chosen"
+	ID    uint32 `json:"id"`
+	Path  string `json:"path"`
+	Error string `json:"error,omitempty"`
+}
+
+// chooseFile shows the platform's open file dialog for the page; the
+// answer comes back through GoEditorFileChosen.
+func (s *editorSession) chooseFile(request uint32, title string, data json.RawMessage) {
+	var req fileRequest
+	if len(data) > 0 && string(data) != "null" {
+		if err := json.Unmarshal(data, &req); err != nil {
+			s.postToEditor(fileChosenMessage{Type: "file-chosen", ID: request, Error: "choose-file: " + err.Error()})
+			return
+		}
+	}
+	for i, ext := range req.Extensions {
+		ext = strings.TrimPrefix(strings.TrimSpace(ext), ".")
+		if ext == "" || strings.ContainsAny(ext, ";/\\") {
+			s.postToEditor(fileChosenMessage{Type: "file-chosen", ID: request, Error: fmt.Sprintf("choose-file: invalid extension %q", req.Extensions[i])})
+			return
+		}
+		req.Extensions[i] = ext
+	}
+	s.mu.RLock()
+	view := s.view
+	s.mu.RUnlock()
+	if view == nil {
+		return
+	}
+	ctitle := C.CString(title)
+	cexts := C.CString(strings.Join(req.Extensions, ";"))
+	defer C.free(unsafe.Pointer(ctitle))
+	defer C.free(unsafe.Pointer(cexts))
+	C.VST3GoEditorViewChooseFile(view, C.uint32_t(request), ctitle, cexts)
+}
+
+// GoEditorFileChosen delivers the open file dialog's answer to the page.
+//
+//export GoEditorFileChosen
+func GoEditorFileChosen(id C.uintptr_t, request C.uint32_t, path, errText *C.char) {
+	_, session, _ := editorTarget(id)
+	if session == nil {
+		return
+	}
+	reply := fileChosenMessage{Type: "file-chosen", ID: uint32(request)}
+	if path != nil {
+		reply.Path = C.GoString(path)
+	}
+	if errText != nil {
+		reply.Error = C.GoString(errText)
+	}
+	session.postToEditor(reply)
+}
+
 // postRaw sends an encoded message to the open editor page, if any.
 func (s *editorSession) postRaw(data []byte) {
 	s.mu.RLock()
@@ -136,6 +204,10 @@ func (s *editorSession) postRaw(data []byte) {
 //
 //export GoEditorSize
 func GoEditorSize(id C.uintptr_t, width, height *C.int32_t) {
+	if panel := panels.get(uintptr(id)); panel != nil {
+		*width, *height = C.int32_t(panel.width), C.int32_t(panel.height)
+		return
+	}
 	e := editorSpec(nil)
 	if c, _, _ := editorTarget(id); c != nil {
 		e = c.editor

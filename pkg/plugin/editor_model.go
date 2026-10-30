@@ -52,10 +52,24 @@ type EditorControl struct {
 	Min          float64 `json:"min"`
 	Max          float64 `json:"max"`
 	DefaultValue float64 `json:"defaultValue"` // normalized
+	Scale        string  `json:"scale"`        // "linear", "log" or "power"
+	Exponent     float64 `json:"exponent"`     // of the "power" scale
 	StepCount    int32   `json:"stepCount"`
 	Flags        uint32  `json:"flags"`
 	ReadOnly     bool    `json:"readOnly"`
 	Hidden       bool    `json:"hidden"`
+}
+
+// scaleName names a parameter scale for the editor SDK.
+func scaleName(s param.Scale) string {
+	switch s {
+	case param.ScaleLog:
+		return "log"
+	case param.ScalePower:
+		return "power"
+	default:
+		return "linear"
+	}
 }
 
 // BuildEditorModel turns plugin metadata and parameters into a renderable
@@ -99,6 +113,8 @@ func BuildEditorModel(info frameworkplugin.Info, registry *param.Registry) (*Edi
 			Min:          p.Min,
 			Max:          p.Max,
 			DefaultValue: p.DefaultValue,
+			Scale:        scaleName(p.Scale),
+			Exponent:     p.Exponent,
 			StepCount:    p.StepCount,
 			Flags:        p.Flags,
 			ReadOnly:     p.Flags&param.IsReadOnly != 0,

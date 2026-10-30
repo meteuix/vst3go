@@ -156,3 +156,35 @@ func TestRegistryFailedAddChangesNothing(t *testing.T) {
 		t.Fatalf("failed Add left %d parameters", reg.Count())
 	}
 }
+
+func TestRegistryLooksUpSmallAndLargeIDs(t *testing.T) {
+	reg := NewRegistry()
+	ids := []uint32{0, 5, denseLimit - 1, denseLimit, 1 << 20, 0xffffffff}
+	for _, id := range ids {
+		if err := reg.Add(&Parameter{ID: id, Name: "p"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range ids {
+		if p, ok := reg.GetOK(id); !ok || p.ID != id || reg.Get(id) != p {
+			t.Errorf("GetOK(%d) = %v, %v", id, p, ok)
+		}
+	}
+	for _, id := range []uint32{1, 4, 6, denseLimit - 2, denseLimit + 1, 1<<20 + 1} {
+		if p, ok := reg.GetOK(id); ok || p != nil || reg.Get(id) != nil {
+			t.Errorf("GetOK(%d) found %v", id, p)
+		}
+	}
+	auto := NewAutoRegistry()
+	if err := auto.RegisterWithID(3, &Parameter{Name: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	// A registered name replaces the parameter under its ID.
+	replacement := &Parameter{Name: "a"}
+	if err := auto.Register(replacement); err != nil {
+		t.Fatal(err)
+	}
+	if auto.Get(3) != replacement {
+		t.Error("replaced parameter not found by ID")
+	}
+}

@@ -112,6 +112,9 @@ func newAUComponent(p Plugin) (auComponent, error) {
 	default:
 		c.Tags = []string{"Effects"}
 	}
+	if _, ok := p.(ARAPlugin); ok {
+		c.Tags = append(c.Tags, "ARA") // kARAAudioComponentTag
+	}
 	return c, nil
 }
 

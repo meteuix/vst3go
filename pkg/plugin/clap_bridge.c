@@ -1,4 +1,8 @@
 #include "clap_bridge.h"
+#include "clap_rt.h"
+#include "rtguard.h"
+#include "ara.h"
+#include "../../include/ara/ARACLAP.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -10,8 +14,6 @@ extern bool GoClapInit(uintptr_t id);
 extern void GoClapDestroy(uintptr_t id);
 extern bool GoClapActivate(uintptr_t id, double sampleRate, uint32_t minFrames, uint32_t maxFrames);
 extern void GoClapDeactivate(uintptr_t id);
-extern bool GoClapStartProcessing(uintptr_t id);
-extern void GoClapStopProcessing(uintptr_t id);
 extern void GoClapReset(uintptr_t id);
 extern clap_process_status GoClapProcess(uintptr_t id, clap_process_t* process);
 extern void GoClapOnMainThread(uintptr_t id);
@@ -21,6 +23,7 @@ extern bool GoClapParamsValue(uintptr_t id, clap_id param, double* value);
 extern bool GoClapParamsValueToText(uintptr_t id, clap_id param, double value, char* out, uint32_t size);
 extern bool GoClapParamsTextToValue(uintptr_t id, clap_id param, char* text, double* value);
 extern void GoClapParamsFlush(uintptr_t id, clap_input_events_t* in, clap_output_events_t* out);
+extern void GoClapRealtimeConfig(uintptr_t id, double* share, uint32_t* channels);
 extern bool GoClapStateSave(uintptr_t id, clap_ostream_t* stream);
 extern bool GoClapStateLoad(uintptr_t id, clap_istream_t* stream);
 extern uint32_t GoClapAudioPortsCount(uintptr_t id, bool isInput);
@@ -29,10 +32,16 @@ extern uint32_t GoClapNotePortsCount(uintptr_t id, bool isInput);
 extern bool GoClapNotePortsGet(uintptr_t id, uint32_t index, bool isInput, clap_note_port_info_t* info);
 extern uint32_t GoClapLatency(uintptr_t id);
 extern uint32_t GoClapTail(uintptr_t id);
-extern bool GoClapRenderSet(uintptr_t id, int32_t mode);
 extern void GoClapTrackInfoChanged(uintptr_t id);
+extern ARAFactory* GoClapARAFactory(uintptr_t id);
+extern ARAPlugInExtensionInstance* GoClapARABind(uintptr_t id, void* controller, int32_t knownRoles, int32_t assignedRoles);
+extern uint32_t GoARAFactoryCount(void);
+extern int32_t GoARAPluginIndex(int32_t slot);
 extern uint32_t GoClapNoteNameCount(uintptr_t id);
 extern bool GoClapNoteNameGet(uintptr_t id, uint32_t index, clap_note_name_t* name);
+extern bool GoClapConfigurePorts(uintptr_t id, clap_audio_port_configuration_request_t* requests, uint32_t count, bool apply);
+extern bool GoClapSurroundMaskSupported(uintptr_t id, uint64_t mask);
+extern uint32_t GoClapSurroundChannelMap(uintptr_t id, bool isInput, uint32_t index, uint8_t* map, uint32_t capacity);
 
 static uintptr_t idOf(const clap_plugin_t* plugin) {
     return ((VST3GoClapPlugin*)plugin->plugin_data)->id;
@@ -53,8 +62,16 @@ static bool params_value_to_text(const clap_plugin_t* plugin, clap_id param, dou
 static bool params_text_to_value(const clap_plugin_t* plugin, clap_id param, const char* text, double* value) {
     return text && value && GoClapParamsTextToValue(idOf(plugin), param, (char*)text, value);
 }
+// params_flush comes on the audio thread while active (through the
+// deadline guard) and on the main thread otherwise.
 static void params_flush(const clap_plugin_t* plugin, const clap_input_events_t* in, const clap_output_events_t* out) {
-    GoClapParamsFlush(idOf(plugin), (clap_input_events_t*)in, (clap_output_events_t*)out);
+    VST3GoClapPlugin* p = (VST3GoClapPlugin*)plugin->plugin_data;
+    VST3GoClapRT* rt = __atomic_load_n(&p->rt, __ATOMIC_ACQUIRE);
+    if (rt) {
+        vst3go_clap_rt_flush(rt, in, out);
+        return;
+    }
+    GoClapParamsFlush(p->id, (clap_input_events_t*)in, (clap_output_events_t*)out);
 }
 static const clap_plugin_params_t extParams = {
     params_count, params_get_info, params_get_value, params_value_to_text, params_text_to_value, params_flush
@@ -74,6 +91,20 @@ static bool audio_ports_get(const clap_plugin_t* plugin, uint32_t index, bool is
 }
 static const clap_plugin_audio_ports_t extAudioPorts = { audio_ports_count, audio_ports_get };
 
+static bool ports_can_apply(const clap_plugin_t* plugin, const clap_audio_port_configuration_request_t* requests, uint32_t count) {
+    return GoClapConfigurePorts(idOf(plugin), (clap_audio_port_configuration_request_t*)requests, count, false);
+}
+static bool ports_apply(const clap_plugin_t* plugin, const clap_audio_port_configuration_request_t* requests, uint32_t count) {
+    return GoClapConfigurePorts(idOf(plugin), (clap_audio_port_configuration_request_t*)requests, count, true);
+}
+static const clap_plugin_configurable_audio_ports_t extConfigurablePorts = { ports_can_apply, ports_apply };
+
+static bool surround_mask_supported(const clap_plugin_t* plugin, uint64_t mask) { return GoClapSurroundMaskSupported(idOf(plugin), mask); }
+static uint32_t surround_channel_map(const clap_plugin_t* plugin, bool isInput, uint32_t index, uint8_t* map, uint32_t capacity) {
+    return map || !capacity ? GoClapSurroundChannelMap(idOf(plugin), isInput, index, map, capacity) : 0;
+}
+static const clap_plugin_surround_t extSurround = { surround_mask_supported, surround_channel_map };
+
 static uint32_t note_ports_count(const clap_plugin_t* plugin, bool isInput) { return GoClapNotePortsCount(idOf(plugin), isInput); }
 static bool note_ports_get(const clap_plugin_t* plugin, uint32_t index, bool isInput, clap_note_port_info_t* info) {
     return info && GoClapNotePortsGet(idOf(plugin), index, isInput, info);
@@ -87,7 +118,24 @@ static uint32_t tail_get(const clap_plugin_t* plugin) { return GoClapTail(idOf(p
 static const clap_plugin_tail_t extTail = { tail_get };
 
 static bool render_has_hard_realtime_requirement(const clap_plugin_t* plugin) { (void)plugin; return false; }
-static bool render_set(const clap_plugin_t* plugin, clap_plugin_render_mode mode) { return GoClapRenderSet(idOf(plugin), mode); }
+// render_set does not enter Go: LV2 switches the mode from run when the
+// host starts or stops freewheeling.
+static bool render_set(const clap_plugin_t* plugin, clap_plugin_render_mode mode) {
+    VST3GoClapPlugin* p = (VST3GoClapPlugin*)plugin->plugin_data;
+    if (mode != CLAP_RENDER_REALTIME && mode != CLAP_RENDER_OFFLINE) return false;
+    __atomic_store_n(&p->offline, mode == CLAP_RENDER_OFFLINE, __ATOMIC_RELEASE);
+    return true;
+}
+
+double vst3go_clap_deadline(const clap_plugin_t* plugin) {
+    VST3GoClapPlugin* p = (VST3GoClapPlugin*)plugin->plugin_data;
+    double share = 0;
+    uint32_t channels = 0;
+    GoClapRealtimeConfig(p->id, &share, &channels);
+    return share;
+}
+
+bool vst3go_clap_offline(VST3GoClapPlugin* p) { return __atomic_load_n(&p->offline, __ATOMIC_ACQUIRE); }
 static const clap_plugin_render_t extRender = { render_has_hard_realtime_requirement, render_set };
 
 static void track_info_changed(const clap_plugin_t* plugin) { GoClapTrackInfoChanged(idOf(plugin)); }
@@ -123,31 +171,83 @@ static bool plugin_init(const clap_plugin_t* plugin) {
 
 static void plugin_destroy(const clap_plugin_t* plugin) {
     VST3GoClapPlugin* p = (VST3GoClapPlugin*)plugin->plugin_data;
+    vst3go_clap_rt_free(p->rt);
+    p->rt = NULL;
     vst3go_clap_gui_destroy(p);
     GoClapDestroy(p->id);
     free(p);
 }
 
+// activate starts the deadline guard (DeadlineProcessor); deactivate stops
+// it after its last block. The guard runs offline blocks on the host's
+// thread, so it does not depend on the render mode.
 static bool plugin_activate(const clap_plugin_t* plugin, double sampleRate, uint32_t minFrames, uint32_t maxFrames) {
-    return GoClapActivate(idOf(plugin), sampleRate, minFrames, maxFrames);
+    VST3GoClapPlugin* p = (VST3GoClapPlugin*)plugin->plugin_data;
+    if (!GoClapActivate(p->id, sampleRate, minFrames, maxFrames)) return false;
+    double share = 0;
+    uint32_t channels = 0;
+    GoClapRealtimeConfig(p->id, &share, &channels);
+    if (share > 0) {
+        __atomic_store_n(&p->rt, vst3go_clap_rt_new(p, sampleRate, maxFrames, channels, share), __ATOMIC_RELEASE);
+    }
+    return true;
 }
-static void plugin_deactivate(const clap_plugin_t* plugin) { GoClapDeactivate(idOf(plugin)); }
-static bool plugin_start_processing(const clap_plugin_t* plugin) { return GoClapStartProcessing(idOf(plugin)); }
-static void plugin_stop_processing(const clap_plugin_t* plugin) { GoClapStopProcessing(idOf(plugin)); }
-static void plugin_reset(const clap_plugin_t* plugin) { GoClapReset(idOf(plugin)); }
+static void plugin_deactivate(const clap_plugin_t* plugin) {
+    VST3GoClapPlugin* p = (VST3GoClapPlugin*)plugin->plugin_data;
+    vst3go_clap_rt_free(__atomic_exchange_n(&p->rt, NULL, __ATOMIC_ACQ_REL));
+    GoClapDeactivate(p->id);
+}
+
+// start_processing, stop_processing and reset come on the audio thread.
+// Starting and stopping need nothing from the processor; a reset under the
+// deadline guard runs at the start of the next job.
+static bool plugin_start_processing(const clap_plugin_t* plugin) {
+    (void)plugin;
+    return true;
+}
+static void plugin_stop_processing(const clap_plugin_t* plugin) { (void)plugin; }
+static void plugin_reset(const clap_plugin_t* plugin) {
+    VST3GoClapPlugin* p = (VST3GoClapPlugin*)plugin->plugin_data;
+    if (p->rt) {
+        vst3go_clap_rt_reset(p->rt);
+        return;
+    }
+    GoClapReset(p->id);
+}
 
 static clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_process_t* process) {
     VST3GoClapPlugin* p = (VST3GoClapPlugin*)plugin->plugin_data;
+    if (p->rt) {
+        return vst3go_clap_rt_process(p->rt, process);
+    }
     p->sysexUsed = 0;
-    return GoClapProcess(p->id, (clap_process_t*)process);
+    rtguard_fp fp = rtguard_flush_denormals();
+    clap_process_status status = GoClapProcess(p->id, (clap_process_t*)process);
+    rtguard_restore_fp(fp);
+    return status;
 }
 
+// ARA plug-in extension (ARACLAP.h)
+
+static const ARAFactory* ara_get_factory(const clap_plugin_t* plugin) { return GoClapARAFactory(idOf(plugin)); }
+
+static const ARAPlugInExtensionInstance* ara_bind(const clap_plugin_t* plugin, ARADocumentControllerRef controller,
+                                                  ARAPlugInInstanceRoleFlags known, ARAPlugInInstanceRoleFlags assigned) {
+    return GoClapARABind(idOf(plugin), controller, known, assigned);
+}
+
+static const clap_ara_plugin_extension_t extARA = { ara_get_factory, ara_bind };
+
 static const void* plugin_get_extension(const clap_plugin_t* plugin, const char* id) {
-    (void)plugin;
     if (!id) return NULL;
+    if (!strcmp(id, CLAP_EXT_ARA_PLUGINEXTENSION) || !strcmp(id, CLAP_EXT_ARA_PLUGINEXTENSION_COMPAT)) {
+        return GoClapARAFactory(idOf(plugin)) ? &extARA : NULL;
+    }
     if (!strcmp(id, CLAP_EXT_PARAMS)) return &extParams;
     if (!strcmp(id, CLAP_EXT_STATE)) return &extState;
     if (!strcmp(id, CLAP_EXT_AUDIO_PORTS)) return &extAudioPorts;
+    if (!strcmp(id, CLAP_EXT_CONFIGURABLE_AUDIO_PORTS) || !strcmp(id, CLAP_EXT_CONFIGURABLE_AUDIO_PORTS_COMPAT)) return &extConfigurablePorts;
+    if (!strcmp(id, CLAP_EXT_SURROUND) || !strcmp(id, CLAP_EXT_SURROUND_COMPAT)) return &extSurround;
     if (!strcmp(id, CLAP_EXT_NOTE_PORTS)) return &extNotePorts;
     if (!strcmp(id, CLAP_EXT_LATENCY)) return &extLatency;
     if (!strcmp(id, CLAP_EXT_TAIL)) return &extTail;
@@ -214,6 +314,27 @@ static const clap_plugin_factory_t pluginFactory = {
     factory_get_plugin_count, factory_get_plugin_descriptor, factory_create_plugin
 };
 
+// ARA factory (ARACLAP.h): the ARA plugins of the binary.
+
+static uint32_t ara_factory_count(const clap_ara_factory_t* factory) {
+    (void)factory;
+    return GoARAFactoryCount();
+}
+
+static const ARAFactory* ara_factory_get(const clap_ara_factory_t* factory, uint32_t index) {
+    (void)factory;
+    return index < GoARAFactoryCount() ? vst3go_ara_factory((int32_t)index) : NULL;
+}
+
+static const char* ara_factory_plugin_id(const clap_ara_factory_t* factory, uint32_t index) {
+    (void)factory;
+    if (index >= GoARAFactoryCount()) return NULL;
+    const clap_plugin_descriptor_t* desc = GoClapDescriptor((uint32_t)GoARAPluginIndex((int32_t)index));
+    return desc ? desc->id : NULL;
+}
+
+static const clap_ara_factory_t araFactory = { ara_factory_count, ara_factory_get, ara_factory_plugin_id };
+
 // Entry
 
 static bool entry_init(const char* path) {
@@ -226,6 +347,9 @@ static void entry_deinit(void) {}
 static const void* entry_get_factory(const char* factoryID) {
     if (!factoryID) return NULL;
     if (!strcmp(factoryID, CLAP_PLUGIN_FACTORY_ID)) return &pluginFactory;
+    if (!strcmp(factoryID, CLAP_EXT_ARA_FACTORY) || !strcmp(factoryID, CLAP_EXT_ARA_FACTORY_COMPAT)) {
+        return GoARAFactoryCount() ? &araFactory : NULL;
+    }
     if (!strcmp(factoryID, CLAP_PRESET_DISCOVERY_FACTORY_ID) || !strcmp(factoryID, CLAP_PRESET_DISCOVERY_FACTORY_ID_COMPAT)) {
         return vst3go_clap_preset_discovery_factory();
     }

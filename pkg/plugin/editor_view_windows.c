@@ -1,6 +1,7 @@
 //go:build windows && amd64
 
 #include <windows.h>
+#include <shobjidl.h>
 #include <WebView2.h>
 #include <stdlib.h>
 #include <string.h>
@@ -402,6 +403,41 @@ static Steinberg_tresult editorView_isPlatformTypeSupported(void* thisInterface,
     return (strcmp(type, "HWND") == 0) ? Steinberg_kResultOk : Steinberg_kResultFalse;
 }
 
+typedef HRESULT(STDAPICALLTYPE* CreateEnvironmentFn)(PCWSTR, PCWSTR, ICoreWebView2EnvironmentOptions*,
+                                                     ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
+
+// editorViewCreateEnvironmentFn finds CreateCoreWebView2EnvironmentWithOptions
+// in WebView2Loader.dll. Bundles ship the loader next to the plugin binary,
+// a folder hosts do not search when they load the plugin (LoadLibraryW
+// looks next to the host), so it is loaded from there by its full path,
+// else from the usual search path. Main thread.
+static CreateEnvironmentFn editorViewCreateEnvironmentFn(void) {
+    static CreateEnvironmentFn create;
+    if (create) {
+        return create;
+    }
+    HMODULE self = NULL;
+    HMODULE loader = NULL;
+    WCHAR path[MAX_PATH];
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCWSTR)(void*)editorViewCreateEnvironmentFn, &self)) {
+        DWORD n = GetModuleFileNameW(self, path, MAX_PATH);
+        WCHAR* slash = n > 0 && n < MAX_PATH ? wcsrchr(path, L'\\') : NULL;
+        static const WCHAR name[] = L"WebView2Loader.dll";
+        if (slash && (size_t)(slash + 1 - path) + sizeof(name) / sizeof(WCHAR) <= MAX_PATH) {
+            memcpy(slash + 1, name, sizeof(name));
+            loader = LoadLibraryW(path);
+        }
+    }
+    if (!loader) {
+        loader = LoadLibraryW(L"WebView2Loader.dll");
+    }
+    if (loader) {
+        create = (CreateEnvironmentFn)(void*)GetProcAddress(loader, "CreateCoreWebView2EnvironmentWithOptions");
+    }
+    return create;
+}
+
 static Steinberg_tresult editorView_attached(void* thisInterface, void* parent, Steinberg_FIDString type) {
     (void)type;
     VST3GoEditorView* view = editorViewFromInterface(thisInterface);
@@ -421,7 +457,12 @@ static Steinberg_tresult editorView_attached(void* thisInterface, void* parent, 
         return Steinberg_kResultFalse;
     }
 
-    HRESULT result = CreateCoreWebView2EnvironmentWithOptions(NULL, view->userDataFolder, NULL, &view->environmentHandler->iface);
+    CreateEnvironmentFn create = editorViewCreateEnvironmentFn();
+    if (!create) {
+        editorViewReleaseWebView(view);
+        return Steinberg_kResultFalse;
+    }
+    HRESULT result = create(NULL, view->userDataFolder, NULL, &view->environmentHandler->iface);
     return SUCCEEDED(result) ? Steinberg_kResultOk : Steinberg_kResultFalse;
 }
 
@@ -524,6 +565,123 @@ void VST3GoEditorViewRequestResize(void* thisInterface, int32_t width, int32_t h
     }
     Steinberg_ViewRect rect = { 0, 0, width, height };
     view->frame->lpVtbl->resizeView(view->frame, (struct Steinberg_IPlugView*)&view->view, &rect);
+}
+
+// ---- open file dialog ----
+
+// The dialog is modal, so it runs from a timer of the UI thread's message
+// loop rather than inside WebView2's message event, one at a time.
+static struct {
+    BOOL pending;
+    uintptr_t component;
+    uint32_t request;
+    HWND owner;
+    WCHAR* title;
+    WCHAR* patterns;  // "*.wav;*.flac", NULL for any file
+} fileDialog;
+
+static WCHAR* wideString(const char* s) {
+    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    WCHAR* w = n > 0 ? (WCHAR*)calloc((size_t)n, sizeof(WCHAR)) : NULL;
+    if (w) MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n);
+    return w;
+}
+
+static char* utf8String(const WCHAR* w) {
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
+    char* s = n > 0 ? (char*)calloc((size_t)n, 1) : NULL;
+    if (s) WideCharToMultiByte(CP_UTF8, 0, w, -1, s, n, NULL, NULL);
+    return s;
+}
+
+static void clearFileDialog(void) {
+    free(fileDialog.title);
+    free(fileDialog.patterns);
+    fileDialog.title = fileDialog.patterns = NULL;
+    fileDialog.pending = FALSE;
+}
+
+static void CALLBACK showFileDialog(HWND hwnd, UINT msg, UINT_PTR timer, DWORD time) {
+    (void)hwnd;
+    (void)msg;
+    (void)time;
+    KillTimer(NULL, timer);
+    char* path = NULL;
+    const char* error = NULL;
+    IFileOpenDialog* dialog = NULL;
+    if (FAILED(CoCreateInstance(&CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, &IID_IFileOpenDialog, (void**)&dialog))) {
+        error = "the file dialog is not available";
+    } else {
+        FILEOPENDIALOGOPTIONS options = 0;
+        dialog->lpVtbl->GetOptions(dialog, &options);
+        dialog->lpVtbl->SetOptions(dialog, options | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
+        if (fileDialog.title) dialog->lpVtbl->SetTitle(dialog, fileDialog.title);
+        if (fileDialog.patterns) {
+            COMDLG_FILTERSPEC spec = { fileDialog.patterns, fileDialog.patterns };
+            dialog->lpVtbl->SetFileTypes(dialog, 1, &spec);
+        }
+        HWND owner = fileDialog.owner && IsWindow(fileDialog.owner) ? fileDialog.owner : NULL;
+        HRESULT hr = dialog->lpVtbl->Show(dialog, owner);
+        IShellItem* item = NULL;
+        if (SUCCEEDED(hr) && SUCCEEDED(dialog->lpVtbl->GetResult(dialog, &item))) {
+            WCHAR* wide = NULL;
+            if (SUCCEEDED(item->lpVtbl->GetDisplayName(item, SIGDN_FILESYSPATH, &wide))) {
+                path = utf8String(wide);
+                CoTaskMemFree(wide);
+            }
+            item->lpVtbl->Release(item);
+            if (!path) error = "the chosen file has no file system path";
+        } else if (hr != HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
+            error = "the file dialog failed";
+        }
+        dialog->lpVtbl->Release(dialog);
+    }
+    uintptr_t component = fileDialog.component;
+    uint32_t request = fileDialog.request;
+    clearFileDialog();
+    GoEditorFileChosen(component, request, path, (char*)error);
+    free(path);
+}
+
+void VST3GoEditorViewChooseFile(void* thisInterface, uint32_t request, const char* title, const char* extensions) {
+    VST3GoEditorView* view = (VST3GoEditorView*)thisInterface;
+    if (!view) {
+        return;
+    }
+    if (fileDialog.pending) {
+        GoEditorFileChosen(view->component, request, NULL, (char*)"a file dialog is already open");
+        return;
+    }
+    fileDialog.pending = TRUE;
+    fileDialog.component = view->component;
+    fileDialog.request = request;
+    fileDialog.owner = view->parentWindow ? GetAncestor(view->parentWindow, GA_ROOT) : NULL;
+    fileDialog.title = title && *title ? wideString(title) : NULL;
+    if (extensions && *extensions) {
+        // "wav;flac" -> "*.wav;*.flac"
+        size_t n = strlen(extensions), count = 1;
+        for (size_t i = 0; i < n; i++) count += extensions[i] == ';';
+        char* patterns = (char*)calloc(n + 2 * count + 1, 1);
+        if (!patterns) {
+            clearFileDialog();
+            GoEditorFileChosen(view->component, request, NULL, (char*)"out of memory");
+            return;
+        }
+        char* out = patterns;
+        for (const char* ext = extensions;;) {
+            const char* end = strchr(ext, ';');
+            int len = end ? (int)(end - ext) : (int)strlen(ext);
+            out += sprintf(out, "%s*.%.*s", out == patterns ? "" : ";", len, ext);
+            if (!end) break;
+            ext = end + 1;
+        }
+        fileDialog.patterns = wideString(patterns);
+        free(patterns);
+    }
+    if (!SetTimer(NULL, 0, 0, showFileDialog)) {
+        clearFileDialog();
+        GoEditorFileChosen(view->component, request, NULL, (char*)"the file dialog could not be scheduled");
+    }
 }
 
 
@@ -695,4 +853,112 @@ static HRESULT STDMETHODCALLTYPE editorMessageHandler_Invoke(ICoreWebView2WebMes
 
     CoTaskMemFree(message);
     return S_OK;
+}
+
+// ---- floating windows ----
+
+typedef struct {
+    HWND hwnd;
+    VST3GoFloatingCallbacks callbacks;
+} VST3GoFloatingWindow;
+
+// The user closing the window hides it and tells the owner.
+static LRESULT CALLBACK floatingProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    VST3GoFloatingWindow* w = (VST3GoFloatingWindow*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    if (msg == WM_CLOSE) {
+        ShowWindow(hwnd, SW_HIDE);
+        if (w) w->callbacks.closed(w->callbacks.ctx);
+        return 0;
+    }
+    if (msg == WM_SIZE && w && wParam != SIZE_MINIMIZED) {
+        w->callbacks.resized(w->callbacks.ctx, (int32_t)LOWORD(lParam), (int32_t)HIWORD(lParam));
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static HMODULE floatingModule(void) {
+    HMODULE module = NULL;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)(void*)floatingProc, &module);
+    return module;
+}
+
+// floatingClass registers the window class once per module, under a name
+// of its own so plugins in one process do not share it.
+static const WCHAR* floatingClass(void) {
+    static WCHAR name[64];
+    static ATOM atom;
+    if (!atom) {
+        HMODULE module = floatingModule();
+        swprintf(name, 64, L"VST3GoFloatingWindow_%p", (void*)module);
+        WNDCLASSEXW wc;
+        memset(&wc, 0, sizeof(wc));
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = floatingProc;
+        wc.hInstance = module;
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.lpszClassName = name;
+        atom = RegisterClassExW(&wc);
+    }
+    return atom ? name : NULL;
+}
+
+static DWORD floatingStyle(HWND hwnd) { return (DWORD)GetWindowLongPtrW(hwnd, GWL_STYLE); }
+
+void* VST3GoFloatingWindowCreate(int32_t width, int32_t height, int resizable, VST3GoFloatingCallbacks callbacks) {
+    const WCHAR* cls = floatingClass();
+    if (!cls) return NULL;
+    VST3GoFloatingWindow* w = (VST3GoFloatingWindow*)calloc(1, sizeof(VST3GoFloatingWindow));
+    if (!w) return NULL;
+    DWORD style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
+    if (!resizable) style &= ~(DWORD)(WS_THICKFRAME | WS_MAXIMIZEBOX);
+    RECT rect = { 0, 0, width, height };
+    AdjustWindowRect(&rect, style, FALSE);
+    w->hwnd = CreateWindowExW(0, cls, L"", style, CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top,
+                              NULL, NULL, floatingModule(), NULL);
+    if (!w->hwnd) {
+        free(w);
+        return NULL;
+    }
+    // Set after creation: the size messages of CreateWindowEx are not
+    // the user's.
+    w->callbacks = callbacks;
+    SetWindowLongPtrW(w->hwnd, GWLP_USERDATA, (LONG_PTR)w);
+    return w;
+}
+
+void* VST3GoFloatingWindowParent(void* window) {
+    return window ? (void*)((VST3GoFloatingWindow*)window)->hwnd : NULL;
+}
+
+void VST3GoFloatingWindowSetTitle(void* window, const char* title) {
+    if (!window || !title) return;
+    WCHAR wide[256];
+    if (MultiByteToWideChar(CP_UTF8, 0, title, -1, wide, 256) > 0) SetWindowTextW(((VST3GoFloatingWindow*)window)->hwnd, wide);
+}
+
+void VST3GoFloatingWindowSetTransient(void* window, void* owner) {
+    if (!window || !owner) return;
+    HWND root = GetAncestor((HWND)owner, GA_ROOT);
+    SetWindowLongPtrW(((VST3GoFloatingWindow*)window)->hwnd, GWLP_HWNDPARENT, (LONG_PTR)(root ? root : (HWND)owner));
+}
+
+void VST3GoFloatingWindowSetSize(void* window, int32_t width, int32_t height) {
+    if (!window) return;
+    HWND hwnd = ((VST3GoFloatingWindow*)window)->hwnd;
+    RECT rect = { 0, 0, width, height };
+    AdjustWindowRect(&rect, floatingStyle(hwnd), FALSE);
+    SetWindowPos(hwnd, NULL, 0, 0, rect.right - rect.left, rect.bottom - rect.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+void VST3GoFloatingWindowShow(void* window, int visible) {
+    if (!window) return;
+    ShowWindow(((VST3GoFloatingWindow*)window)->hwnd, visible ? SW_SHOW : SW_HIDE);
+}
+
+void VST3GoFloatingWindowDestroy(void* window) {
+    if (!window) return;
+    VST3GoFloatingWindow* w = (VST3GoFloatingWindow*)window;
+    SetWindowLongPtrW(w->hwnd, GWLP_USERDATA, 0);
+    DestroyWindow(w->hwnd);
+    free(w);
 }

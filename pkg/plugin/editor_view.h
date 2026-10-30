@@ -20,6 +20,37 @@ void VST3GoEditorViewPost(void* view, const char* json);
 // VST3GoEditorViewRequestResize asks the host frame to resize the view
 // (IPlugFrame::resizeView); the host then calls onSize.
 void VST3GoEditorViewRequestResize(void* view, int32_t width, int32_t height);
+// VST3GoEditorViewChooseFile shows the platform's open file dialog
+// (vst3go.chooseFile) without blocking: title is the prompt, extensions
+// the accepted file name extensions, separated by ';' and without dots
+// ("" for any file). The answer goes to GoEditorFileChosen: the path,
+// NULL when the user cancels, or an error when the dialog cannot open. In
+// a sandboxed macOS process the file stays readable in later runs (see
+// VST3GoRestoreFileAccess in editor_view_darwin.c); on iOS the file is a
+// copy kept in the extension's container.
+void VST3GoEditorViewChooseFile(void* view, uint32_t request, const char* title, const char* extensions);
+extern void GoEditorFileChosen(uintptr_t component, uint32_t request, char* path, char* error);
+
+// Floating editor windows (CLAP floating GUIs): a top-level window whose
+// parent handle (VST3GoFloatingWindowParent: an NSView*, HWND or X11
+// window ID) the editor view attaches to. On the UI thread, closed(ctx)
+// runs when the user closes the window, which then is hidden, not
+// destroyed, and resized(ctx, width, height) when the user resizes it.
+// Platforms without an editor return NULL from Create.
+typedef struct {
+    void (*closed)(void* ctx);
+    void (*resized)(void* ctx, int32_t width, int32_t height);
+    void* ctx;
+} VST3GoFloatingCallbacks;
+void* VST3GoFloatingWindowCreate(int32_t width, int32_t height, int resizable, VST3GoFloatingCallbacks callbacks);
+void* VST3GoFloatingWindowParent(void* window);
+void VST3GoFloatingWindowSetTitle(void* window, const char* title);
+// VST3GoFloatingWindowSetTransient keeps the window above a host window
+// (the native handle of a clap_window_t).
+void VST3GoFloatingWindowSetTransient(void* window, void* owner);
+void VST3GoFloatingWindowSetSize(void* window, int32_t width, int32_t height);
+void VST3GoFloatingWindowShow(void* window, int visible);
+void VST3GoFloatingWindowDestroy(void* window);
 // Editor size from the processor's Editor (editor.go).
 extern void GoEditorSize(uintptr_t component, int32_t* width, int32_t* height);
 extern int GoEditorCanResize(uintptr_t component);

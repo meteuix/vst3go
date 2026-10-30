@@ -166,11 +166,16 @@ func GoEditControllerSetParamNormalized(componentID C.uintptr_t, id C.uint32_t, 
 //export GoEditorMessage
 func GoEditorMessage(componentID C.uintptr_t, data *C.char, size C.int) {
 	defer recoverPanic(nil)
-	c, session, host := editorTarget(componentID)
-	if c == nil || data == nil || size <= 0 {
+	if data == nil || size <= 0 {
 		return
 	}
-	session.handleEditorMessage(c, host, C.GoBytes(unsafe.Pointer(data), size))
+	if panel := panels.get(uintptr(componentID)); panel != nil {
+		panel.onMessage(C.GoBytes(unsafe.Pointer(data), size))
+		return
+	}
+	if c, session, host := editorTarget(componentID); c != nil {
+		session.handleEditorMessage(c, host, C.GoBytes(unsafe.Pointer(data), size))
+	}
 }
 
 //export GoEditControllerSetComponentHandler
@@ -202,6 +207,10 @@ func GoEditControllerCreateView(componentID C.uintptr_t, name *C.char) unsafe.Po
 
 //export GoEditControllerClearEditorView
 func GoEditControllerClearEditorView(componentID C.uintptr_t, view unsafe.Pointer) {
+	if panel := panels.get(uintptr(componentID)); panel != nil {
+		panel.clearEditorView(view)
+		return
+	}
 	if c, session, _ := editorTarget(componentID); c != nil {
 		session.clearEditorView(view)
 		c.endGestures()
@@ -210,6 +219,10 @@ func GoEditControllerClearEditorView(componentID C.uintptr_t, view unsafe.Pointe
 
 //export GoEditControllerGetEditorHTML
 func GoEditControllerGetEditorHTML(componentID C.uintptr_t) *C.char {
+	// The caller (editor view) owns and frees the returned string.
+	if panel := panels.get(uintptr(componentID)); panel != nil {
+		return C.CString(panelPage(panel.html))
+	}
 	c, _, _ := editorTarget(componentID)
 	if c == nil {
 		return nil
@@ -218,7 +231,6 @@ func GoEditControllerGetEditorHTML(componentID C.uintptr_t) *C.char {
 	if err != nil {
 		return nil
 	}
-	// The caller (editor view) owns and frees the returned string.
 	return C.CString(page)
 }
 

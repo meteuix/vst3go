@@ -151,3 +151,23 @@ func TestEditorSnapshotApply(t *testing.T) {
 		t.Fatalf("gain.GetNormalized() = %v, want %v", got, 0.9)
 	}
 }
+
+func TestEditorModelCarriesTheScale(t *testing.T) {
+	registry := frameworkparam.NewRegistry()
+	registry.Add(
+		frameworkparam.FrequencyParameter(1, "Cutoff", 20, 20000, 1000).Build(),
+		frameworkparam.TimeParameter(2, "Pre-Delay", 0, 400, 20).Build(),
+		frameworkparam.New(3, "Mix").Build(),
+	)
+	model, err := BuildEditorModel(frameworkplugin.Info{Name: "Scales"}, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := model.Sections[0].Controls
+	if c[0].Scale != "log" || c[1].Scale != "power" || c[1].Exponent != 3 || c[2].Scale != "linear" {
+		t.Fatalf("scales %q %q (exponent %v) %q", c[0].Scale, c[1].Scale, c[1].Exponent, c[2].Scale)
+	}
+	if c[0].Plain < 999.999 || c[0].Plain > 1000.001 {
+		t.Fatalf("cutoff plain %v", c[0].Plain)
+	}
+}

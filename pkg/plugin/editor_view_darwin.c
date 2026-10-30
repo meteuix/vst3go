@@ -1,6 +1,19 @@
 //go:build darwin
 
+// The editor view on macOS (an NSView) and iOS (a UIView, for AUv3
+// extensions): a WKWebView showing the editor page.
+
+#include <TargetConditionals.h>
+#if TARGET_OS_OSX
 #import <Cocoa/Cocoa.h>
+typedef NSView VST3GoNativeView;
+#define VST3GO_AUTORESIZE (NSViewWidthSizable | NSViewHeightSizable)
+#else
+#import <UIKit/UIKit.h>
+typedef UIView VST3GoNativeView;
+#define VST3GO_AUTORESIZE (UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight)
+#endif
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <WebKit/WebKit.h>
 
 #include "editor_view.h"
@@ -21,8 +34,8 @@ struct VST3GoEditorView {
     VST3GoEditorScaleSupport scaleSupport;
     Steinberg_uint32 refCount;
     uintptr_t component;
-    NSView* parentView;
-    NSView* containerView;
+    VST3GoNativeView* parentView;
+    VST3GoNativeView* containerView;
     WKWebView* webView;
     NSObject<WKScriptMessageHandler>* messageHandler;
     struct Steinberg_IPlugFrame* frame;
@@ -158,7 +171,11 @@ static void editorViewSetFrameFromParent(VST3GoEditorView* view) {
     view->webView.frame = view->containerView.bounds;
 }
 
+#if TARGET_OS_OSX
 const char* const VST3GoEditorPlatformType = "NSView";
+#else
+const char* const VST3GoEditorPlatformType = "UIView";
+#endif
 
 void* VST3GoCreateEditorView(uintptr_t component) {
     @autoreleasepool {
@@ -286,7 +303,7 @@ static Steinberg_tresult editorView_isPlatformTypeSupported(void* thisInterface,
         return Steinberg_kResultFalse;
     }
 
-    return (strcmp(type, "NSView") == 0) ? Steinberg_kResultOk : Steinberg_kResultFalse;
+    return (strcmp(type, VST3GoEditorPlatformType) == 0) ? Steinberg_kResultOk : Steinberg_kResultFalse;
 }
 
 static Steinberg_tresult editorView_attached(void* thisInterface, void* parent, Steinberg_FIDString type) {
@@ -297,7 +314,7 @@ static Steinberg_tresult editorView_attached(void* thisInterface, void* parent, 
             return Steinberg_kResultFalse;
         }
 
-        NSView* parentView = (NSView*)parent;
+        VST3GoNativeView* parentView = (VST3GoNativeView*)parent;
         if (view->attached) {
             [view->containerView removeFromSuperview];
             [view->containerView release];
@@ -309,17 +326,32 @@ static Steinberg_tresult editorView_attached(void* thisInterface, void* parent, 
         }
 
         view->parentView = parentView;
-        view->containerView = [[NSView alloc] initWithFrame:parentView.bounds];
-        view->containerView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        view->containerView = [[VST3GoNativeView alloc] initWithFrame:parentView.bounds];
+        view->containerView.autoresizingMask = VST3GO_AUTORESIZE;
 
         WKWebViewConfiguration* configuration = [[WKWebViewConfiguration alloc] init];
         WKUserContentController* contentController = [[WKUserContentController alloc] init];
         view->messageHandler = newMessageHandler(view);
         [contentController addScriptMessageHandler:view->messageHandler name:@"vst3go"];
+#if !TARGET_OS_OSX
+        // Lay the page out in points at the view's width, as on macOS,
+        // instead of on a zoomed-out 980-pixel canvas.
+        WKUserScript* viewport = [[WKUserScript alloc]
+              initWithSource:@"var m = document.createElement('meta'); m.name = 'viewport';"
+                             "m.content = 'width=device-width, initial-scale=1';"
+                             "document.head.appendChild(m);"
+               injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
+            forMainFrameOnly:YES];
+        [contentController addUserScript:viewport];
+        [viewport release];
+#endif
         configuration.userContentController = contentController;
 
         view->webView = [[WKWebView alloc] initWithFrame:view->containerView.bounds configuration:configuration];
-        view->webView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        view->webView.autoresizingMask = VST3GO_AUTORESIZE;
+#if !TARGET_OS_OSX
+        view->webView.scrollView.bounces = NO;
+#endif
         [view->containerView addSubview:view->webView];
         [parentView addSubview:view->containerView];
 
@@ -407,7 +439,7 @@ static Steinberg_tresult editorView_onSize(void* thisInterface, Steinberg_ViewRe
     if (view->containerView) {
         CGFloat width = (CGFloat)(size->right - size->left);
         CGFloat height = (CGFloat)(size->bottom - size->top);
-        view->containerView.frame = NSMakeRect(0, 0, width, height);
+        view->containerView.frame = CGRectMake(0, 0, width, height);
         view->webView.frame = view->containerView.bounds;
     }
     return Steinberg_kResultOk;
@@ -455,3 +487,321 @@ void VST3GoEditorViewRequestResize(void* thisInterface, int32_t width, int32_t h
     view->frame->lpVtbl->resizeView(view->frame, (struct Steinberg_IPlugView*)&view->view, &rect);
 }
 
+
+// ---- open file dialog ----
+
+// fileTypes is the content types of ';'-separated file name extensions,
+// empty for any file.
+static NSArray<UTType*>* fileTypes(const char* extensions) {
+    NSMutableArray<UTType*>* types = [NSMutableArray array];
+    NSString* list = extensions ? [NSString stringWithUTF8String:extensions] : nil;
+    for (NSString* ext in [list componentsSeparatedByString:@";"]) {
+        UTType* type = ext.length ? [UTType typeWithFilenameExtension:ext] : nil;
+        if (type) [types addObject:type];
+    }
+    if (!types.count) [types addObject:UTTypeItem];
+    return types;
+}
+
+#if TARGET_OS_OSX
+// The sandbox of an AUv3 extension lets it read a file the user picked
+// until the process ends. To read it again later, when a saved state
+// names it, the extension keeps a security-scoped bookmark of each picked
+// file (the newest VST3GO_MAX_BOOKMARKS) and VST3GoRestoreFileAccess
+// resolves them when it starts. Outside a sandbox there is nothing to do.
+#define VST3GO_MAX_BOOKMARKS 256
+static NSString* const bookmarksKey = @"VST3GoFileBookmarks";
+
+static bool sandboxed(void) {
+    return getenv("APP_SANDBOX_CONTAINER_ID") != NULL;
+}
+
+void VST3GoKeepFileAccess(NSURL* url) {
+    if (!sandboxed()) {
+        return;
+    }
+    NSData* bookmark = [url bookmarkDataWithOptions:NSURLBookmarkCreationWithSecurityScope | NSURLBookmarkCreationSecurityScopeAllowOnlyReadAccess
+                     includingResourceValuesForKeys:nil
+                                      relativeToURL:nil
+                                              error:nil];
+    if (!bookmark) {
+        return;
+    }
+    NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+    NSMutableArray* list = [NSMutableArray arrayWithArray:[defaults arrayForKey:bookmarksKey] ?: @[]];
+    [list addObject:bookmark];
+    if (list.count > VST3GO_MAX_BOOKMARKS) {
+        [list removeObjectsInRange:NSMakeRange(0, list.count - VST3GO_MAX_BOOKMARKS)];
+    }
+    [defaults setObject:list forKey:bookmarksKey];
+}
+
+void VST3GoRestoreFileAccess(void) {
+    if (!sandboxed()) {
+        return;
+    }
+    @autoreleasepool {
+        NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+        NSMutableArray* kept = [NSMutableArray array];
+        for (id bookmark in [defaults arrayForKey:bookmarksKey]) {
+            if (![bookmark isKindOfClass:[NSData class]]) {
+                continue;
+            }
+            BOOL stale = NO;
+            NSURL* url = [NSURL URLByResolvingBookmarkData:bookmark
+                                                   options:NSURLBookmarkResolutionWithSecurityScope | NSURLBookmarkResolutionWithoutUI
+                                             relativeToURL:nil
+                                       bookmarkDataIsStale:&stale
+                                                     error:nil];
+            // Access lasts until the process ends.
+            if (url && [url startAccessingSecurityScopedResource]) {
+                [kept addObject:bookmark];
+            }
+        }
+        [defaults setObject:kept forKey:bookmarksKey];
+    }
+}
+
+void VST3GoEditorViewChooseFile(void* thisInterface, uint32_t request, const char* title, const char* extensions) {
+    @autoreleasepool {
+        VST3GoEditorView* view = editorViewFromInterface(thisInterface);
+        if (!view) {
+            return;
+        }
+        uintptr_t component = view->component;
+        NSOpenPanel* panel = [NSOpenPanel openPanel];
+        panel.canChooseFiles = YES;
+        panel.canChooseDirectories = NO;
+        panel.allowsMultipleSelection = NO;
+        panel.allowedContentTypes = fileTypes(extensions);
+        if (title && *title) {
+            panel.message = [NSString stringWithUTF8String:title];
+        }
+        [panel beginWithCompletionHandler:^(NSModalResponse result) {
+            NSURL* url = result == NSModalResponseOK ? panel.URL : nil;
+            if (url) VST3GoKeepFileAccess(url);
+            GoEditorFileChosen(component, request, url ? (char*)url.fileSystemRepresentation : NULL, NULL);
+        }];
+    }
+}
+#else
+// The document picker's delegate, a class unique to this binary like the
+// message handler's.
+static Ivar pickerComponent, pickerRequest;
+
+static void pickerAnswer(id self, NSURL* url) {
+    uintptr_t component = *(uintptr_t*)((char*)self + ivar_getOffset(pickerComponent));
+    uint32_t request = *(uint32_t*)((char*)self + ivar_getOffset(pickerRequest));
+    GoEditorFileChosen(component, request, url ? (char*)url.fileSystemRepresentation : NULL, NULL);
+}
+
+// The picker's copy is temporary: it moves to its own folder under the
+// extension's Application Support, where a saved state can find it again.
+static void pickerPicked(id self, SEL cmd, UIDocumentPickerViewController* picker, NSArray<NSURL*>* urls) {
+    (void)cmd;
+    (void)picker;
+    NSURL* copy = urls.firstObject;
+    if (!copy) {
+        pickerAnswer(self, nil);
+        return;
+    }
+    NSFileManager* files = [NSFileManager defaultManager];
+    NSURL* support = [files URLForDirectory:NSApplicationSupportDirectory inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:nil];
+    NSURL* dir = [[support URLByAppendingPathComponent:@"vst3go-files" isDirectory:YES] URLByAppendingPathComponent:[NSUUID UUID].UUIDString isDirectory:YES];
+    NSURL* kept = [dir URLByAppendingPathComponent:copy.lastPathComponent];
+    NSError* error = nil;
+    if (!support || ![files createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:&error] ||
+        ![files moveItemAtURL:copy toURL:kept error:&error]) {
+        uintptr_t component = *(uintptr_t*)((char*)self + ivar_getOffset(pickerComponent));
+        uint32_t request = *(uint32_t*)((char*)self + ivar_getOffset(pickerRequest));
+        NSString* text = error ? error.localizedDescription : @"no Application Support folder";
+        GoEditorFileChosen(component, request, NULL, (char*)text.UTF8String);
+        return;
+    }
+    pickerAnswer(self, kept);
+}
+
+static void pickerCancelled(id self, SEL cmd, UIDocumentPickerViewController* picker) {
+    (void)cmd;
+    (void)picker;
+    pickerAnswer(self, nil);
+}
+
+static id newPickerDelegate(uintptr_t component, uint32_t request) {
+    static Class cls;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Dl_info info;
+        char name[96];
+        uintptr_t image = dladdr((const void*)&newPickerDelegate, &info) ? (uintptr_t)info.dli_fbase : (uintptr_t)&newPickerDelegate;
+        snprintf(name, sizeof(name), "VST3GoDocumentPickerDelegate_%lx", (unsigned long)image);
+        cls = objc_allocateClassPair([NSObject class], name, 0);
+        class_addIvar(cls, "component", sizeof(uintptr_t), sizeof(uintptr_t) == 8 ? 3 : 2, "Q");
+        class_addIvar(cls, "request", sizeof(uint32_t), 2, "I");
+        class_addMethod(cls, @selector(documentPicker:didPickDocumentsAtURLs:), (IMP)pickerPicked, "v@:@@");
+        class_addMethod(cls, @selector(documentPickerWasCancelled:), (IMP)pickerCancelled, "v@:@");
+        class_addProtocol(cls, @protocol(UIDocumentPickerDelegate));
+        objc_registerClassPair(cls);
+        pickerComponent = class_getInstanceVariable(cls, "component");
+        pickerRequest = class_getInstanceVariable(cls, "request");
+    });
+    id delegate = [[cls alloc] init];
+    *(uintptr_t*)((char*)delegate + ivar_getOffset(pickerComponent)) = component;
+    *(uint32_t*)((char*)delegate + ivar_getOffset(pickerRequest)) = request;
+    return delegate;
+}
+
+// The picker's delegate is weak: each picker keeps its own alive.
+static char pickerDelegateKey;
+
+void VST3GoEditorViewChooseFile(void* thisInterface, uint32_t request, const char* title, const char* extensions) {
+    @autoreleasepool {
+        VST3GoEditorView* view = editorViewFromInterface(thisInterface);
+        if (!view || !view->webView) {
+            return;
+        }
+        UIResponder* responder = view->webView;
+        while (responder && ![responder isKindOfClass:[UIViewController class]]) {
+            responder = responder.nextResponder;
+        }
+        if (!responder) {
+            GoEditorFileChosen(view->component, request, NULL, (char*)"the editor is not shown by a view controller");
+            return;
+        }
+        // A copy in the extension's container, which the sandbox lets the
+        // plugin read.
+        UIDocumentPickerViewController* picker = [[[UIDocumentPickerViewController alloc] initForOpeningContentTypes:fileTypes(extensions) asCopy:YES] autorelease];
+        id delegate = newPickerDelegate(view->component, request);
+        picker.delegate = delegate;
+        objc_setAssociatedObject(picker, &pickerDelegateKey, delegate, OBJC_ASSOCIATION_RETAIN);
+        [delegate release];
+        if (title && *title) {
+            picker.title = [NSString stringWithUTF8String:title];
+        }
+        [(UIViewController*)responder presentViewController:picker animated:YES completion:nil];
+    }
+}
+#endif
+
+// ---- floating windows ----
+
+#if TARGET_OS_OSX
+
+typedef struct {
+    NSWindow* window;
+    id delegate;
+    VST3GoFloatingCallbacks callbacks;
+} VST3GoFloatingWindow;
+
+static Ivar floatingOwner;
+
+// The user closing the window hides it and tells the owner.
+static BOOL floatingShouldClose(id self, SEL cmd, NSWindow* sender) {
+    (void)cmd;
+    VST3GoFloatingWindow* w = *(VST3GoFloatingWindow**)((char*)self + ivar_getOffset(floatingOwner));
+    [sender orderOut:nil];
+    if (w) w->callbacks.closed(w->callbacks.ctx);
+    return NO;
+}
+
+static void floatingDidResize(id self, SEL cmd, NSNotification* note) {
+    (void)cmd;
+    VST3GoFloatingWindow* w = *(VST3GoFloatingWindow**)((char*)self + ivar_getOffset(floatingOwner));
+    if (!w) return;
+    NSSize size = [[(NSWindow*)note.object contentView] frame].size;
+    w->callbacks.resized(w->callbacks.ctx, (int32_t)size.width, (int32_t)size.height);
+}
+
+static id newFloatingDelegate(VST3GoFloatingWindow* owner) {
+    static Class cls;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Dl_info info;
+        char name[96];
+        uintptr_t image = dladdr((const void*)&newFloatingDelegate, &info) ? (uintptr_t)info.dli_fbase : (uintptr_t)&newFloatingDelegate;
+        snprintf(name, sizeof(name), "VST3GoFloatingWindowDelegate_%lx", (unsigned long)image);
+        cls = objc_allocateClassPair([NSObject class], name, 0);
+        class_addIvar(cls, "owner", sizeof(void*), sizeof(void*) == 8 ? 3 : 2, "^v");
+        class_addMethod(cls, @selector(windowShouldClose:), (IMP)floatingShouldClose, "c@:@");
+        class_addMethod(cls, @selector(windowDidResize:), (IMP)floatingDidResize, "v@:@");
+        class_addProtocol(cls, @protocol(NSWindowDelegate));
+        objc_registerClassPair(cls);
+        floatingOwner = class_getInstanceVariable(cls, "owner");
+    });
+    id delegate = [[cls alloc] init];
+    *(VST3GoFloatingWindow**)((char*)delegate + ivar_getOffset(floatingOwner)) = owner;
+    return delegate;
+}
+
+void* VST3GoFloatingWindowCreate(int32_t width, int32_t height, int resizable, VST3GoFloatingCallbacks callbacks) {
+    VST3GoFloatingWindow* w = (VST3GoFloatingWindow*)calloc(1, sizeof(VST3GoFloatingWindow));
+    if (!w) return NULL;
+    w->callbacks = callbacks;
+    NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable;
+    if (resizable) style |= NSWindowStyleMaskResizable;
+    w->window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, width, height) styleMask:style backing:NSBackingStoreBuffered defer:NO];
+    [w->window setReleasedWhenClosed:NO];
+    w->delegate = newFloatingDelegate(w);
+    [w->window setDelegate:w->delegate];
+    [w->window center];
+    return w;
+}
+
+void* VST3GoFloatingWindowParent(void* window) {
+    return window ? (void*)[((VST3GoFloatingWindow*)window)->window contentView] : NULL;
+}
+
+void VST3GoFloatingWindowSetTitle(void* window, const char* title) {
+    if (!window || !title) return;
+    [((VST3GoFloatingWindow*)window)->window setTitle:[NSString stringWithUTF8String:title]];
+}
+
+void VST3GoFloatingWindowSetTransient(void* window, void* owner) {
+    if (!window || !owner) return;
+    NSWindow* parent = [(NSView*)owner window];
+    NSWindow* child = ((VST3GoFloatingWindow*)window)->window;
+    if (parent && [child parentWindow] != parent) [parent addChildWindow:child ordered:NSWindowAbove];
+}
+
+void VST3GoFloatingWindowSetSize(void* window, int32_t width, int32_t height) {
+    if (!window) return;
+    [((VST3GoFloatingWindow*)window)->window setContentSize:NSMakeSize(width, height)];
+}
+
+void VST3GoFloatingWindowShow(void* window, int visible) {
+    if (!window) return;
+    NSWindow* w = ((VST3GoFloatingWindow*)window)->window;
+    if (visible) {
+        [w makeKeyAndOrderFront:nil];
+    } else {
+        [w orderOut:nil];
+    }
+}
+
+void VST3GoFloatingWindowDestroy(void* window) {
+    if (!window) return;
+    VST3GoFloatingWindow* w = (VST3GoFloatingWindow*)window;
+    *(VST3GoFloatingWindow**)((char*)w->delegate + ivar_getOffset(floatingOwner)) = NULL;
+    [w->window setDelegate:nil];
+    if ([w->window parentWindow]) [[w->window parentWindow] removeChildWindow:w->window];
+    [w->window orderOut:nil];
+    [w->window release];
+    [w->delegate release];
+    free(w);
+}
+
+#else
+
+// iOS has no floating windows.
+void* VST3GoFloatingWindowCreate(int32_t width, int32_t height, int resizable, VST3GoFloatingCallbacks callbacks) {
+    (void)width; (void)height; (void)resizable; (void)callbacks;
+    return NULL;
+}
+void* VST3GoFloatingWindowParent(void* window) { return window; }
+void VST3GoFloatingWindowSetTitle(void* window, const char* title) { (void)window; (void)title; }
+void VST3GoFloatingWindowSetTransient(void* window, void* owner) { (void)window; (void)owner; }
+void VST3GoFloatingWindowSetSize(void* window, int32_t width, int32_t height) { (void)window; (void)width; (void)height; }
+void VST3GoFloatingWindowShow(void* window, int visible) { (void)window; (void)visible; }
+void VST3GoFloatingWindowDestroy(void* window) { (void)window; }
+
+#endif

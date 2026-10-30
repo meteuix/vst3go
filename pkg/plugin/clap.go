@@ -2,6 +2,8 @@ package plugin
 
 import (
 	"math"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/th-release/vst3go/pkg/framework/param"
@@ -18,12 +20,29 @@ type CLAPFeaturesPlugin interface {
 	CLAPFeatures() []string
 }
 
-// clapFeatures maps VST3 sub-categories to CLAP plugin features; the main
-// feature (instrument, audio-effect, note-effect, analyzer) comes first.
+// clapFeatures returns the CLAP plugin features: CLAPFeatures, or the
+// features of the VST3 sub-categories, and "ara:supported" for an
+// ARAPlugin.
 func clapFeatures(p Plugin, info frameworkplugin.Info) []string {
+	var features []string
 	if custom, ok := p.(CLAPFeaturesPlugin); ok {
-		return custom.CLAPFeatures()
+		features = slices.Clone(custom.CLAPFeatures())
+	} else {
+		features = clapCategoryFeatures(info)
 	}
+	if _, ok := p.(ARAPlugin); ok && !slices.Contains(features, clapFeatureARASupported) {
+		features = append(features, clapFeatureARASupported)
+	}
+	return features
+}
+
+// clapFeatureARASupported is CLAP_PLUGIN_FEATURE_ARA_SUPPORTED (ARACLAP.h).
+const clapFeatureARASupported = "ara:supported"
+
+// clapCategoryFeatures maps VST3 sub-categories to CLAP plugin features;
+// the main feature (instrument, audio-effect, note-effect, analyzer) comes
+// first.
+func clapCategoryFeatures(info frameworkplugin.Info) []string {
 	parts := strings.Split(info.SubCategories(), "|")
 	var features []string
 	add := func(f string) {
@@ -71,15 +90,22 @@ func clapFeatures(p Plugin, info frameworkplugin.Info) []string {
 	return features
 }
 
-// CLAP parameters use plain values: continuous parameters range over
-// Min..Max, stepped ones over the step index 0..StepCount (their display
+// CLAP parameters use plain values: linear continuous parameters range
+// over Min..Max, stepped ones over the step index 0..StepCount, and
+// logarithmic or skewed ones over their normalized value 0..1, so a host
+// knob or automation lane follows the parameter's curve (their display
 // text comes from the formatter).
+
+// clapNormalizedRange reports whether a parameter is exposed as 0..1.
+func clapNormalizedRange(p *param.Parameter) bool {
+	return p.Max <= p.Min || p.Scale != param.ScaleLinear
+}
 
 func clapParamRange(p *param.Parameter) (lo, hi float64) {
 	switch {
 	case p.StepCount > 0:
 		return 0, float64(p.StepCount)
-	case p.Max <= p.Min:
+	case clapNormalizedRange(p):
 		return 0, 1
 	default:
 		return p.Min, p.Max
@@ -91,8 +117,8 @@ func clapPlain(p *param.Parameter, normalized float64) float64 {
 	switch {
 	case p.StepCount > 0:
 		steps := float64(p.StepCount)
-		return math.Min(steps, math.Floor(normalized*(steps+1)))
-	case p.Max <= p.Min:
+		return min(steps, math.Floor(normalized*(steps+1)))
+	case clapNormalizedRange(p):
 		return normalized
 	default:
 		return p.Min + normalized*(p.Max-p.Min)
@@ -106,29 +132,36 @@ func clapNormalized(p *param.Parameter, plain float64) float64 {
 	switch {
 	case p.StepCount > 0:
 		return clampUnit(math.Round(plain) / float64(p.StepCount))
-	case p.Max <= p.Min:
+	case clapNormalizedRange(p):
 		return clampUnit(plain)
 	default:
 		return p.Normalize(plain)
 	}
 }
 
-// clapParamText formats a plain value with the parameter unit.
+// clapParamText formats a plain value with the parameter unit. A
+// formatter that writes a unit of its own ("1.00 s" for a parameter in ms)
+// keeps it; a bare number gets the parameter's.
 func clapParamText(p *param.Parameter, plain float64) string {
 	text := p.FormatValue(clapNormalized(p, plain))
-	if p.Unit != "" && !strings.HasSuffix(text, p.Unit) {
-		text += " " + p.Unit
+	if p.Unit != "" {
+		if _, err := strconv.ParseFloat(strings.TrimSpace(text), 64); err == nil {
+			text += " " + p.Unit
+		}
 	}
 	return text
 }
 
 // clapParamValue parses display text (with or without the unit) to a plain value.
 func clapParamValue(p *param.Parameter, text string) (float64, error) {
+	// The text is what clapParamText wrote: the formatter's output, with
+	// the unit appended to a bare number. Parse it as is first, so units
+	// with prefixes ("1 kHz" for "Hz") survive.
 	text = strings.TrimSpace(text)
-	if p.Unit != "" {
-		text = strings.TrimSpace(strings.TrimSuffix(text, p.Unit))
-	}
 	normalized, err := p.ParseValue(text)
+	if err != nil && p.Unit != "" && strings.HasSuffix(text, p.Unit) {
+		normalized, err = p.ParseValue(strings.TrimSpace(strings.TrimSuffix(text, p.Unit)))
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -321,6 +354,104 @@ func clapRawMIDI(notes *clapNotes, data [3]byte, offset int32) clapMIDIMessage {
 		msg.controller, msg.value, msg.isCtrl = MIDIControllerPitchBend, float64(int(d2)<<7|int(d1))/16383, true
 	case 0xC0:
 		msg.program = int32(d1)
+	}
+	msg.event.Channel = channel
+	return msg
+}
+
+// midi2PerNoteBendRange is the default range of a MIDI 2.0 per-note pitch
+// bend in semitones (the MIDI 2.0 protocol's default per-note pitch bend
+// sensitivity).
+const midi2PerNoteBendRange = 48
+
+// clapMIDI2 converts a Universal MIDI Packet: MIDI 1.0 channel voice
+// messages (type 2) like clapRawMIDI, and MIDI 2.0 channel voice messages
+// (type 4) at their resolution: 16-bit velocities with the pitch 7.9
+// attribute as tuning, 32-bit pressure, controllers and bend, per-note
+// pitch bend and the registered per-note controllers that match a note
+// expression (3 pitch 7.25, 7 volume, 10 pan, 11 expression, 74
+// brightness, 77 vibrato). Other messages return an empty message.
+func clapMIDI2(notes *clapNotes, words [4]uint32, offset int32) clapMIDIMessage {
+	msg := clapMIDIMessage{program: -1}
+	switch words[0] >> 28 {
+	case 2:
+		return clapRawMIDI(notes, [3]byte{byte(words[0] >> 16), byte(words[0] >> 8), byte(words[0])}, offset)
+	case 4:
+	default:
+		return msg
+	}
+	status := byte(words[0]>>16) & 0xF0
+	channel := byte(words[0]>>16) & 0x0F
+	index, extra := byte(words[0]>>8)&0x7F, byte(words[0])
+	data := words[1]
+	unit := float64(data) / math.MaxUint32
+	noteID := func(key byte) int32 {
+		if notes.on[channel][key] {
+			return notes.ids[channel][key]
+		}
+		return midi.NoteIDNone
+	}
+	expression := func(typeID uint32, value float64) clapMIDIMessage {
+		id := noteID(index)
+		if id == midi.NoteIDNone {
+			return msg
+		}
+		msg.event = midi.NoteExpression(id, typeID, clampUnit(value)).At(offset)
+		msg.event.Channel, msg.event.Note = channel, index
+		msg.isEvent = true
+		return msg
+	}
+	switch status {
+	case 0x90:
+		// Velocity 0 is a note-on in MIDI 2.0; it plays as the softest one.
+		velocity := float32(max(data>>16, 1)) / 65535
+		id := notes.noteOn(int32(channel), int32(index), -1)
+		msg.event = midi.NoteOn(channel, index, velocity).At(offset)
+		msg.event.NoteID = id
+		if extra == 3 { // pitch 7.9
+			msg.event.Tuning = float32((float64(data&0xFFFF)/512 - float64(index)) * 100)
+		}
+		msg.isEvent = true
+	case 0x80:
+		id := noteID(index)
+		if id != midi.NoteIDNone {
+			notes.noteOff(int32(channel), int32(index))
+		}
+		msg.event = midi.NoteOff(channel, index, float32(data>>16)/65535).At(offset)
+		msg.event.NoteID = id
+		msg.isEvent = true
+	case 0xA0:
+		msg.event = midi.PolyPressure(channel, index, unit).At(offset)
+		msg.event.NoteID = noteID(index)
+		msg.isEvent = true
+	case 0x60: // per-note pitch bend
+		semitones := (float64(data) - 0x80000000) / 0x80000000 * midi2PerNoteBendRange
+		return expression(midi.NoteExpressionTuning, 0.5+semitones/240)
+	case 0x00: // registered per-note controller
+		switch extra {
+		case 3: // pitch 7.25, absolute
+			semitones := float64(data)/(1<<25) - float64(index)
+			return expression(midi.NoteExpressionTuning, 0.5+semitones/240)
+		case 7: // volume: 0 to 1 is silence to unity
+			return expression(midi.NoteExpressionVolume, unit/4)
+		case 10:
+			return expression(midi.NoteExpressionPan, unit)
+		case 11:
+			return expression(midi.NoteExpressionExpression, unit)
+		case 74:
+			return expression(midi.NoteExpressionBrightness, unit)
+		case 77:
+			return expression(midi.NoteExpressionVibrato, unit)
+		}
+		return msg
+	case 0xB0:
+		msg.controller, msg.value, msg.isCtrl = int16(index), unit, true
+	case 0xD0:
+		msg.controller, msg.value, msg.isCtrl = MIDIControllerAfterTouch, unit, true
+	case 0xE0:
+		msg.controller, msg.value, msg.isCtrl = MIDIControllerPitchBend, unit, true
+	case 0xC0:
+		msg.program = int32(data>>24) & 0x7F
 	}
 	msg.event.Channel = channel
 	return msg

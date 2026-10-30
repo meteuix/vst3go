@@ -79,6 +79,13 @@ func (i *Info) ControllerUID() [16]byte {
 	return controller.generateDeterministicUID()
 }
 
+// ARAFactoryUID is the class ID of the ARA main factory class of an ARA
+// plugin, derived from the plugin ID like UID.
+func (i *Info) ARAFactoryUID() [16]byte {
+	factory := Info{ID: i.ID + "#ara"}
+	return factory.generateDeterministicUID()
+}
+
 // generateDeterministicUID creates a deterministic UUID v4 from the plugin ID
 func (i *Info) generateDeterministicUID() [16]byte {
 	// Generate deterministic UUID from plugin ID string

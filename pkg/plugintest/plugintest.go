@@ -216,7 +216,7 @@ func Constant(n int, value float32) []float32 {
 func Peak(x []float32) float64 {
 	peak := 0.0
 	for _, v := range x {
-		peak = math.Max(peak, math.Abs(float64(v)))
+		peak = max(peak, math.Abs(float64(v)))
 	}
 	return peak
 }

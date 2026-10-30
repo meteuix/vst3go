@@ -27,6 +27,8 @@ type BaseProcessor struct {
 	onInitialize func(sampleRate float64, maxBlockSize int32) error
 	onSetActive  func(active bool) error
 	onReset      func()
+
+	deadline float64
 }
 
 // NewBaseProcessor creates a BaseProcessor with the given bus configuration.
@@ -36,8 +38,9 @@ func NewBaseProcessor(buses *bus.Configuration) *BaseProcessor {
 	}
 
 	return &BaseProcessor{
-		params: param.NewRegistry(),
-		buses:  buses,
+		params:   param.NewRegistry(),
+		buses:    buses,
+		deadline: DefaultProcessDeadline,
 	}
 }
 
@@ -93,6 +96,25 @@ func (b *BaseProcessor) SampleRate() float64 {
 // Parameters returns the parameter registry for adding parameters
 func (b *BaseProcessor) Parameters() *param.Registry {
 	return b.params
+}
+
+// DefaultProcessDeadline is the share of each block's duration the host's
+// audio thread waits for a block (see BaseProcessor.SetProcessDeadline).
+const DefaultProcessDeadline = 0.5
+
+// SetProcessDeadline lets the host's audio thread wait at most share (0 to
+// 1) of each block's duration for the block, which runs on a dedicated
+// real-time thread; a later block outputs silence instead of stalling the
+// host. It is DefaultProcessDeadline unless set; 0 processes on the host's
+// audio thread. It takes effect when the plugin is activated (see
+// plugin.DeadlineProcessor).
+func (b *BaseProcessor) SetProcessDeadline(share float64) {
+	b.deadline = share
+}
+
+// ProcessDeadline implements plugin.DeadlineProcessor.
+func (b *BaseProcessor) ProcessDeadline() float64 {
+	return b.deadline
 }
 
 // OnInitialize sets a callback for initialization

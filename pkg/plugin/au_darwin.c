@@ -9,10 +9,22 @@
 // Info.plist, see scripts/build_au.sh). The Cocoa view factory class name
 // comes from VST3GO_AU_VIEW_CLASS so plugins loaded into one process do
 // not share Objective-C classes.
+//
+// AUv3 extensions (auv3_darwin.c, macOS and iOS) register the same
+// component in their own process (vst3go_au_register) and wrap it in an
+// AUAudioUnitV2Bridge; their view controller shows vst3go_au_open_view.
 
+#include <TargetConditionals.h>
+#if TARGET_OS_OSX
 #import <Cocoa/Cocoa.h>
-#include <AudioToolbox/AudioToolbox.h>
 #include <AudioToolbox/AUCocoaUIView.h>
+typedef NSView AUNativeView;
+#else
+#import <UIKit/UIKit.h>
+typedef UIView AUNativeView;
+#endif
+#include <AudioToolbox/AudioToolbox.h>
+#include <Block.h>
 #include <CoreMIDI/CoreMIDI.h>
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
@@ -24,6 +36,8 @@
 #include <string.h>
 
 #include "clap_bridge.h"
+#include "../../include/ara/ARACLAP.h"
+#include "../../include/ara/ARAAudioUnit.h"
 
 #ifndef VST3GO_AU_VIEW_CLASS
 #define VST3GO_AU_VIEW_CLASS VST3GoAUView
@@ -39,6 +53,9 @@ extern const clap_plugin_entry_t clap_entry;
 extern uint32_t GoClapPluginCount(void);
 extern clap_plugin_descriptor_t* GoClapDescriptor(uint32_t index);
 extern bool GoAUComponentCodes(uint32_t index, uint32_t* type, uint32_t* subtype, uint32_t* manufacturer);
+#if TARGET_OS_OSX
+extern void VST3GoRestoreFileAccess(void);  // editor_view_darwin.c
+#endif
 
 // The view factory reads the instance behind an AudioUnit handle through
 // this private property.
@@ -54,6 +71,8 @@ enum {
     AU_MAX_RENDER_NOTIFY = 16,
     AU_DEFAULT_MAX_FRAMES = 1156,  // kAUDefaultMaxFramesPerSlice
     AU_PROGRAM_PARAM_ID = 0x7EFFFFFF,
+    AU_MAX_LAYOUT_CHANNELS = 8,   // main bus channel counts offered to hosts
+    AU_MAX_CHANNEL_INFOS = AU_MAX_LAYOUT_CHANNELS * AU_MAX_LAYOUT_CHANNELS + 1,
 };
 
 typedef struct {
@@ -69,12 +88,13 @@ typedef struct {
     bool connected;
 } AUElement;
 
-enum { QUEUED_PARAM, QUEUED_MIDI, QUEUED_SYSEX };
+enum { QUEUED_PARAM, QUEUED_MIDI, QUEUED_MIDI2, QUEUED_SYSEX };
 
 typedef struct {
     uint32_t offset;
     uint8_t kind;
     uint8_t midi[3];
+    uint32_t ump[2];  // QUEUED_MIDI2: a 32- or 64-bit Universal MIDI Packet
     clap_id param;
     double value;
     uint32_t sysexStart, sysexSize;
@@ -107,7 +127,13 @@ typedef struct AUInstance {
     const clap_plugin_tail_t* tail;
     const clap_plugin_gui_t* gui;
     const clap_plugin_render_t* render;
+    const clap_plugin_configurable_audio_ports_t* configPorts;
+    const clap_ara_plugin_extension_t* ara; // NULL unless the plugin supports ARA
     bool noteIn, noteOut;
+    // The main bus channel counts the plugin accepts (SupportedNumChannels),
+    // the current ones first.
+    AUChannelInfo channelInfos[AU_MAX_CHANNEL_INFOS];
+    uint32_t channelInfoCount;
 
     AUElement ins[AU_MAX_PORTS], outs[AU_MAX_PORTS];
     clap_audio_buffer_t inBuffers[AU_MAX_PORTS], outBuffers[AU_MAX_PORTS];
@@ -145,14 +171,22 @@ typedef struct AUInstance {
     uint8_t sysexWork[AU_SYSEX_BYTES];
     clap_event_param_value_t* paramEvents;  // paramCount + AU_MAX_QUEUE
     clap_event_midi_t midiEvents[AU_MAX_QUEUE];
+    clap_event_midi2_t midi2Events[AU_MAX_QUEUE];
     clap_event_midi_sysex_t sysexEvents[AU_MAX_QUEUE];
     const clap_event_header_t** events;  // paramCount + AU_MAX_QUEUE
     uint32_t eventCount;
     clap_event_transport_t transport;
 
-    struct { uint32_t time; uint8_t data[3]; uint8_t size; } midiOut[AU_MAX_MIDI_OUT];
+    // MIDI output as MIDI 1.0 bytes and as a MIDI 2.0 channel voice message
+    // (ump2[0] == 0 when it has none), for the event list callback.
+    struct { uint32_t time; uint8_t data[3]; uint8_t size; uint32_t ump2[2]; } midiOut[AU_MAX_MIDI_OUT];
     uint32_t midiOutCount;
     AUMIDIOutputCallbackStruct midiOutCallback;
+    AUMIDIEventListBlock midiOutList;  // copied
+    SInt32 hostProtocol;               // the protocol midiOutList wants
+    // SysEx arriving in MIDI 1.0 data packets (UMP type 3), host thread
+    uint8_t sysexIn[AU_SYSEX_BYTES];
+    uint32_t sysexInSize;
 
     AUNotice notices[AU_MAX_NOTICES];
     uint32_t noticeCount;
@@ -365,11 +399,69 @@ static const clap_event_header_t* in_get(const clap_input_events_t* list, uint32
     return index < a->eventCount ? a->events[index] : NULL;
 }
 
-static void push_midi_out(AUInstance* a, uint32_t time, const uint8_t* data, uint8_t size) {
+// midi2_scale converts a MIDI 1.0 value of srcBits to dstBits the way the
+// MIDI 2.0 translation rules do: zero, center and full scale map exactly.
+static uint32_t midi2_scale(uint32_t value, int srcBits, int dstBits) {
+    int scaleBits = dstBits - srcBits;
+    uint32_t shifted = value << scaleBits;
+    if (value <= 1u << (srcBits - 1)) return shifted;
+    int repeatBits = srcBits - 1;
+    uint32_t repeat = value & ((1u << repeatBits) - 1);
+    repeat = scaleBits > repeatBits ? repeat << (scaleBits - repeatBits) : repeat >> (repeatBits - scaleBits);
+    while (repeat) {
+        shifted |= repeat;
+        repeat >>= repeatBits;
+    }
+    return shifted;
+}
+
+// midi2_from_midi1 translates a MIDI 1.0 channel voice message to MIDI 2.0
+// (group 0); false for other messages.
+static bool midi2_from_midi1(const uint8_t* data, uint8_t size, uint32_t ump[2]) {
+    uint8_t status = data[0] & 0xF0, d1 = size > 1 ? data[1] & 0x7F : 0, d2 = size > 2 ? data[2] & 0x7F : 0;
+    if (status < 0x80 || status == 0xF0) return false;
+    if (status == 0x90 && d2 == 0) status = 0x80;
+    uint32_t head = 0x40000000u | (uint32_t)(status | (data[0] & 0x0F)) << 16;
+    switch (status) {
+    case 0x80:
+    case 0x90:
+        ump[0] = head | (uint32_t)d1 << 8;
+        ump[1] = midi2_scale(d2, 7, 16) << 16;
+        return true;
+    case 0xA0:
+    case 0xB0:
+        ump[0] = head | (uint32_t)d1 << 8;
+        ump[1] = midi2_scale(d2, 7, 32);
+        return true;
+    case 0xC0:
+        ump[0] = head;
+        ump[1] = (uint32_t)d1 << 24;
+        return true;
+    case 0xD0:
+        ump[0] = head;
+        ump[1] = midi2_scale(d1, 7, 32);
+        return true;
+    case 0xE0:
+        ump[0] = head;
+        ump[1] = midi2_scale((uint32_t)d2 << 7 | d1, 14, 32);
+        return true;
+    }
+    return false;
+}
+
+static void push_midi_out(AUInstance* a, uint32_t time, const uint8_t* data, uint8_t size, const uint32_t* ump2) {
     if (!inAudioThread || a->midiOutCount >= AU_MAX_MIDI_OUT) return;
-    a->midiOut[a->midiOutCount].time = time;
-    memcpy(a->midiOut[a->midiOutCount].data, data, size);
-    a->midiOut[a->midiOutCount].size = size;
+    typeof(a->midiOut[0])* m = &a->midiOut[a->midiOutCount];
+    m->time = time;
+    memcpy(m->data, data, size);
+    m->size = size;
+    m->ump2[0] = m->ump2[1] = 0;
+    if (ump2) {
+        m->ump2[0] = ump2[0];
+        m->ump2[1] = ump2[1];
+    } else {
+        midi2_from_midi1(data, size, m->ump2);
+    }
     a->midiOutCount++;
 }
 
@@ -406,7 +498,7 @@ static bool out_try_push(const clap_output_events_t* list, const clap_event_head
     }
     case CLAP_EVENT_MIDI: {
         const clap_event_midi_t* m = (const clap_event_midi_t*)e;
-        push_midi_out(a, e->time, m->data, midi_size(m->data[0]));
+        push_midi_out(a, e->time, m->data, midi_size(m->data[0]), NULL);
         break;
     }
     case CLAP_EVENT_NOTE_ON:
@@ -417,7 +509,11 @@ static bool out_try_push(const clap_output_events_t* list, const clap_event_head
         if (velocity > 127) velocity = 127;
         if (e->type == CLAP_EVENT_NOTE_ON && velocity < 1) velocity = 1;
         uint8_t data[3] = { (uint8_t)((e->type == CLAP_EVENT_NOTE_ON ? 0x90 : 0x80) | n->channel), (uint8_t)n->key, (uint8_t)velocity };
-        push_midi_out(a, e->time, data, 3);
+        // MIDI 2.0 keeps the velocity at 16 bits.
+        uint32_t velocity16 = (uint32_t)lround(fmin(fmax(n->velocity, 0), 1) * 65535);
+        if (e->type == CLAP_EVENT_NOTE_ON && velocity16 < 1) velocity16 = 1;
+        uint32_t ump2[2] = { 0x40000000u | (uint32_t)data[0] << 16 | (uint32_t)data[1] << 8, velocity16 << 16 };
+        push_midi_out(a, e->time, data, 3, ump2);
         break;
     }
     }
@@ -495,6 +591,13 @@ static void collect_queue(AUInstance* a, UInt32 frames) {
             header = &ev->header;
             break;
         }
+        case QUEUED_MIDI2: {
+            if (!a->noteIn) continue;
+            clap_event_midi2_t* ev = &a->midi2Events[i];
+            *ev = (clap_event_midi2_t){ { sizeof(*ev), time, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI2, 0 }, 0, { q->ump[0], q->ump[1], 0, 0 } };
+            header = &ev->header;
+            break;
+        }
         case QUEUED_SYSEX: {
             if (!a->noteIn) continue;
             clap_event_midi_sysex_t* ev = &a->sysexEvents[i];
@@ -563,7 +666,27 @@ static const clap_event_transport_t* collect_transport(AUInstance* a) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 static void send_midi_out(AUInstance* a, const AudioTimeStamp* ts) {
-    if (!a->midiOutCount || !a->midiOutCallback.midiOutputCallback) return;
+    if (!a->midiOutCount) return;
+    if (a->midiOutList) {
+        // One list per message: a list holds packets of one timestamp
+        // order, and the host's buffer is sized for single events.
+        bool midi2 = a->hostProtocol == kMIDIProtocol_2_0;
+        for (uint32_t i = 0; i < a->midiOutCount; i++) {
+            Byte buffer[sizeof(MIDIEventList) + 16];
+            MIDIEventList* list = (MIDIEventList*)buffer;
+            MIDIEventPacket* packet = MIDIEventListInit(list, midi2 ? kMIDIProtocol_2_0 : kMIDIProtocol_1_0);
+            const typeof(a->midiOut[0])* m = &a->midiOut[i];
+            if (midi2 && m->ump2[0]) {
+                packet = MIDIEventListAdd(list, sizeof(buffer), packet, m->time, 2, m->ump2);
+            } else if (m->size) {
+                uint32_t word = 0x20000000u | (uint32_t)m->data[0] << 16 | (uint32_t)(m->size > 1 ? m->data[1] : 0) << 8 | (m->size > 2 ? m->data[2] : 0);
+                packet = MIDIEventListAdd(list, sizeof(buffer), packet, m->time, 1, &word);
+            }
+            if (packet) a->midiOutList((AUEventSampleTime)ts->mSampleTime, 0, list);
+        }
+        return;
+    }
+    if (!a->midiOutCallback.midiOutputCallback) return;
     Byte buffer[8192];
     MIDIPacketList* list = (MIDIPacketList*)buffer;
     MIDIPacket* packet = MIDIPacketListInit(list);
@@ -713,7 +836,30 @@ static OSStatus au_render(void* self, AudioUnitRenderActionFlags* ioFlags, const
     call_render_notify(a, flags | kAudioUnitRenderAction_PreRender, ts, bus, frames, io);
 
     OSStatus status = noErr;
-    os_unfair_lock_lock(&a->renderLock);
+    AUElement* out = a->outCount ? &a->outs[bus] : NULL;
+    // The main thread holds the render lock while it reconfigures the
+    // plugin or flushes parameters through Go, which a garbage collection
+    // can stall: rather than wait for it, render silence. The block's
+    // events stay queued for the next one.
+    if (!os_unfair_lock_trylock(&a->renderLock)) {
+        for (UInt32 b = 0; b < io->mNumberBuffers; b++) {
+            AudioBuffer* buffer = &io->mBuffers[b];
+            if (!buffer->mData) {
+                if (!out || b >= out->channels) {
+                    status = kAudio_ParamError;
+                    break;
+                }
+                buffer->mData = out->data[b];
+            }
+            memset(buffer->mData, 0, sizeof(float) * frames);
+            buffer->mDataByteSize = frames * (UInt32)sizeof(float);
+        }
+        if (status == noErr) flags |= kAudioUnitRenderAction_OutputIsSilence;
+        else a->lastError = status;
+        if (ioFlags) *ioFlags = flags;
+        call_render_notify(a, flags | kAudioUnitRenderAction_PostRender | (status != noErr ? kAudioUnitRenderAction_PostRenderError : 0), ts, bus, frames, io);
+        return status;
+    }
     inAudioThread = true;
     bool fresh = bus == 0 || !a->rendered || !(ts->mFlags & kAudioTimeStampSampleTimeValid) || ts->mSampleTime != a->lastSampleTime;
     if (fresh && frames > 0) {
@@ -722,7 +868,6 @@ static OSStatus au_render(void* self, AudioUnitRenderActionFlags* ioFlags, const
         a->lastSampleTime = ts->mSampleTime;
     }
     if (status == noErr) {
-        AUElement* out = a->outCount ? &a->outs[bus] : NULL;
         for (UInt32 b = 0; b < io->mNumberBuffers; b++) {
             AudioBuffer* buffer = &io->mBuffers[b];
             float* src = out && b < out->channels ? out->data[b] : NULL;
@@ -812,30 +957,40 @@ static void run_main(AUInstance* a) {
 
 static void close_gui(AUInstance* a);
 
-@interface AU_CONTAINER_CLASS : NSView {
+@interface AU_CONTAINER_CLASS : AUNativeView {
 @public
     AUInstance* instance;
 }
 @end
 
+// host_size gives the editor the size the host asks for, or keeps the
+// editor's size when it cannot take it.
+static CGSize host_size(AUInstance* a, CGSize size) {
+    if (!a || !a->guiCreated || a->guiResizing) return size;
+    uint32_t width = (uint32_t)size.width, height = (uint32_t)size.height;
+    if (a->gui->can_resize(a->plugin) && a->gui->adjust_size(a->plugin, &width, &height)) {
+        a->gui->set_size(a->plugin, width, height);
+    } else {
+        a->gui->get_size(a->plugin, &width, &height);
+    }
+    return CGSizeMake(width, height);
+}
+
 @implementation AU_CONTAINER_CLASS
+#if TARGET_OS_OSX
 - (BOOL)isFlipped {
     return YES;
 }
 
 - (void)setFrameSize:(NSSize)size {
-    AUInstance* a = instance;
-    if (a && a->guiCreated && !a->guiResizing) {
-        uint32_t width = (uint32_t)size.width, height = (uint32_t)size.height;
-        if (a->gui->can_resize(a->plugin) && a->gui->adjust_size(a->plugin, &width, &height)) {
-            a->gui->set_size(a->plugin, width, height);
-        } else {
-            a->gui->get_size(a->plugin, &width, &height);
-        }
-        size = NSMakeSize(width, height);
-    }
-    [super setFrameSize:size];
+    [super setFrameSize:host_size(instance, size)];
 }
+#else
+- (void)setFrame:(CGRect)frame {
+    frame.size = host_size(instance, frame.size);
+    [super setFrame:frame];
+}
+#endif
 
 - (void)dealloc {
     if (instance) close_gui(instance);
@@ -843,11 +998,18 @@ static void close_gui(AUInstance* a);
 }
 @end
 
+// VST3GoAUEditorResized is posted, with the editor view as the object,
+// when the plugin resizes its editor (for the AUv3 view controller).
+NSString* const VST3GoAUEditorResized = @"VST3GoAUEditorResized";
+
 static void resize_view(AUInstance* a, uint32_t width, uint32_t height) {
     if (!a->view) return;
     a->guiResizing = true;
-    [a->view setFrameSize:NSMakeSize(width, height)];
+    CGRect frame = a->view.frame;
+    frame.size = CGSizeMake(width, height);
+    a->view.frame = frame;
     a->guiResizing = false;
+    [[NSNotificationCenter defaultCenter] postNotificationName:VST3GoAUEditorResized object:a->view];
 }
 
 static void close_gui(AUInstance* a) {
@@ -862,7 +1024,7 @@ static void close_gui(AUInstance* a) {
     }
 }
 
-static NSView* open_gui(AUInstance* a) {
+static AUNativeView* open_gui(AUInstance* a) {
     if (!a->gui) return nil;
     close_gui(a);
     if (!a->gui->is_api_supported(a->plugin, CLAP_WINDOW_API_COCOA, false) || !a->gui->create(a->plugin, CLAP_WINDOW_API_COCOA, false)) {
@@ -874,7 +1036,7 @@ static NSView* open_gui(AUInstance* a) {
         close_gui(a);
         return nil;
     }
-    AU_CONTAINER_CLASS* view = [[AU_CONTAINER_CLASS alloc] initWithFrame:NSMakeRect(0, 0, width, height)];
+    AU_CONTAINER_CLASS* view = [[AU_CONTAINER_CLASS alloc] initWithFrame:CGRectMake(0, 0, width, height)];
     view->instance = a;
     a->view = view;
     clap_window_t window = { CLAP_WINDOW_API_COCOA, { .cocoa = (void*)view } };
@@ -887,6 +1049,7 @@ static NSView* open_gui(AUInstance* a) {
     return [view autorelease];
 }
 
+#if TARGET_OS_OSX
 @interface AU_FACTORY_CLASS : NSObject <AUCocoaUIBase>
 @end
 
@@ -918,6 +1081,7 @@ static CFURLRef copy_bundle_url(void) {
         stringByDeletingLastPathComponent] stringByDeletingLastPathComponent];
     return (CFURLRef)CFBridgingRetain([NSURL fileURLWithPath:path isDirectory:YES]);
 }
+#endif
 
 // ---- properties ----
 
@@ -948,6 +1112,99 @@ static AudioStreamBasicDescription stream_format(const AUElement* e) {
     f.mChannelsPerFrame = e->channels;
     f.mBitsPerChannel = 32;
     return f;
+}
+
+// ---- channel layouts ----
+
+// request_main fills configurable-audio-ports requests for main bus
+// channel counts (no input request for instruments); counts without a port
+// type let the plugin pick the conventional speakers.
+static uint32_t request_main(AUInstance* a, UInt32 in, UInt32 out, clap_audio_port_configuration_request_t* requests) {
+    uint32_t n = 0;
+    if (a->inCount) requests[n++] = (clap_audio_port_configuration_request_t){ true, 0, in, NULL, NULL };
+    requests[n++] = (clap_audio_port_configuration_request_t){ false, 0, out, NULL, NULL };
+    return n;
+}
+
+// probe_channel_infos asks the plugin which main bus channel counts (1 to
+// AU_MAX_LAYOUT_CHANNELS per side) it accepts.
+static void probe_channel_infos(AUInstance* a) {
+    UInt32 in = a->inCount ? a->ins[0].channels : 0, out = a->outs[0].channels;
+    a->channelInfos[0] = (AUChannelInfo){ (SInt16)in, (SInt16)out };
+    a->channelInfoCount = 1;
+    if (!a->configPorts) return;
+    for (UInt32 i = a->inCount ? 1 : 0; i <= (a->inCount ? AU_MAX_LAYOUT_CHANNELS : 0); i++) {
+        for (UInt32 o = 1; o <= AU_MAX_LAYOUT_CHANNELS; o++) {
+            if (i == in && o == out) continue;
+            clap_audio_port_configuration_request_t requests[2];
+            uint32_t n = request_main(a, i, o, requests);
+            if (a->configPorts->can_apply_configuration(a->plugin, requests, n)) {
+                a->channelInfos[a->channelInfoCount++] = (AUChannelInfo){ (SInt16)i, (SInt16)o };
+            }
+        }
+    }
+}
+
+// channels_supported reports whether some accepted configuration has
+// channels on the main bus of one side.
+static bool channels_supported(AUInstance* a, bool input, UInt32 channels) {
+    for (uint32_t i = 0; i < a->channelInfoCount; i++) {
+        if ((UInt32)(input ? a->channelInfos[i].inChannels : a->channelInfos[i].outChannels) == channels) return true;
+    }
+    return false;
+}
+
+// layout_tag is the Core Audio layout whose channel order is the plugin's
+// for a channel count (VST3 speaker order), 0 when there is none.
+static AudioChannelLayoutTag layout_tag(UInt32 channels) {
+    switch (channels) {
+    case 1: return kAudioChannelLayoutTag_Mono;
+    case 2: return kAudioChannelLayoutTag_Stereo;
+    case 3: return kAudioChannelLayoutTag_MPEG_3_0_A;     // L R C
+    case 4: return kAudioChannelLayoutTag_Quadraphonic;   // L R Ls Rs
+    case 5: return kAudioChannelLayoutTag_MPEG_5_0_A;     // L R C Ls Rs
+    case 6: return kAudioChannelLayoutTag_MPEG_5_1_A;     // L R C LFE Ls Rs
+    case 8: return kAudioChannelLayoutTag_MPEG_7_1_A;     // L R C LFE Ls Rs Lc Rc
+    }
+    return 0;
+}
+
+// layout_tags writes the layouts of the main bus channel counts of one
+// side (other buses: their current count) and returns how many there are.
+static UInt32 layout_tags(AUInstance* a, bool input, AudioUnitElement elem, AudioChannelLayoutTag* tags) {
+    UInt32 n = 0;
+    for (UInt32 channels = 1; channels <= AU_MAX_LAYOUT_CHANNELS; channels++) {
+        bool ok = elem == 0 ? channels_supported(a, input, channels) : (input ? a->ins : a->outs)[elem].channels == channels;
+        AudioChannelLayoutTag tag = layout_tag(channels);
+        if (ok && tag) {
+            if (tags) tags[n] = tag;
+            n++;
+        }
+    }
+    return n;
+}
+
+// set_channels changes the channel count of a bus before initialization:
+// any count of the main buses the plugin accepts on that side (the pair is
+// applied at initialization), the current one of the others.
+static OSStatus set_channels(AUInstance* a, AudioUnitScope scope, AudioUnitElement elem, AUElement* e, UInt32 channels) {
+    if (channels == e->channels) return noErr;
+    if (a->initialized) return kAudioUnitErr_Initialized;
+    if (elem != 0 || !channels_supported(a, scope == kAudioUnitScope_Input, channels)) return kAudioUnitErr_FormatNotSupported;
+    e->channels = channels;
+    return noErr;
+}
+
+// apply_channels gives the plugin the main bus channel counts the host set.
+static bool apply_channels(AUInstance* a) {
+    clap_audio_port_info_t info;
+    bool same = a->audioPorts->get(a->plugin, 0, false, &info) && info.channel_count == a->outs[0].channels;
+    if (same && a->inCount) same = a->audioPorts->get(a->plugin, 0, true, &info) && info.channel_count == a->ins[0].channels;
+    if (same) return true;
+    if (!a->configPorts) return false;
+    clap_audio_port_configuration_request_t requests[2];
+    uint32_t n = request_main(a, a->inCount ? a->ins[0].channels : 0, a->outs[0].channels, requests);
+    return a->configPorts->apply_configuration(a->plugin, requests, n);
 }
 
 static OSStatus property_info(AUInstance* a, AudioUnitPropertyID id, AudioUnitScope scope, AudioUnitElement elem, UInt32* size, Boolean* writable) {
@@ -1022,11 +1279,33 @@ static OSStatus property_info(AUInstance* a, AudioUnitPropertyID id, AudioUnitSc
         if (!global) return kAudioUnitErr_InvalidScope;
         *size = sizeof(Float64);
         return noErr;
+    case kAudioUnitProperty_ARAFactory:
+        if (!a->ara) return kAudioUnitErr_InvalidProperty;
+        if (!global) return kAudioUnitErr_InvalidScope;
+        *size = sizeof(ARAAudioUnitFactory);
+        return noErr;
+    case kAudioUnitProperty_ARAPlugInExtensionBindingWithRoles:
+        if (!a->ara) return kAudioUnitErr_InvalidProperty;
+        if (!global) return kAudioUnitErr_InvalidScope;
+        *size = sizeof(ARAAudioUnitPlugInExtensionBinding);
+        return noErr;
     case kAudioUnitProperty_SupportedNumChannels:
         if (!global) return kAudioUnitErr_InvalidScope;
         if (!a->outCount) return kAudioUnitErr_InvalidProperty;
-        *size = sizeof(AUChannelInfo);
+        *size = a->channelInfoCount * (UInt32)sizeof(AUChannelInfo);
         return noErr;
+    case kAudioUnitProperty_SupportedChannelLayoutTags:
+        if (!element(a, scope, elem, &status)) return status;
+        *size = layout_tags(a, scope == kAudioUnitScope_Input, elem, NULL) * (UInt32)sizeof(AudioChannelLayoutTag);
+        return *size ? noErr : kAudioUnitErr_InvalidProperty;
+    case kAudioUnitProperty_AudioChannelLayout: {
+        AUElement* e = element(a, scope, elem, &status);
+        if (!e) return status;
+        if (!layout_tag(e->channels)) return kAudioUnitErr_InvalidProperty;
+        *size = offsetof(AudioChannelLayout, mChannelDescriptions);  // a tag, no descriptions
+        *writable = true;
+        return noErr;
+    }
     case kAudioUnitProperty_MaximumFramesPerSlice:
         if (!global) return kAudioUnitErr_InvalidScope;
         *size = sizeof(UInt32);
@@ -1063,11 +1342,13 @@ static OSStatus property_info(AUInstance* a, AudioUnitPropertyID id, AudioUnitSc
         *size = sizeof(AUPreset);
         *writable = true;
         return noErr;
+#if TARGET_OS_OSX
     case kAudioUnitProperty_CocoaUI:
         if (!a->gui) return kAudioUnitErr_InvalidProperty;
         if (!global) return kAudioUnitErr_InvalidScope;
         *size = sizeof(AudioUnitCocoaViewInfo);
         return noErr;
+#endif
     case kAudioUnitProperty_MIDIOutputCallbackInfo:
         if (!a->noteOut) return kAudioUnitErr_InvalidProperty;
         if (!global) return kAudioUnitErr_InvalidScope;
@@ -1077,6 +1358,23 @@ static OSStatus property_info(AUInstance* a, AudioUnitPropertyID id, AudioUnitSc
         if (!a->noteOut) return kAudioUnitErr_InvalidProperty;
         if (!global) return kAudioUnitErr_InvalidScope;
         *size = sizeof(AUMIDIOutputCallbackStruct);
+        *writable = true;
+        return noErr;
+    case kAudioUnitProperty_MIDIOutputEventListCallback:
+        if (!a->noteOut) return kAudioUnitErr_InvalidProperty;
+        if (!global) return kAudioUnitErr_InvalidScope;
+        *size = sizeof(AUMIDIEventListBlock);
+        *writable = true;
+        return noErr;
+    case kAudioUnitProperty_AudioUnitMIDIProtocol:
+        if (!a->noteIn && !a->noteOut) return kAudioUnitErr_InvalidProperty;
+        if (!global) return kAudioUnitErr_InvalidScope;
+        *size = sizeof(SInt32);
+        return noErr;
+    case kAudioUnitProperty_HostMIDIProtocol:
+        if (!a->noteOut) return kAudioUnitErr_InvalidProperty;
+        if (!global) return kAudioUnitErr_InvalidScope;
+        *size = sizeof(SInt32);
         *writable = true;
         return noErr;
     case kVST3GoAUProperty_Instance:
@@ -1249,6 +1547,8 @@ static OSStatus get_property(AUInstance* a, AudioUnitPropertyID id, AudioUnitSco
         info->flags = kAudioUnitParameterFlag_IsReadable | kAudioUnitParameterFlag_IsWritable | kAudioUnitParameterFlag_HasCFNameString |
                       kAudioUnitParameterFlag_CFNameRelease | kAudioUnitParameterFlag_ValuesHaveStrings;
         if (!(p->flags & CLAP_PARAM_IS_AUTOMATABLE)) info->flags |= kAudioUnitParameterFlag_NonRealTime;
+        // Selecting a program sets the other parameters.
+        if (param_index(a, elem) == a->programParam) info->flags |= kAudioUnitParameterFlag_IsGlobalMeta;
         if (param_stepped(p)) {
             info->unit = p->min_value == 0 && p->max_value == 1 ? kAudioUnitParameterUnit_Boolean : kAudioUnitParameterUnit_Indexed;
         } else {
@@ -1304,10 +1604,30 @@ static OSStatus get_property(AUInstance* a, AudioUnitPropertyID id, AudioUnitSco
         *(Float64*)out = fmin(samples, rate * 3600) / rate;  // "infinite" tails: one hour
         return noErr;
     }
-    case kAudioUnitProperty_SupportedNumChannels: {
-        AUChannelInfo* info = (AUChannelInfo*)out;
-        info->inChannels = (SInt16)(a->inCount ? a->ins[0].channels : 0);
-        info->outChannels = (SInt16)a->outs[0].channels;
+    case kAudioUnitProperty_ARAFactory: {
+        // Read-only properties whose data carries input: the host fills
+        // the magic number (and the binding's document controller).
+        ARAAudioUnitFactory* f = (ARAAudioUnitFactory*)out;
+        if (f->inOutMagicNumber != kARAAudioUnitMagic) return kAudioUnitErr_InvalidPropertyValue;
+        f->outFactory = a->ara->get_factory(a->plugin);
+        return f->outFactory ? noErr : kAudioUnitErr_InvalidProperty;
+    }
+    case kAudioUnitProperty_ARAPlugInExtensionBindingWithRoles: {
+        ARAAudioUnitPlugInExtensionBinding* b = (ARAAudioUnitPlugInExtensionBinding*)out;
+        if (b->inOutMagicNumber != kARAAudioUnitMagic) return kAudioUnitErr_InvalidPropertyValue;
+        b->outPlugInExtension = a->ara->bind_to_document_controller(a->plugin, b->inDocumentControllerRef, b->knownRoles, b->assignedRoles);
+        return b->outPlugInExtension ? noErr : kAudioUnitErr_InvalidPropertyValue;
+    }
+    case kAudioUnitProperty_SupportedNumChannels:
+        memcpy(out, a->channelInfos, a->channelInfoCount * sizeof(AUChannelInfo));
+        return noErr;
+    case kAudioUnitProperty_SupportedChannelLayoutTags:
+        layout_tags(a, scope == kAudioUnitScope_Input, elem, (AudioChannelLayoutTag*)out);
+        return noErr;
+    case kAudioUnitProperty_AudioChannelLayout: {
+        AudioChannelLayout* layout = (AudioChannelLayout*)out;
+        memset(layout, 0, offsetof(AudioChannelLayout, mChannelDescriptions));
+        layout->mChannelLayoutTag = layout_tag(element(a, scope, elem, &status)->channels);
         return noErr;
     }
     case kAudioUnitProperty_MaximumFramesPerSlice:
@@ -1343,12 +1663,14 @@ static OSStatus get_property(AUInstance* a, AudioUnitPropertyID id, AudioUnitSco
         preset->presetName = a->preset.presetName ? (CFStringRef)CFRetain(a->preset.presetName) : CFSTR("Untitled");
         return noErr;
     }
+#if TARGET_OS_OSX
     case kAudioUnitProperty_CocoaUI: {
         AudioUnitCocoaViewInfo* info = (AudioUnitCocoaViewInfo*)out;
         info->mCocoaAUViewBundleLocation = copy_bundle_url();
         info->mCocoaAUViewClass[0] = CFStringCreateWithCString(NULL, AU_STR(AU_FACTORY_CLASS), kCFStringEncodingUTF8);
         return info->mCocoaAUViewBundleLocation ? noErr : kAudioUnitErr_InvalidProperty;
     }
+#endif
     case kAudioUnitProperty_MIDIOutputCallbackInfo: {
         CFStringRef name = CFSTR("MIDI Out");
         *(CFArrayRef*)out = CFArrayCreate(NULL, (const void**)&name, 1, &kCFTypeArrayCallBacks);
@@ -1356,6 +1678,15 @@ static OSStatus get_property(AUInstance* a, AudioUnitPropertyID id, AudioUnitSco
     }
     case kAudioUnitProperty_MIDIOutputCallback:
         *(AUMIDIOutputCallbackStruct*)out = a->midiOutCallback;
+        return noErr;
+    case kAudioUnitProperty_MIDIOutputEventListCallback:
+        *(AUMIDIEventListBlock*)out = a->midiOutList;
+        return noErr;
+    case kAudioUnitProperty_AudioUnitMIDIProtocol:
+        *(SInt32*)out = kMIDIProtocol_2_0;
+        return noErr;
+    case kAudioUnitProperty_HostMIDIProtocol:
+        *(SInt32*)out = a->hostProtocol;
         return noErr;
     case kVST3GoAUProperty_Instance:
         *(AUInstance**)out = a;
@@ -1403,11 +1734,12 @@ static OSStatus set_property(AUInstance* a, AudioUnitPropertyID id, AudioUnitSco
         } else {
             const AudioStreamBasicDescription* f = (const AudioStreamBasicDescription*)in;
             if (f->mFormatID != kAudioFormatLinearPCM || !(f->mFormatFlags & kAudioFormatFlagIsFloat) ||
-                !(f->mFormatFlags & kAudioFormatFlagIsNonInterleaved) || f->mBitsPerChannel != 32 ||
-                f->mChannelsPerFrame != e->channels || f->mFramesPerPacket != 1) {
+                !(f->mFormatFlags & kAudioFormatFlagIsNonInterleaved) || f->mBitsPerChannel != 32 || f->mFramesPerPacket != 1) {
                 return kAudioUnitErr_FormatNotSupported;
             }
             rate = f->mSampleRate;
+            if (!(rate > 0)) return kAudioUnitErr_FormatNotSupported;
+            if ((status = set_channels(a, scope, elem, e, f->mChannelsPerFrame)) != noErr) return status;
         }
         if (!(rate > 0)) return kAudioUnitErr_FormatNotSupported;
         if (rate == e->sampleRate) break;
@@ -1418,6 +1750,16 @@ static OSStatus set_property(AUInstance* a, AudioUnitPropertyID id, AudioUnitSco
     case kAudioUnitProperty_ShouldAllocateBuffer:
         element(a, scope, elem, &status)->shouldAllocate = *(const UInt32*)in;
         break;
+    case kAudioUnitProperty_AudioChannelLayout: {
+        const AudioChannelLayout* layout = (const AudioChannelLayout*)in;
+        // A layout names the speakers of the stream format's channels; the
+        // channel count changes with the stream format only.
+        UInt32 channels = AudioChannelLayoutTag_GetNumberOfChannels(layout->mChannelLayoutTag);
+        if (channels != element(a, scope, elem, &status)->channels || layout_tag(channels) != layout->mChannelLayoutTag) {
+            return kAudioUnitErr_InvalidPropertyValue;
+        }
+        break;
+    }
     case kAudioUnitProperty_MaximumFramesPerSlice: {
         UInt32 frames = *(const UInt32*)in;
         if (!frames) return kAudioUnitErr_InvalidPropertyValue;
@@ -1459,6 +1801,22 @@ static OSStatus set_property(AUInstance* a, AudioUnitPropertyID id, AudioUnitSco
     case kAudioUnitProperty_MIDIOutputCallback:
         a->midiOutCallback = *(const AUMIDIOutputCallbackStruct*)in;
         break;
+    case kAudioUnitProperty_MIDIOutputEventListCallback: {
+        AUMIDIEventListBlock block = *(const AUMIDIEventListBlock*)in;
+        os_unfair_lock_lock(&a->renderLock);
+        AUMIDIEventListBlock old = a->midiOutList;
+        a->midiOutList = block ? Block_copy(block) : NULL;
+        os_unfair_lock_unlock(&a->renderLock);
+        if (old) Block_release(old);
+        break;
+    }
+    case kAudioUnitProperty_HostMIDIProtocol: {
+        SInt32 protocol = *(const SInt32*)in;
+        if (protocol != kMIDIProtocol_1_0 && protocol != kMIDIProtocol_2_0) return kAudioUnitErr_InvalidPropertyValue;
+        if (a->initialized) return kAudioUnitErr_Initialized;
+        a->hostProtocol = protocol;
+        break;
+    }
     default:
         return kAudioUnitErr_PropertyNotWritable;
     }
@@ -1553,11 +1911,67 @@ static OSStatus au_sysex(void* self, const UInt8* data, UInt32 length) {
     return noErr;
 }
 
+// queue_sysex7 collects the bytes of a MIDI 1.0 data packet (UMP type 3)
+// and queues the message when it is complete.
+static void queue_sysex7(AUInstance* a, uint32_t offset, const uint32_t* words) {
+    uint8_t kind = (words[0] >> 20) & 0xF, count = (words[0] >> 16) & 0xF;
+    uint8_t bytes[6] = { (uint8_t)(words[0] >> 8), (uint8_t)words[0], (uint8_t)(words[1] >> 24),
+                         (uint8_t)(words[1] >> 16), (uint8_t)(words[1] >> 8), (uint8_t)words[1] };
+    if (count > 6) return;
+    if (kind == 0 || kind == 1) {  // complete or start
+        a->sysexIn[0] = 0xF0;
+        a->sysexInSize = 1;
+    } else if (!a->sysexInSize) {
+        return;  // a continuation without a start
+    }
+    if (a->sysexInSize + count + 1 > AU_SYSEX_BYTES) {
+        a->sysexInSize = 0;  // too long: dropped
+        return;
+    }
+    memcpy(a->sysexIn + a->sysexInSize, bytes, count);
+    a->sysexInSize += count;
+    if (kind == 0 || kind == 3) {  // complete or end
+        a->sysexIn[a->sysexInSize++] = 0xF7;
+        queue_event(a, (AUQueued){ .offset = offset, .kind = QUEUED_SYSEX, .sysexSize = a->sysexInSize }, a->sysexIn);
+        a->sysexInSize = 0;
+    }
+}
+
+// au_midi_event_list takes Universal MIDI Packets: MIDI 1.0 and 2.0
+// channel voice messages go to the plugin as CLAP MIDI 2 events, SysEx
+// data packets as SysEx; utility, system and stream messages are skipped.
+static OSStatus au_midi_event_list(void* self, UInt32 offset, const MIDIEventList* list) {
+    AUInstance* a = (AUInstance*)self;
+    if (!a->noteIn) return kAudioUnitErr_InvalidProperty;
+    if (!list) return kAudio_ParamError;
+    const MIDIEventPacket* packet = &list->packet[0];
+    for (UInt32 p = 0; p < list->numPackets; p++) {
+        for (UInt32 w = 0; w < packet->wordCount;) {
+            const uint32_t* words = &packet->words[w];
+            uint32_t type = words[0] >> 28;
+            // Message sizes in words by type (UMP: 0-2 and 6-7 one, 3-4 and
+            // 8-A two, B-C three, 5 and D-F four).
+            static const uint8_t sizes[16] = { 1, 1, 1, 2, 2, 4, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4 };
+            UInt32 n = sizes[type];
+            if (w + n > packet->wordCount) break;
+            if (type == 2 || type == 4) {
+                queue_event(a, (AUQueued){ .offset = offset, .kind = QUEUED_MIDI2, .ump = { words[0], n > 1 ? words[1] : 0 } }, NULL);
+            } else if (type == 3) {
+                queue_sysex7(a, offset, words);
+            }
+            w += n;
+        }
+        packet = MIDIEventPacketNext(packet);
+    }
+    return noErr;
+}
+
 // ---- lifecycle ----
 
 static OSStatus au_initialize(void* self) {
     AUInstance* a = (AUInstance*)self;
     if (a->initialized) return noErr;
+    if (a->outCount && !apply_channels(a)) return kAudioUnitErr_FormatNotSupported;
     if (!alloc_buffers(a)) {
         free_buffers(a);
         return kAudioUnitErr_FailedInitialization;
@@ -1713,6 +2127,7 @@ static AudioComponentMethod au_lookup(SInt16 selector) {
     case kAudioUnitResetSelect: return (AudioComponentMethod)au_reset;
     case kMusicDeviceMIDIEventSelect: return (AudioComponentMethod)au_midi_event;
     case kMusicDeviceSysExSelect: return (AudioComponentMethod)au_sysex;
+    case kMusicDeviceMIDIEventListSelect: return (AudioComponentMethod)au_midi_event_list;
     }
     return NULL;
 }
@@ -1737,6 +2152,7 @@ static void destroy_instance(AUInstance* a) {
     free((void*)a->dirty);
     free(a->paramEvents);
     free(a->events);
+    if (a->midiOutList) Block_release(a->midiOutList);
     free(a);
 }
 
@@ -1759,7 +2175,14 @@ static OSStatus au_open(void* self, AudioComponentInstance ci) {
     AUInstance* a = (AUInstance*)self;
     a->ci = ci;
     static atomic_bool entryInit;
-    if (!atomic_exchange(&entryInit, true)) clap_entry.init("");
+    if (!atomic_exchange(&entryInit, true)) {
+#if TARGET_OS_OSX
+        // In a sandbox, before any plugin reads the files of its saved
+        // state.
+        VST3GoRestoreFileAccess();
+#endif
+        clap_entry.init("");
+    }
     const clap_plugin_factory_t* factory = (const clap_plugin_factory_t*)clap_entry.get_factory(CLAP_PLUGIN_FACTORY_ID);
     const clap_plugin_descriptor_t* desc = GoClapDescriptor(a->index);
     if (!factory || !desc) return kAudioUnitErr_FailedInitialization;
@@ -1781,15 +2204,19 @@ static OSStatus au_open(void* self, AudioComponentInstance ci) {
     EXT(tail, clap_plugin_tail_t, CLAP_EXT_TAIL);
     EXT(gui, clap_plugin_gui_t, CLAP_EXT_GUI);
     EXT(render, clap_plugin_render_t, CLAP_EXT_RENDER);
+    EXT(configPorts, clap_plugin_configurable_audio_ports_t, CLAP_EXT_CONFIGURABLE_AUDIO_PORTS);
+    EXT(ara, clap_ara_plugin_extension_t, CLAP_EXT_ARA_PLUGINEXTENSION);
 #undef EXT
     if (a->gui && !a->gui->is_api_supported(a->plugin, CLAP_WINDOW_API_COCOA, false)) a->gui = NULL;
     a->inCount = read_ports(a, true, a->ins);
     a->outCount = read_ports(a, false, a->outs);
+    if (a->outCount) probe_channel_infos(a);
     a->noteIn = a->notePorts && a->notePorts->count(a->plugin, true) > 0;
     a->noteOut = a->notePorts && a->notePorts->count(a->plugin, false) > 0;
     a->maxFrames = AU_DEFAULT_MAX_FRAMES;
     a->preset.presetNumber = -1;
     a->programParam = -1;
+    a->hostProtocol = kMIDIProtocol_1_0;
 
     a->paramCount = a->params ? a->params->count(a->plugin) : 0;
     a->paramInfo = (clap_param_info_t*)calloc(a->paramCount + 1, sizeof(clap_param_info_t));
@@ -1843,24 +2270,79 @@ static OSStatus au_close(void* self) {
     return noErr;
 }
 
-// VST3GoAUFactory is the component factory function of every Audio Unit
-// in the bundle: it picks the registered plugin by the component codes.
-__attribute__((visibility("default"))) void* VST3GoAUFactory(const AudioComponentDescription* desc) {
-    if (!desc) return NULL;
+static void* new_instance(const AudioComponentDescription* desc, uint32_t index) {
+    AUInstance* a = (AUInstance*)calloc(1, sizeof(AUInstance));
+    if (!a) return NULL;
+    a->iface.Open = au_open;
+    a->iface.Close = au_close;
+    a->iface.Lookup = au_lookup;
+    a->desc = *desc;
+    a->index = index;
+    a->renderLock = a->queueLock = a->noticeLock = a->listenerLock = OS_UNFAIR_LOCK_INIT;
+    return a;
+}
+
+// plugin_index finds the registered plugin with the component codes of
+// desc.
+static bool plugin_index(const AudioComponentDescription* desc, uint32_t* index) {
     uint32_t count = GoClapPluginCount();
     for (uint32_t i = 0; i < count; i++) {
         uint32_t type, subtype, manufacturer;
-        if (!GoAUComponentCodes(i, &type, &subtype, &manufacturer)) return NULL;
-        if (type != desc->componentType || subtype != desc->componentSubType || manufacturer != desc->componentManufacturer) continue;
-        AUInstance* a = (AUInstance*)calloc(1, sizeof(AUInstance));
-        if (!a) return NULL;
-        a->iface.Open = au_open;
-        a->iface.Close = au_close;
-        a->iface.Lookup = au_lookup;
-        a->desc = *desc;
-        a->index = i;
-        a->renderLock = a->queueLock = a->noticeLock = a->listenerLock = OS_UNFAIR_LOCK_INIT;
-        return a;
+        if (!GoAUComponentCodes(i, &type, &subtype, &manufacturer)) return false;
+        if (type == desc->componentType && subtype == desc->componentSubType && manufacturer == desc->componentManufacturer) {
+            *index = i;
+            return true;
+        }
     }
-    return NULL;
+    return false;
+}
+
+// VST3GoAUFactory is the component factory function of every Audio Unit
+// in the bundle: it picks the registered plugin by the component codes.
+__attribute__((visibility("default"))) void* VST3GoAUFactory(const AudioComponentDescription* desc) {
+    uint32_t index;
+    if (!desc || !plugin_index(desc, &index)) return NULL;
+    return new_instance(desc, index);
+}
+
+// ---- in-process registration for AUv3 extensions ----
+
+// The extension's own component (its Info.plist codes) is the AUv3 one, so
+// the AUv2 implementation is registered in the process under private
+// codes: the plugin's type, its index as the subtype and this
+// manufacturer. Instances still report the public codes.
+enum { AU_PRIVATE_MANUFACTURER = 'VGo3', AU_MAX_PRIVATE = 64 };
+
+static AudioComponentPlugInInterface* private_factory(const AudioComponentDescription* desc) {
+    uint32_t type, subtype, manufacturer;
+    if (!desc || !GoAUComponentCodes(desc->componentSubType, &type, &subtype, &manufacturer)) return NULL;
+    AudioComponentDescription pub = { type, subtype, manufacturer, 0, 0 };
+    return (AudioComponentPlugInInterface*)new_instance(&pub, desc->componentSubType);
+}
+
+bool vst3go_au_register(const AudioComponentDescription* desc, AudioComponentDescription* private) {
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    static bool registered[AU_MAX_PRIVATE];
+    uint32_t index;
+    if (!plugin_index(desc, &index) || index >= AU_MAX_PRIVATE) return false;
+    *private = (AudioComponentDescription){ desc->componentType, index, AU_PRIVATE_MANUFACTURER, kAudioComponentFlag_SandboxSafe, 0 };
+    pthread_mutex_lock(&lock);
+    bool ok = registered[index];
+    if (!ok) {
+        const clap_plugin_descriptor_t* d = GoClapDescriptor(index);
+        CFStringRef name = CFStringCreateWithCString(NULL, d && d->name ? d->name : "vst3go", kCFStringEncodingUTF8);
+        ok = registered[index] = AudioComponentRegister(private, name, 0, private_factory) != NULL;
+        if (name) CFRelease(name);
+    }
+    pthread_mutex_unlock(&lock);
+    return ok;
+}
+
+// vst3go_au_open_view opens the editor of a component instance, NULL
+// without one; the view is autoreleased.
+AUNativeView* vst3go_au_open_view(AudioUnit unit) {
+    AUInstance* a = NULL;
+    UInt32 size = sizeof(a);
+    if (AudioUnitGetProperty(unit, kVST3GoAUProperty_Instance, kAudioUnitScope_Global, 0, &a, &size) != noErr || !a) return nil;
+    return open_gui(a);
 }

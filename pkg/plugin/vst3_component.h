@@ -3,6 +3,7 @@
 
 #include "../../include/vst3/vst3_c_api.h"
 #include "vst3_bridge.h"
+#include "ara.h"
 
 // Object kinds. A single-component object implements the processor and the
 // controller interfaces; a distributed plugin uses one object of each of the
@@ -10,6 +11,7 @@
 #define VST3GO_KIND_SINGLE 0
 #define VST3GO_KIND_PROCESSOR 1
 #define VST3GO_KIND_CONTROLLER 2
+#define VST3GO_KIND_ARA_FACTORY 3 // the ARA main factory class of an ARA plugin
 
 // Optional interfaces, exposed only when the Go processor implements them.
 #define VST3GO_CAP_UNITS (1 << 0)
@@ -19,6 +21,7 @@
 #define VST3GO_CAP_KEYSWITCH (1 << 4)
 #define VST3GO_CAP_MIDI_LEARN (1 << 5)
 #define VST3GO_CAP_INFO_LISTENER (1 << 6)
+#define VST3GO_CAP_ARA (1 << 7)
 
 // Creates the COM object for one plugin instance. goComponent is the opaque Go
 // handle passed back to every Go callback; controllerCid (16 bytes) is the
@@ -48,8 +51,8 @@ extern Steinberg_tresult GoAudioGetBusArrangement(uintptr_t component, int32_t d
 extern Steinberg_tresult GoAudioCanProcessSampleSize(uintptr_t component, int32_t symbolicSampleSize);
 extern uint32_t GoAudioGetLatencySamples(uintptr_t component);
 extern Steinberg_tresult GoAudioSetupProcessing(uintptr_t component, struct Steinberg_Vst_ProcessSetup* setup);
-extern Steinberg_tresult GoAudioSetProcessing(uintptr_t component, int32_t state);
 extern Steinberg_tresult GoAudioProcess(uintptr_t component, struct Steinberg_Vst_ProcessData* data);
+extern void GoAudioRealtimeConfig(uintptr_t component, double* share, int32_t* channels);
 extern uint32_t GoAudioGetTailSamples(uintptr_t component);
 
 // IProgramListData
@@ -110,6 +113,15 @@ extern Steinberg_tresult GoSetChannelInfo(uintptr_t component, VST3GoChannelInfo
 
 // IConnectionPoint
 extern void GoConnectionNotify(uintptr_t component, char* id, void* data, uint32_t size);
+
+// ARA: IPlugInEntryPoint, IPlugInEntryPoint2 and the main factory class
+// (ARAVST3.h, which is C++).
+static const Steinberg_TUID ARA_IMainFactory_iid = SMTG_INLINE_UID(0xDB2A1669, 0xFAFD42A5, 0xA82F864F, 0x7B6872EA);
+static const Steinberg_TUID ARA_IPlugInEntryPoint_iid = SMTG_INLINE_UID(0x12814E54, 0xA1CE4076, 0x82B96813, 0x16950BD6);
+static const Steinberg_TUID ARA_IPlugInEntryPoint2_iid = SMTG_INLINE_UID(0xCD9A5913, 0xC9EB46D7, 0x96CA53AD, 0xD1DB89F5);
+extern ARAFactory* GoARAComponentFactory(uintptr_t component);
+extern ARAPlugInExtensionInstance* GoARAComponentBind(uintptr_t component, void* controller, int32_t knownRoles, int32_t assignedRoles);
+void* vst3go_ara_main_factory(int32_t slot);
 
 // Lifecycle
 extern void GoReleaseComponent(uintptr_t component);

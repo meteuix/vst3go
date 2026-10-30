@@ -47,6 +47,8 @@
       this.min = control.min;
       this.max = control.max;
       this.defaultNormalized = control.defaultValue; // EditorControl.defaultValue is normalized
+      this.scale = control.scale || "linear";
+      this.exponent = control.exponent || 1;
       this.stepCount = control.stepCount || 0;
       this.flags = control.flags;
       this.readOnly = !!control.readOnly;
@@ -72,11 +74,19 @@
         const step = Math.min(this.stepCount, Math.floor(n * (this.stepCount + 1)));
         return this.min + (step * (this.max - this.min)) / this.stepCount;
       }
+      if (this.scale === "log" && this.min > 0) return this.min * Math.pow(this.max / this.min, n);
+      if (this.scale === "power") return this.min + (this.max - this.min) * Math.pow(n, this.exponent);
       return this.min + n * (this.max - this.min);
     }
 
     toNormalized(plain) {
-      return this.max > this.min ? clamp01((Number(plain) - this.min) / (this.max - this.min)) : 0;
+      const v = Number(plain);
+      if (!(this.max > this.min) || !(v > this.min)) return 0;
+      if (v >= this.max) return 1;
+      if (this.stepCount > 0) return (v - this.min) / (this.max - this.min);
+      if (this.scale === "log") return Math.log(v / this.min) / Math.log(this.max / this.min);
+      if (this.scale === "power") return Math.pow((v - this.min) / (this.max - this.min), 1 / this.exponent);
+      return (v - this.min) / (this.max - this.min);
     }
 
     // beginEdit and endEdit bracket a drag, so the host records it as one
@@ -173,6 +183,8 @@
   };
 
   const messageListeners = new Map();
+  const fileRequests = new Map();
+  let nextFileRequest = 1;
   const size = Object.assign({ width: 0, height: 0, minWidth: 0, minHeight: 0, maxWidth: 0, maxHeight: 0, resizable: true }, boot.editor);
 
   const sdk = {
@@ -206,6 +218,18 @@
     resize(width, height) {
       if (size.resizable) post({ type: "resize", width: Math.round(width), height: Math.round(height) });
     },
+    // chooseFile shows the platform's open file dialog and resolves to the
+    // chosen file's path, or null when the user cancels. options.title is
+    // the prompt, options.extensions the accepted file name extensions
+    // (["wav", "flac"]; any file without them).
+    chooseFile(options) {
+      const opts = options || {};
+      const id = nextFileRequest++;
+      return new Promise((resolve, reject) => {
+        fileRequests.set(id, { resolve, reject });
+        post({ type: "choose-file", id, name: String(opts.title || ""), data: { extensions: (opts.extensions || []).map(String) } });
+      });
+    },
   };
 
   // __vst3goReceive handles the messages of the plugin.
@@ -226,6 +250,14 @@
       case "message": {
         const listeners = messageListeners.get(message.name);
         if (listeners) notify(listeners, message.data);
+        break;
+      }
+      case "file-chosen": {
+        const request = fileRequests.get(message.id);
+        if (!request) break;
+        fileRequests.delete(message.id);
+        if (message.error) request.reject(new Error(message.error));
+        else request.resolve(message.path || null);
         break;
       }
     }

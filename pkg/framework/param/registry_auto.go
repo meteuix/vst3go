@@ -37,7 +37,7 @@ func (r *AutoRegistry) Register(params ...*Parameter) error {
 			// A parameter with a registered name replaces it.
 			if existingID, exists := s.names[p.Name]; exists {
 				p.ID = existingID
-				s.params[existingID] = p
+				s.set(p)
 				continue
 			}
 
@@ -50,7 +50,7 @@ func (r *AutoRegistry) Register(params ...*Parameter) error {
 				return fmt.Errorf("parameter ID %d already exists", p.ID)
 			}
 
-			s.params[p.ID] = p
+			s.set(p)
 			s.order = append(s.order, p.ID)
 			s.names[p.Name] = p.ID
 		}
@@ -71,7 +71,7 @@ func (r *AutoRegistry) RegisterWithID(id uint32, param *Parameter) error {
 			return fmt.Errorf("parameter ID %d already used by '%s'", id, existing.Name)
 		}
 		param.ID = id
-		s.params[id] = param
+		s.set(param)
 		s.order = append(s.order, id)
 		s.names[param.Name] = id
 		return nil

@@ -207,3 +207,37 @@ func TestInfiniteTail(t *testing.T) {
 		t.Fatalf("tail = %#x, want kInfiniteTail", got)
 	}
 }
+
+type deadlineProcessor struct {
+	editorModelTestProcessor
+	share float64
+}
+
+func (p *deadlineProcessor) ProcessDeadline() float64 { return p.share }
+
+func TestRealtimeConfig(t *testing.T) {
+	stereo := editorModelTestProcessor{params: param.NewRegistry(), buses: bus.NewEffectStereo()}
+	cases := []struct {
+		name      string
+		processor Processor
+		env       string
+		share     float64
+		channels  int32
+	}{
+		{"default", &stereo, "", frameworkplugin.DefaultProcessDeadline, 4},
+		{"processor", &deadlineProcessor{stereo, 0.25}, "", 0.25, 4},
+		{"capped", &deadlineProcessor{stereo, 3}, "", 1, 4},
+		{"opt out", &deadlineProcessor{stereo, 0}, "", 0, 0},
+		{"env overrides", &deadlineProcessor{stereo, 0}, "0.75", 0.75, 4},
+		{"env opts out", &stereo, "0", 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(deadlineEnv, tc.env)
+			share, channels := newTestComponent(t, tc.processor).realtimeConfig()
+			if share != tc.share || channels != tc.channels {
+				t.Fatalf("realtimeConfig() = %g, %d; want %g, %d", share, channels, tc.share, tc.channels)
+			}
+		})
+	}
+}

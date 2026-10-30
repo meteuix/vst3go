@@ -291,6 +291,58 @@ void VST3GoEditorViewRequestResize(void* thisInterface, int32_t width, int32_t h
     view->frame->lpVtbl->resizeView(view->frame, (struct Steinberg_IPlugView*)&view->view, &rect);
 }
 
+// ---- open file dialog ----
+
+typedef struct {
+    uintptr_t component;
+    uint32_t request;
+} FileRequest;
+
+static void fileChosen(GtkNativeDialog* dialog, gint response, gpointer data) {
+    FileRequest* req = (FileRequest*)data;
+    char* path = response == GTK_RESPONSE_ACCEPT ? gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog)) : NULL;
+    GoEditorFileChosen(req->component, req->request, path, NULL);
+    g_free(path);
+    free(req);
+    g_object_unref(dialog);
+}
+
+void VST3GoEditorViewChooseFile(void* thisInterface, uint32_t request, const char* title, const char* extensions) {
+    VST3GoEditorView* view = (VST3GoEditorView*)thisInterface;
+    if (!view) {
+        return;
+    }
+    FileRequest* req = (FileRequest*)malloc(sizeof(FileRequest));
+    if (!req) {
+        GoEditorFileChosen(view->component, request, NULL, (char*)"out of memory");
+        return;
+    }
+    req->component = view->component;
+    req->request = request;
+    GtkFileChooserNative* dialog = gtk_file_chooser_native_new(title && *title ? title : "Open", NULL, GTK_FILE_CHOOSER_ACTION_OPEN, "_Open", "_Cancel");
+    if (extensions && *extensions) {
+        // GTK 3 patterns are case sensitive: match both cases.
+        GtkFileFilter* filter = gtk_file_filter_new();
+        gtk_file_filter_set_name(filter, extensions);
+        char* list = g_strdup(extensions);
+        for (char* ext = strtok(list, ";"); ext; ext = strtok(NULL, ";")) {
+            char* lower = g_ascii_strdown(ext, -1);
+            char* upper = g_ascii_strup(ext, -1);
+            char* patterns[2] = { g_strconcat("*.", lower, NULL), g_strconcat("*.", upper, NULL) };
+            gtk_file_filter_add_pattern(filter, patterns[0]);
+            gtk_file_filter_add_pattern(filter, patterns[1]);
+            g_free(patterns[0]);
+            g_free(patterns[1]);
+            g_free(lower);
+            g_free(upper);
+        }
+        g_free(list);
+        gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dialog), filter);
+    }
+    g_signal_connect(dialog, "response", G_CALLBACK(fileChosen), req);
+    gtk_native_dialog_show(GTK_NATIVE_DIALOG(dialog));
+}
+
 static Steinberg_IPlugViewVtbl editorViewVtbl = {
     editorView_queryInterface,
     editorView_addRef,
@@ -396,4 +448,91 @@ void* VST3GoCreateEditorView(uintptr_t component) {
     GoEditorSize(component, &view->size.right, &view->size.bottom);
     view->scaleFactor = 1.0f;
     return view;
+}
+
+// ---- floating windows ----
+
+typedef struct {
+    GtkWidget* window;
+    VST3GoFloatingCallbacks callbacks;
+    int width, height;
+} VST3GoFloatingWindow;
+
+// The user closing the window hides it and tells the owner.
+static gboolean floatingDelete(GtkWidget* widget, GdkEvent* event, gpointer data) {
+    (void)event;
+    VST3GoFloatingWindow* w = (VST3GoFloatingWindow*)data;
+    gtk_widget_hide(widget);
+    w->callbacks.closed(w->callbacks.ctx);
+    return TRUE;
+}
+
+static gboolean floatingConfigure(GtkWidget* widget, GdkEventConfigure* event, gpointer data) {
+    (void)widget;
+    VST3GoFloatingWindow* w = (VST3GoFloatingWindow*)data;
+    if (event->width != w->width || event->height != w->height) {
+        w->width = event->width;
+        w->height = event->height;
+        w->callbacks.resized(w->callbacks.ctx, event->width, event->height);
+    }
+    return FALSE;
+}
+
+void* VST3GoFloatingWindowCreate(int32_t width, int32_t height, int resizable, VST3GoFloatingCallbacks callbacks) {
+    gdk_set_allowed_backends("x11");
+    if (!gtk_init_check(NULL, NULL) || !GDK_IS_X11_DISPLAY(gdk_display_get_default())) return NULL;
+    VST3GoFloatingWindow* w = (VST3GoFloatingWindow*)calloc(1, sizeof(VST3GoFloatingWindow));
+    if (!w) return NULL;
+    w->callbacks = callbacks;
+    w->width = width;
+    w->height = height;
+    w->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_default_size(GTK_WINDOW(w->window), width, height);
+    gtk_window_set_resizable(GTK_WINDOW(w->window), resizable != 0);
+    g_signal_connect(w->window, "delete-event", G_CALLBACK(floatingDelete), w);
+    g_signal_connect(w->window, "configure-event", G_CALLBACK(floatingConfigure), w);
+    gtk_widget_realize(w->window);
+    return w;
+}
+
+void* VST3GoFloatingWindowParent(void* window) {
+    if (!window) return NULL;
+    return (void*)(uintptr_t)gdk_x11_window_get_xid(gtk_widget_get_window(((VST3GoFloatingWindow*)window)->window));
+}
+
+void VST3GoFloatingWindowSetTitle(void* window, const char* title) {
+    if (window && title) gtk_window_set_title(GTK_WINDOW(((VST3GoFloatingWindow*)window)->window), title);
+}
+
+void VST3GoFloatingWindowSetTransient(void* window, void* owner) {
+    if (!window || !owner) return;
+    GdkWindow* gdk = gtk_widget_get_window(((VST3GoFloatingWindow*)window)->window);
+    Display* display = gdk_x11_display_get_xdisplay(gdk_window_get_display(gdk));
+    XSetTransientForHint(display, gdk_x11_window_get_xid(gdk), (Window)(uintptr_t)owner);
+    XFlush(display);
+}
+
+void VST3GoFloatingWindowSetSize(void* window, int32_t width, int32_t height) {
+    if (window) gtk_window_resize(GTK_WINDOW(((VST3GoFloatingWindow*)window)->window), width, height);
+}
+
+void VST3GoFloatingWindowShow(void* window, int visible) {
+    if (!window) return;
+    GtkWidget* widget = ((VST3GoFloatingWindow*)window)->window;
+    if (visible) {
+        gtk_widget_show(widget);
+        gtk_window_present(GTK_WINDOW(widget));
+    } else {
+        gtk_widget_hide(widget);
+    }
+    pumpEvents();
+}
+
+void VST3GoFloatingWindowDestroy(void* window) {
+    if (!window) return;
+    VST3GoFloatingWindow* w = (VST3GoFloatingWindow*)window;
+    g_signal_handlers_disconnect_by_data(w->window, w);
+    gtk_widget_destroy(w->window);
+    pumpEvents();
+    free(w);
 }

@@ -9,6 +9,7 @@ import "C"
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math"
 	"strings"
 	"sync"
@@ -46,6 +47,7 @@ const (
 	kindSingle     = int32(C.VST3GO_KIND_SINGLE)
 	kindProcessor  = int32(C.VST3GO_KIND_PROCESSOR)
 	kindController = int32(C.VST3GO_KIND_CONTROLLER)
+	kindARAFactory = int32(C.VST3GO_KIND_ARA_FACTORY)
 )
 
 var registeredPlugins []Plugin
@@ -66,6 +68,9 @@ var globalFactoryInfo = FactoryInfo{
 // Register adds a plugin to the factory of this binary. Call it from init();
 // one binary can register several plugins (a plugin bundle).
 func Register(p Plugin) {
+	if _, ok := p.(ARAPlugin); ok && araPluginCount() == maxARAFactories {
+		panic(fmt.Sprintf("plugin: one binary supports at most %d ARA plugins", maxARAFactories))
+	}
 	registeredPlugins = append(registeredPlugins, p)
 }
 
@@ -75,9 +80,11 @@ func SetFactoryInfo(info FactoryInfo) {
 }
 
 // factoryClass is one class exported by the factory. A DistributedPlugin
-// exports a processor class and a controller class.
+// exports a processor class and a controller class, an ARAPlugin also the
+// ARA main factory class.
 type factoryClass struct {
 	plugin     Plugin
+	index      int // in registeredPlugins
 	info       plugin.Info
 	kind       int32
 	cid        [16]byte
@@ -86,17 +93,20 @@ type factoryClass struct {
 
 func factoryClasses() []factoryClass {
 	classes := make([]factoryClass, 0, len(registeredPlugins))
-	for _, p := range registeredPlugins {
+	for i, p := range registeredPlugins {
 		info := p.GetInfo()
 		uid := info.UID()
 		if d, ok := p.(DistributedPlugin); ok && d.Distributed() {
 			controller := info.ControllerUID()
 			classes = append(classes,
-				factoryClass{plugin: p, info: info, kind: kindProcessor, cid: uid, controller: controller},
-				factoryClass{plugin: p, info: info, kind: kindController, cid: controller})
-			continue
+				factoryClass{plugin: p, index: i, info: info, kind: kindProcessor, cid: uid, controller: controller},
+				factoryClass{plugin: p, index: i, info: info, kind: kindController, cid: controller})
+		} else {
+			classes = append(classes, factoryClass{plugin: p, index: i, info: info, kind: kindSingle, cid: uid})
 		}
-		classes = append(classes, factoryClass{plugin: p, info: info, kind: kindSingle, cid: uid})
+		if _, ok := p.(ARAPlugin); ok {
+			classes = append(classes, factoryClass{plugin: p, index: i, info: info, kind: kindARAFactory, cid: info.ARAFactoryUID()})
+		}
 	}
 	return classes
 }
@@ -367,6 +377,9 @@ func GoGetClassInfo2(index C.int32_t, info *C.struct_Steinberg_PClassInfo2) (res
 	case kindController:
 		copyCString(&info.category[0], len(info.category), "Component Controller Class")
 		name += " Controller"
+	case kindARAFactory:
+		// The class name matches the plugin's ARAFactory.plugInName.
+		copyCString(&info.category[0], len(info.category), "ARA Main Factory Class")
 	default:
 		copyCString(&info.category[0], len(info.category), "Audio Module Class")
 		copyCString(&info.subCategories[0], len(info.subCategories), class.info.SubCategories())
@@ -412,6 +425,9 @@ func capabilities(component *componentImpl) C.int32_t {
 	if _, ok := processor.(ChannelInfoProcessor); ok {
 		caps |= C.VST3GO_CAP_INFO_LISTENER
 	}
+	if component.ara != nil {
+		caps |= C.VST3GO_CAP_ARA
+	}
 	return caps
 }
 
@@ -437,6 +453,13 @@ func GoCreateInstance(cid *C.char, iid *C.char) (instance unsafe.Pointer) {
 	if class == nil {
 		return nil
 	}
+	if class.kind == kindARAFactory {
+		slot := araSlotOf(class.index)
+		if slot < 0 {
+			return nil
+		}
+		return C.vst3go_ara_main_factory(C.int32_t(slot))
+	}
 
 	processor := class.plugin.CreateProcessor()
 	if processor == nil {
@@ -447,6 +470,9 @@ func GoCreateInstance(cid *C.char, iid *C.char) (instance unsafe.Pointer) {
 		return nil
 	}
 
+	if class.kind != kindController {
+		component.ara = newARAInstance(class.index)
+	}
 	wrapper := &componentWrapper{component: component, kind: class.kind, scratch: newProcessScratch()}
 	component.wrapper = wrapper
 	id := registerComponent(wrapper)
@@ -471,6 +497,7 @@ func GoReleaseComponent(componentID C.uintptr_t) {
 	}
 	// Drops the handler reference and detaches the processor's Host.
 	wrapper.setHandler(nil)
+	wrapper.component.ara.release()
 	wrapper.scratch.free()
 }
 

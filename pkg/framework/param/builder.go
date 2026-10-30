@@ -1,8 +1,17 @@
 package param
 
+import (
+	"fmt"
+	"math"
+)
+
 // Builder provides a fluent API for creating parameters
 type Builder struct {
-	param *Parameter
+	param        *Parameter
+	defaultPlain float64
+	hasDefault   bool
+	center       float64
+	hasCenter    bool
 }
 
 // New creates a new parameter builder
@@ -35,11 +44,29 @@ func (b *Builder) Range(minVal, maxVal float64) *Builder {
 
 // Default sets the default value (in plain range, not normalized)
 func (b *Builder) Default(value float64) *Builder {
-	// Convert to normalized
-	if b.param.Max > b.param.Min {
-		normalized := (value - b.param.Min) / (b.param.Max - b.param.Min)
-		b.param.DefaultValue = normalized
-	}
+	b.defaultPlain, b.hasDefault = value, true
+	return b
+}
+
+// Linear spreads the range evenly over the normalized range (the default).
+func (b *Builder) Linear() *Builder {
+	b.param.Scale, b.hasCenter = ScaleLinear, false
+	return b
+}
+
+// Logarithmic gives equal ratios equal travel, as frequencies and times
+// are heard; the range must be positive.
+func (b *Builder) Logarithmic() *Builder {
+	b.param.Scale, b.hasCenter = ScaleLog, false
+	return b
+}
+
+// Center skews the range so the middle of the normalized range (a knob at
+// twelve o'clock) is the plain value center, for ranges that start at zero
+// or cross it.
+func (b *Builder) Center(center float64) *Builder {
+	b.param.Scale = ScalePower
+	b.center, b.hasCenter = center, true
 	return b
 }
 
@@ -67,6 +94,7 @@ func (b *Builder) Toggle() *Builder {
 	b.param.Max = 1
 	b.param.StepCount = 1
 	b.param.DefaultValue = 0
+	b.hasDefault = false
 	return b
 }
 
@@ -119,9 +147,33 @@ func (b *Builder) Formatter(format func(float64) string, parse func(string) (flo
 	return b
 }
 
-// Build returns the configured parameter
+// Build returns the configured parameter. It panics on a scale the range
+// does not allow (a logarithmic range that is not positive, a center
+// outside the range), which are programming errors.
 func (b *Builder) Build() *Parameter {
-	// Initialize with default value
-	b.param.SetValue(b.param.DefaultValue)
-	return b.param
+	p := b.param
+	if p.StepCount > 0 {
+		p.Scale, p.Exponent = ScaleLinear, 0 // steps are always even
+	}
+	switch p.Scale {
+	case ScaleLog:
+		if !(p.Min > 0 && p.Max > p.Min) {
+			panic(fmt.Sprintf("param %q: logarithmic range %v..%v is not positive", p.Name, p.Min, p.Max))
+		}
+	case ScalePower:
+		if b.hasCenter {
+			if !(b.center > p.Min && b.center < p.Max) {
+				panic(fmt.Sprintf("param %q: center %v outside %v..%v", p.Name, b.center, p.Min, p.Max))
+			}
+			p.Exponent = math.Log((b.center-p.Min)/(p.Max-p.Min)) / math.Log(0.5)
+		}
+		if !(p.Exponent > 0) {
+			panic(fmt.Sprintf("param %q: power scale exponent %v", p.Name, p.Exponent))
+		}
+	}
+	if b.hasDefault {
+		p.DefaultValue = p.Normalize(b.defaultPlain)
+	}
+	p.SetValue(p.DefaultValue)
+	return p
 }

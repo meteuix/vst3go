@@ -151,15 +151,72 @@ static Steinberg_tresult SMTG_STDMETHODCALLTYPE factory_createInstance(void* thi
         return Steinberg_kInvalidArgument;
     }
 
-    void* instance = GoCreateInstance((char*)cid, (char*)iid);
+    struct Steinberg_FUnknown* instance = (struct Steinberg_FUnknown*)GoCreateInstance((char*)cid, (char*)iid);
     if (!instance) {
         return Steinberg_kNoInterface;
     }
 
     // Hand out the interface the host asked for; drop the creation reference.
-    Steinberg_tresult result = componentQueryInterface(instance, iid, obj);
-    componentRelease(instance);
+    Steinberg_tresult result = instance->lpVtbl->queryInterface(instance, iid, obj);
+    instance->lpVtbl->release(instance);
     return result;
+}
+
+// ARA main factory class: one static IMainFactory object per ARA factory.
+
+typedef struct {
+    Steinberg_tresult (SMTG_STDMETHODCALLTYPE* queryInterface)(void*, const Steinberg_TUID, void**);
+    Steinberg_uint32 (SMTG_STDMETHODCALLTYPE* addRef)(void*);
+    Steinberg_uint32 (SMTG_STDMETHODCALLTYPE* release)(void*);
+    const ARAFactory* (SMTG_STDMETHODCALLTYPE* getFactory)(void*);
+} MainFactoryVtbl;
+
+typedef struct {
+    const MainFactoryVtbl* lpVtbl;
+    int32_t slot;
+} MainFactory;
+
+static Steinberg_tresult SMTG_STDMETHODCALLTYPE mainFactory_queryInterface(void* thisInterface, const Steinberg_TUID iid, void** obj) {
+    if (!obj) {
+        return Steinberg_kInvalidArgument;
+    }
+    if (iid && (memcmp(iid, Steinberg_FUnknown_iid, sizeof(Steinberg_TUID)) == 0 || memcmp(iid, ARA_IMainFactory_iid, sizeof(Steinberg_TUID)) == 0)) {
+        *obj = thisInterface;
+        return Steinberg_kResultOk;
+    }
+    *obj = NULL;
+    return Steinberg_kNoInterface;
+}
+
+// The objects live as long as the module: counting is not needed.
+static Steinberg_uint32 SMTG_STDMETHODCALLTYPE mainFactory_addRef(void* thisInterface) {
+    (void)thisInterface;
+    return 1;
+}
+
+static Steinberg_uint32 SMTG_STDMETHODCALLTYPE mainFactory_release(void* thisInterface) {
+    (void)thisInterface;
+    return 1;
+}
+
+static const ARAFactory* SMTG_STDMETHODCALLTYPE mainFactory_getFactory(void* thisInterface) {
+    return vst3go_ara_factory(((MainFactory*)thisInterface)->slot);
+}
+
+static const MainFactoryVtbl mainFactoryVtbl = {
+    mainFactory_queryInterface, mainFactory_addRef, mainFactory_release, mainFactory_getFactory
+};
+
+static MainFactory mainFactories[VST3GO_ARA_MAX_FACTORIES];
+
+void* vst3go_ara_main_factory(int32_t slot) {
+    if (slot < 0 || slot >= VST3GO_ARA_MAX_FACTORIES || !vst3go_ara_factory(slot)) {
+        return NULL;
+    }
+    MainFactory* f = &mainFactories[slot];
+    f->lpVtbl = &mainFactoryVtbl;
+    f->slot = slot;
+    return f;
 }
 
 // Parameter changes

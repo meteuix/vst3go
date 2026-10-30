@@ -4,7 +4,7 @@ package plugin
 
 /*
 #cgo windows,amd64 CFLAGS: -I../../include
-#cgo windows,amd64 LDFLAGS: -lWebView2Loader -lole32 -luser32
+#cgo windows,amd64 LDFLAGS: -lole32 -luser32 -luuid
 #include "../../include/vst3/vst3_c_api.h"
 #include "editor_view.h"
 */

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/th-release/vst3go/pkg/ara"
 	"github.com/th-release/vst3go/pkg/framework/bus"
 	"github.com/th-release/vst3go/pkg/framework/process"
 	"github.com/th-release/vst3go/pkg/midi"
@@ -23,6 +24,15 @@ type OfflineSetup struct {
 	DoublePrecision bool
 	// Mode is the process mode reported in ctx.ProcessMode.
 	Mode process.ProcessMode
+	// ARA binds the instance to an ARA document before it is activated,
+	// as an ARA host does; the plugin must be an ARAPlugin whose
+	// processor implements ARAProcessor, and the document must use its
+	// ARA() configuration. Drive the document with its editing methods and
+	// play its regions with Transport.
+	ARA *ara.Document
+	// ARARoles are the roles assigned to the instance; 0 assigns every
+	// role.
+	ARARoles ara.Roles
 }
 
 // Offline runs a plugin without a host: in unit tests, offline renderers
@@ -33,6 +43,7 @@ type OfflineSetup struct {
 // Offline is not safe for concurrent use.
 type Offline struct {
 	c         *componentImpl
+	binding   *ara.Binding
 	maxBlock  int
 	double    bool
 	mode      process.ProcessMode
@@ -94,6 +105,18 @@ func NewOffline(p Plugin, setup OfflineSetup) (*Offline, error) {
 		return nil, err
 	}
 	o := &Offline{c: c, maxBlock: setup.MaxBlockSize, double: setup.DoublePrecision, mode: setup.Mode}
+	if setup.ARA != nil {
+		bindable, ok := c.processor.(ARAProcessor)
+		if _, plugin := p.(ARAPlugin); !plugin || !ok {
+			return nil, fmt.Errorf("offline: %s is not an ARA plugin", p.GetInfo().Name)
+		}
+		roles := setup.ARARoles
+		if roles == 0 {
+			roles = ara.AllRoles
+		}
+		o.binding = setup.ARA.Bind(ara.AllRoles, roles)
+		bindable.BindARA(o.binding)
+	}
 	if aware, ok := c.processor.(HostAwareProcessor); ok {
 		aware.SetHost(offlineHost{o})
 	}
@@ -113,15 +136,20 @@ func NewOffline(p Plugin, setup OfflineSetup) (*Offline, error) {
 	if err := c.SetActive(true); err != nil {
 		return nil, fmt.Errorf("offline activate: %w", err)
 	}
-	c.SetProcessing(true)
 	return o, nil
 }
 
-// Close deactivates the processor.
+// Close deactivates the processor and unbinds it from its ARA document.
 func (o *Offline) Close() error {
-	o.c.SetProcessing(false)
-	return o.c.SetActive(false)
+	err := o.c.SetActive(false)
+	if o.binding != nil {
+		o.binding.Unbind()
+	}
+	return err
 }
+
+// ARA returns the binding to OfflineSetup.ARA, nil without one.
+func (o *Offline) ARA() *ara.Binding { return o.binding }
 
 // Processor returns the processor instance.
 func (o *Offline) Processor() Processor { return o.c.processor }

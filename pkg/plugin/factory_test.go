@@ -1,8 +1,10 @@
 package plugin
 
 import (
+	"strconv"
 	"testing"
 
+	"github.com/th-release/vst3go/pkg/ara"
 	"github.com/th-release/vst3go/pkg/framework/bus"
 	"github.com/th-release/vst3go/pkg/framework/param"
 	frameworkplugin "github.com/th-release/vst3go/pkg/framework/plugin"
@@ -55,4 +57,50 @@ func TestMIDI2ControllerBytes(t *testing.T) {
 	if b1, _ := midi2ControllerBytes(MIDI2Controller{Bank: 1, Registered: true}); b1 != 0x81 {
 		t.Fatalf("registered bank 1 byte1 = %#x, want 0x81", b1)
 	}
+}
+
+type testARAPlugin struct{ testPlugin }
+
+func (testARAPlugin) ARA() ara.Config { return ara.Config{ArchiveID: "com.example.ara.1"} }
+
+func TestARAFactoryClass(t *testing.T) {
+	saved := registeredPlugins
+	t.Cleanup(func() { registeredPlugins = saved })
+	registeredPlugins = nil
+	Register(testPlugin{id: "com.example.plain"})
+	Register(testARAPlugin{testPlugin{id: "com.example.ara"}})
+
+	classes := factoryClasses()
+	if len(classes) != 3 {
+		t.Fatalf("classes = %d, want plain + ARA plugin + its ARA main factory", len(classes))
+	}
+	info := classes[1].info
+	if classes[1].kind != kindSingle || classes[2].kind != kindARAFactory || classes[2].index != 1 {
+		t.Fatalf("classes %+v", classes)
+	}
+	if classes[2].cid != info.ARAFactoryUID() || info.ARAFactoryUID() == info.UID() {
+		t.Fatal("the ARA main factory class needs its own class ID")
+	}
+	if c := clapFeatures(classes[1].plugin, info); c[len(c)-1] != "ara:supported" {
+		t.Fatalf("CLAP features %v, want ara:supported", c)
+	}
+	if c, err := newAUComponent(classes[1].plugin); err != nil || c.Tags[len(c.Tags)-1] != "ARA" {
+		t.Fatalf("AU tags %v, %v", c.Tags, err)
+	}
+}
+
+func TestRegisterLimitsARAPlugins(t *testing.T) {
+	saved := registeredPlugins
+	t.Cleanup(func() { registeredPlugins = saved })
+	registeredPlugins = nil
+	for i := range maxARAFactories {
+		Register(testARAPlugin{testPlugin{id: "com.example.ara" + strconv.Itoa(i)}})
+	}
+	Register(testPlugin{id: "com.example.plain"})
+	defer func() {
+		if recover() == nil {
+			t.Fatal("registered more ARA plugins than the runtime has factories")
+		}
+	}()
+	Register(testARAPlugin{testPlugin{id: "com.example.one-too-many"}})
 }

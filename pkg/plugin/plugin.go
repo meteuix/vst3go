@@ -9,6 +9,8 @@ package plugin
 import (
 	"io"
 
+	"github.com/th-release/vst3go/pkg/ara"
+
 	"github.com/th-release/vst3go/pkg/framework/bus"
 	"github.com/th-release/vst3go/pkg/framework/param"
 	"github.com/th-release/vst3go/pkg/framework/plugin"
@@ -81,6 +83,24 @@ type Processor interface {
 
 // TailInfinite is the GetTailSamples value for a never-ending tail.
 const TailInfinite int32 = -1
+
+// DeadlineProcessor bounds how long the host's audio thread waits for a
+// block; a processor that does not implement it gets
+// plugin.DefaultProcessDeadline. Its blocks run on a dedicated real-time
+// thread; the host's thread
+// waits at most ProcessDeadline of each block's duration, and a block that
+// takes longer outputs silence and finishes in the background (blocks
+// arriving meanwhile output silence too, their events and parameter
+// changes carried into the next block). A stall in Go, such as a garbage
+// collection pause or the scheduler, then costs the plugin a block of audio
+// instead of making the host miss its own deadline. Offline rendering
+// always runs on the host's thread. Applies to VST3, CLAP, AU and LV2.
+type DeadlineProcessor interface {
+	// ProcessDeadline returns the share of a block's duration, from 0 to
+	// 1, that the host waits; 0 processes on the host's thread, with no
+	// bound. It is read when the plugin is activated.
+	ProcessDeadline() float64
+}
 
 // StatefulProcessor extends Processor with custom state save/load hooks.
 //
@@ -351,6 +371,29 @@ type MessageReceiver interface {
 // side of a DistributedPlugin it receives the handle at initialization.
 type HostAwareProcessor interface {
 	SetHost(host Host)
+}
+
+// ARAPlugin is a Plugin that supports ARA (Audio Random Access): in an
+// ARA host it edits and renders the audio of the host's clips (playback
+// regions) instead of the live signal. The runtime exposes an ARA factory
+// for it in VST3 (the ARA main factory class and IPlugInEntryPoint), CLAP
+// (the ARA factory and plugin extension) and AU (the ARA properties and
+// the "ARA" component tag). See pkg/ara.
+type ARAPlugin interface {
+	Plugin
+	// ARA returns the plugin's ARA configuration. It is read once, when
+	// the host first asks for the ARA factory.
+	ARA() ara.Config
+}
+
+// ARAProcessor is the processor of an ARAPlugin. When the host binds the
+// instance to an ARA document, on the main thread before activating it,
+// BindARA receives the binding; ProcessAudio then renders
+// b.Playback() at sample position ctx.Transport.ProjectTimeSamples +
+// ctx.BlockOffset(). An instance the host does not bind processes its
+// input as a normal effect.
+type ARAProcessor interface {
+	BindARA(b *ara.Binding)
 }
 
 // RestartFlags tell the host what to re-read after a plugin-side change.

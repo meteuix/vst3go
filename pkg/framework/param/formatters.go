@@ -70,11 +70,14 @@ func PercentParser(str string) (float64, error) {
 	return strconv.ParseFloat(str, 64)
 }
 
-// TimeFormatter formats time values with appropriate units
+// TimeFormatter formats a time in milliseconds as µs, ms or s. The unit
+// switches where the rounded text would, so a value a hair under 1000 ms
+// reads "1.00 s" like 1000 ms does, and parsing the text gives it back.
 func TimeFormatter(ms float64) string {
-	if ms < 1 {
+	switch {
+	case math.Round(ms*1e5) < 1e5:
 		return fmt.Sprintf("%.2f µs", ms*1000)
-	} else if ms < 1000 {
+	case math.Round(ms*10) < 1e4:
 		return fmt.Sprintf("%.1f ms", ms)
 	}
 	return fmt.Sprintf("%.2f s", ms/1000)

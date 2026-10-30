@@ -28,6 +28,12 @@ type Parameter struct {
 	Smoothing     float64
 	SmoothingMode SmoothingMode
 
+	// Scale spreads a continuous range over the normalized 0..1 that host
+	// knobs and automation move through; Exponent is the curve of
+	// ScalePower. Stepped parameters are always linear.
+	Scale    Scale
+	Exponent float64
+
 	// Atomic value for lock-free access in audio thread
 	value uint64 // Store as uint64 for atomic operations
 
@@ -45,6 +51,20 @@ const (
 	IsHidden        uint32 = 1 << 4
 	IsProgramChange uint32 = 1 << 15
 	IsBypass        uint32 = 1 << 16
+)
+
+// Scale is how a continuous parameter maps normalized values to plain ones.
+type Scale int
+
+const (
+	// ScaleLinear spreads Min..Max evenly.
+	ScaleLinear Scale = iota
+	// ScaleLog gives equal ratios equal travel (frequencies, times); Min
+	// must be positive.
+	ScaleLog
+	// ScalePower maps n to Min + (Max-Min)·n^Exponent; exponents above 1
+	// give the low end more travel.
+	ScalePower
 )
 
 // GetValue returns the current normalized value (0-1)
@@ -82,8 +102,7 @@ func (p *Parameter) GetPlainValue() float64 {
 
 // GetPlain converts the current normalized value to a plain value.
 func (p *Parameter) GetPlain() float64 {
-	normalized := p.GetNormalized()
-	return p.Min + normalized*(p.Max-p.Min)
+	return p.Denormalize(p.GetNormalized())
 }
 
 // SetPlainValue converts plain to normalized value
@@ -93,13 +112,7 @@ func (p *Parameter) SetPlainValue(plain float64) {
 
 // SetPlain converts a plain value to normalized form and stores it.
 func (p *Parameter) SetPlain(plain float64) {
-	if p.Max <= p.Min {
-		p.SetNormalized(0)
-		return
-	}
-
-	normalized := (plain - p.Min) / (p.Max - p.Min)
-	p.SetNormalized(normalized)
+	p.SetNormalized(p.Normalize(plain))
 }
 
 // SetFormatter sets custom value formatting
@@ -169,30 +182,51 @@ func parseLeadingNumber(str string) (float64, error) {
 	return 0, fmt.Errorf("parse %q: no number", str)
 }
 
-// Normalize converts plain value to normalized (0-1)
+// Normalize converts a plain value to normalized (0-1), clamping to the
+// range.
 func (p *Parameter) Normalize(plain float64) float64 {
 	if p.Max <= p.Min {
 		return 0
 	}
-	normalized := (plain - p.Min) / (p.Max - p.Min)
-	if normalized < 0 {
+	if math.IsNaN(plain) || plain <= p.Min {
 		return 0
 	}
-	if normalized > 1 {
+	if plain >= p.Max {
 		return 1
 	}
-	return normalized
+	if p.StepCount > 0 {
+		return (plain - p.Min) / (p.Max - p.Min)
+	}
+	switch p.Scale {
+	case ScaleLog:
+		return math.Log(plain/p.Min) / math.Log(p.Max/p.Min)
+	case ScalePower:
+		return math.Pow((plain-p.Min)/(p.Max-p.Min), 1/p.Exponent)
+	default:
+		return (plain - p.Min) / (p.Max - p.Min)
+	}
 }
 
 // Denormalize converts normalized (0-1) to plain value. Stepped parameters
 // snap to their steps using the VST3 rule min(steps, floor(n*(steps+1))).
 func (p *Parameter) Denormalize(normalized float64) float64 {
+	normalized = max(0, min(1, normalized))
 	if p.StepCount > 0 {
 		steps := float64(p.StepCount)
-		step := math.Min(steps, math.Floor(math.Max(normalized, 0)*(steps+1)))
+		step := min(steps, math.Floor(normalized*(steps+1)))
 		return p.Min + step*(p.Max-p.Min)/steps
 	}
-	return p.Min + normalized*(p.Max-p.Min)
+	// Rounding must not step outside the range (a log scale at 1 can land
+	// a hair above Max), as processors size buffers by it.
+	switch p.Scale {
+	case ScaleLog:
+		if p.Min > 0 && p.Max > p.Min {
+			return min(p.Max, max(p.Min, p.Min*math.Pow(p.Max/p.Min, normalized)))
+		}
+	case ScalePower:
+		return min(p.Max, p.Min+(p.Max-p.Min)*math.Pow(normalized, p.Exponent))
+	}
+	return min(p.Max, p.Min+normalized*(p.Max-p.Min))
 }
 
 // Helper functions for float64 <-> uint64 conversion

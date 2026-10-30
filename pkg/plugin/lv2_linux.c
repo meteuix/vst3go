@@ -13,11 +13,19 @@
 //     transport) and, for plugins with a note input, MIDI;
 //   - "midi_out", an atom sequence output, for plugins with a note output;
 //   - "latency", the reported latency in samples;
+//   - "freewheel", the host's lv2:freeWheeling port: while it is on, the
+//     plugin renders offline (CLAP render mode), without the deadline;
 //   - one control port per visible parameter (hidden parameters and the
 //     program list are left out; factory programs are LV2 presets),
 //     read-only parameters as control outputs.
 // Control port changes reach the plugin as parameter events at the start
 // of the block. The plugin state (state:interface) is the CLAP state.
+//
+// run never enters Go when the plugin has a deadline (DeadlineProcessor):
+// the CLAP plugin runs it through the deadline guard, and plugins.ttl then
+// declares lv2:hardRTCapable. A latency change is read when the plugin
+// asks for a restart and reported on the latency port; anything else a
+// restart would change waits for the host's next activate.
 
 #define _GNU_SOURCE  // dladdr
 #include <dlfcn.h>
@@ -112,6 +120,7 @@ typedef enum {
     PORT_EVENTS_IN,
     PORT_EVENTS_OUT,
     PORT_LATENCY,
+    PORT_FREEWHEEL,
     PORT_PARAM_IN,
     PORT_PARAM_OUT,
 } PortKind;
@@ -148,6 +157,7 @@ struct LV2Instance {
     const clap_plugin_note_ports_t* notePorts;
     const clap_plugin_state_t* state;
     const clap_plugin_latency_t* latency;
+    const clap_plugin_render_t* render;
     const clap_plugin_gui_t* gui;
     const clap_plugin_timer_support_t* timer;
 
@@ -179,9 +189,10 @@ struct LV2Instance {
     float* scratch;   // outputs the host left unconnected
 
     bool active, processing;
+    bool freewheel;  // audio thread: the render mode set from the freewheel port
     int64_t steadyTime;
-    uint32_t latencySamples;
-    atomic_bool restartRequested, callbackRequested, rescanValues;
+    _Atomic uint32_t latencySamples;
+    atomic_bool callbackRequested, rescanValues;
 
     AnyEvent store[LV2_MAX_EVENTS];
     const clap_event_header_t* events[LV2_MAX_EVENTS];
@@ -251,9 +262,11 @@ static const void* host_get_extension(const clap_host_t* h, const char* id) {
     return vst3go_lv2_ui_host_extension(host_instance(h), id);
 }
 
+// host_request_restart comes from the plugin's own code (in Go), never
+// from run, so it can read the latency at once.
 static void host_request_restart(const clap_host_t* h) {
     LV2Instance* in = host_instance(h);
-    if (in) atomic_store(&in->restartRequested, true);
+    if (in && in->latency) atomic_store(&in->latencySamples, in->latency->get(in->plugin));
 }
 static void host_request_process(const clap_host_t* h) { (void)h; }
 static void host_request_callback(const clap_host_t* h) {
@@ -345,6 +358,7 @@ static LV2Instance* create_instance(uint32_t index) {
     EXT(notePorts, clap_plugin_note_ports_t, CLAP_EXT_NOTE_PORTS);
     EXT(state, clap_plugin_state_t, CLAP_EXT_STATE);
     EXT(latency, clap_plugin_latency_t, CLAP_EXT_LATENCY);
+    EXT(render, clap_plugin_render_t, CLAP_EXT_RENDER);
     EXT(gui, clap_plugin_gui_t, CLAP_EXT_GUI);
     EXT(timer, clap_plugin_timer_support_t, CLAP_EXT_TIMER_SUPPORT);
 #undef EXT
@@ -379,6 +393,7 @@ static LV2Instance* create_instance(uint32_t index) {
     if (!add_port(in, PORT_EVENTS_IN, 0, 0)) goto fail;
     if (in->noteOut && !add_port(in, PORT_EVENTS_OUT, 0, 0)) goto fail;
     if (!add_port(in, PORT_LATENCY, 0, 0)) goto fail;
+    if (in->render && !add_port(in, PORT_FREEWHEEL, 0, 0)) goto fail;
     for (uint32_t i = 0; i < in->paramCount; i++) {
         if (!param_visible(in, i)) continue;
         PortKind kind = in->paramInfo[i].flags & CLAP_PARAM_IS_READONLY ? PORT_PARAM_OUT : PORT_PARAM_IN;
@@ -495,7 +510,7 @@ static void lv2_activate(LV2_Handle h) {
     vst3go_lv2_main_thread(in);
     if (in->active) return;
     in->active = in->plugin->activate(in->plugin, in->rate, 1, in->maxFrames);
-    in->latencySamples = in->active && in->latency ? in->latency->get(in->plugin) : 0;
+    atomic_store(&in->latencySamples, in->active && in->latency ? in->latency->get(in->plugin) : 0);
     in->steadyTime = 0;
     in->hasPosition = false;
     atomic_store(&in->resend, true);
@@ -723,13 +738,6 @@ static void advance_position(LV2Instance* in, uint32_t frames) {
     }
 }
 
-static void restart(LV2Instance* in) {
-    stop(in);
-    in->plugin->deactivate(in->plugin);
-    in->active = in->plugin->activate(in->plugin, in->rate, 1, in->maxFrames);
-    in->latencySamples = in->active && in->latency ? in->latency->get(in->plugin) : 0;
-}
-
 static void lv2_run(LV2_Handle h, uint32_t frames) {
     LV2Instance* in = (LV2Instance*)h;
     lv2InAudioThread = true;
@@ -742,7 +750,13 @@ static void lv2_run(LV2_Handle h, uint32_t frames) {
             in->forging = lv2_atom_forge_sequence_head(&in->forge, &in->forgeFrame, 0) != 0;
         }
     }
-    if (in->active && atomic_exchange(&in->restartRequested, false)) restart(in);
+    for (uint32_t i = 0; i < in->portCount; i++) {
+        if (in->ports[i].kind != PORT_FREEWHEEL || !in->data[i]) continue;
+        bool freewheel = *(const float*)in->data[i] > 0.5f;
+        if (freewheel != in->freewheel && in->render->set(in->plugin, freewheel ? CLAP_RENDER_OFFLINE : CLAP_RENDER_REALTIME)) {
+            in->freewheel = freewheel;
+        }
+    }
     if (in->active && !in->processing) in->processing = in->plugin->start_processing(in->plugin);
     if (!in->active || !in->processing) {
         for (uint32_t i = 0; i < in->portCount; i++) {
@@ -794,7 +808,7 @@ static void lv2_run(LV2_Handle h, uint32_t frames) {
     for (uint32_t i = 0; i < in->portCount; i++) {
         if (!in->data[i]) continue;
         if (in->ports[i].kind == PORT_PARAM_OUT) *(float*)in->data[i] = (float)atomic_load(&in->values[in->ports[i].index]);
-        else if (in->ports[i].kind == PORT_LATENCY) *(float*)in->data[i] = (float)in->latencySamples;
+        else if (in->ports[i].kind == PORT_LATENCY) *(float*)in->data[i] = (float)atomic_load(&in->latencySamples);
     }
     if (in->forging) lv2_atom_forge_pop(&in->forge, &in->forgeFrame);
     lv2InAudioThread = false;
@@ -1116,6 +1130,11 @@ static void write_ports(Text* t, LV2Instance* in) {
             text_printf(t, "    lv2:designation lv2:latency ;\n    lv2:portProperty lv2:reportsLatency, lv2:integer, pprop:notOnGUI ;\n");
             text_printf(t, "    lv2:minimum 0 ;\n    lv2:maximum %d ;\n    units:unit units:frame\n  ]", 10 * 192000);
             break;
+        case PORT_FREEWHEEL:
+            text_printf(t, "    a lv2:InputPort, lv2:ControlPort ;\n    lv2:index %u ;\n    lv2:symbol \"freewheel\" ;\n    lv2:name \"Freewheel\" ;\n", i);
+            text_printf(t, "    lv2:designation lv2:freeWheeling ;\n    lv2:portProperty lv2:toggled, pprop:notOnGUI ;\n");
+            text_printf(t, "    lv2:default 0 ;\n    lv2:minimum 0 ;\n    lv2:maximum 1\n  ]");
+            break;
         case PORT_PARAM_IN:
         case PORT_PARAM_OUT: {
             const clap_param_info_t* p = &in->paramInfo[port->index];
@@ -1188,7 +1207,8 @@ static void write_plugin(Text* t, LV2Instance* in, const char* binary) {
     if (d->version) sscanf(d->version, "%u.%u.%u", &major, &minor, &micro);
     text_printf(t, "  lv2:minorVersion %u ;\n  lv2:microVersion %u ;\n", minor, micro);
     text_printf(t, "  lv2:binary <%s> ;\n", binary);
-    text_printf(t, "  lv2:requiredFeature urid:map ;\n  lv2:optionalFeature opts:options ;\n");
+    text_printf(t, "  lv2:requiredFeature urid:map ;\n  lv2:optionalFeature opts:options%s ;\n",
+                vst3go_clap_deadline(in->plugin) > 0 ? ", lv2:hardRTCapable" : "");
     text_printf(t, "  opts:supportedOption bufsz:maxBlockLength ;\n  lv2:extensionData state:interface ;\n");
     if (vst3go_lv2_ui_supported(in)) {
         text_printf(t, "  ui:ui ");
