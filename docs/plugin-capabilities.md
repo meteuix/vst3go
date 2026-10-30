@@ -400,7 +400,8 @@ real window in both formats and check the page <-> Go bridge both ways.
 Processors replace the built-in page with their own (`EditorProcessor`,
 `plugin.Editor{HTML, Width, Height, Min/Max sizes, FixedSize}`). Every page
 gets the `window.vst3go` SDK: live parameters with edit gestures, presets,
-`resize`, the platform's open file dialog (`vst3go.chooseFile`), and
+`resize`, the platform's open file and folder dialogs (`vst3go.chooseFile`,
+`vst3go.chooseFolder`), and
 custom messages with the processor (`vst3go.send` ->
 `EditorMessageProcessor`, `Host.PostEditorMessage` -> `vst3go.on`).
 `plugin.EditorBindings` / `WriteEditorBindings` generate typed TypeScript
@@ -552,7 +553,9 @@ a container application. The extension's principal class (an
 through `AUAudioUnitV2Bridge`, registered there under private codes, and
 shows its editor as the extension's view; the host loads it out of
 process. MIDI processors get a silent stereo output, which out-of-process
-rendering (and Logic Pro) needs.
+rendering (and Logic Pro) needs; the host sets it to its rate, which the
+plugin runs at (an AUv2 MIDI processor takes the global scope's
+`kAudioUnitProperty_SampleRate`, else the output device's rate).
 
 - `-platform macos` (default; macOS 11 or later), `ios` (iOS 14 or later)
   or `ios-simulator`. Other platforms build only `auv3`. The container is
@@ -564,15 +567,23 @@ rendering (and Logic Pro) needs.
   Xcode. The simulator runs ad-hoc signed builds:
   `xcrun simctl install booted <Name>.app`, then launch the container once
   to register the extension.
-- On macOS the extension is sandboxed, as app extensions must be. It reads
-  the files the user picks with `vst3go.chooseFile` and keeps
-  security-scoped bookmarks of them, so a saved state naming one reads it
-  again in later sessions; typed paths elsewhere are not readable. On iOS
-  `vst3go.chooseFile` copies the file into the extension's container.
-  User presets and caches go to the extension's container.
-- The view's size is the editor's size when the host opens it; editor
-  resizes after that change the extension's `preferredContentSize`, which
-  hosts may or may not follow.
+- The extension is sandboxed, as app extensions must be. It reads the
+  files the user picks with `vst3go.chooseFile` and the folders picked
+  with `vst3go.chooseFolder`, everything in them included (an SFZ
+  instrument's samples: the sampler example's Folder access button), and
+  keeps security-scoped bookmarks of them, so a saved state naming one
+  reads it again in later sessions; typed paths elsewhere are not
+  readable. On iOS `vst3go.chooseFile` copies the file into the
+  extension's container, while a folder is opened in place. User presets
+  and caches go to the extension's container.
+- The view's size is the editor's size when the host opens it. Hosts with
+  view configurations (`supportedViewConfigurations:`, iOS hosts' compact
+  and expanded areas) get the ones the editor fits within its size limits,
+  and the editor takes the one selected; hosts resize the view itself
+  within the editor's limits. Editor resizes the plugin asks for change the
+  extension's `preferredContentSize`, which reaches hosts that follow it:
+  through the remote view controller of macOS 27, `auv3check` saw only the
+  size at delivery.
 
 `scripts/validate_auv3.sh [out]` builds every validation plugin as an
 AUv3 extension, registers them (`lsregister`, `pluginkit -a`; unregistered
@@ -581,7 +592,8 @@ on exit), runs `auval -strict -r 2`, which loads them out of process, the
 the editor check is the next tool's), and
 `internal/validation/hostcheck/auv3check_darwin.m` through the AUv3 API:
 parameter tree, `fullState` round trip, rendering through the render block
-and the extension's view controller at the editor's size. With
+and the extension's view controller at the editor's size and its view
+configurations (one below the synth's minimum refused). With
 `IOS_SIMULATOR=<udid>` it also builds them for the iOS simulator,
 installs them and runs `auv3check` there.
 
@@ -884,14 +896,15 @@ deadline of a 64-sample block.
   later) and is not exposed through AUv3. It has run against
   `aracheck` only, not in a commercial ARA host (Studio One, Cubase,
   Logic, REAPER).
-- AUv3: the editor's size reaches the host when it opens the view, later
-  resizes only through `preferredContentSize`. In the macOS sandbox a
-  plugin reads only the files picked through `vst3go.chooseFile`, so an
-  SFZ instrument's samples next to the picked `.sfz` are not readable, and
-  on iOS only the picked file is copied. iOS builds have run in the
-  simulator only. A MIDI processor runs at 44.1 kHz whatever the host's
-  rate, as in AUv2.
-- The open file dialog ran in tests on macOS (cancelled by the check);
+- AUv3: a resize the plugin asks for reaches the host only through
+  `preferredContentSize`, which the macOS remote view controller did not
+  pass on after delivery here; host-driven sizes (view configurations,
+  layout) work. In the sandbox an SFZ instrument's samples are readable
+  once their folder is picked (`vst3go.chooseFolder`); picking the `.sfz`
+  alone grants that file only. iOS builds have run in the simulator only:
+  a device needs a provisioning profile and hardware this project has not
+  had.
+- The open file and folder dialogs ran in tests on macOS (cancelled by the check);
   the Windows, Linux and iOS dialogs are built but have not run here.
 - LV2 is Linux only. Without an open UI, values the plugin changes itself
   reach the host's control ports only in hosts with the KXStudio

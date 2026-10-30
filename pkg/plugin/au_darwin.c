@@ -53,9 +53,7 @@ extern const clap_plugin_entry_t clap_entry;
 extern uint32_t GoClapPluginCount(void);
 extern clap_plugin_descriptor_t* GoClapDescriptor(uint32_t index);
 extern bool GoAUComponentCodes(uint32_t index, uint32_t* type, uint32_t* subtype, uint32_t* manufacturer);
-#if TARGET_OS_OSX
 extern void VST3GoRestoreFileAccess(void);  // editor_view_darwin.c
-#endif
 
 // The view factory reads the instance behind an AudioUnit handle through
 // this private property.
@@ -2234,11 +2232,9 @@ static OSStatus au_open(void* self, AudioComponentInstance ci) {
     a->ci = ci;
     static atomic_bool entryInit;
     if (!atomic_exchange(&entryInit, true)) {
-#if TARGET_OS_OSX
         // In a sandbox, before any plugin reads the files of its saved
         // state.
         VST3GoRestoreFileAccess();
-#endif
         clap_entry.init("");
     }
     const clap_plugin_factory_t* factory = (const clap_plugin_factory_t*)clap_entry.get_factory(CLAP_PLUGIN_FACTORY_ID);

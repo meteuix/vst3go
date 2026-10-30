@@ -84,22 +84,28 @@ static bool waitFor(WKWebView* web, NSString* script) {
     return false;
 }
 
+// openPanel waits for the open panel a page's request shows.
+static NSOpenPanel* openPanel(void) {
+    for (int i = 0; i < 100; i++) {
+        run(0.02);
+        for (NSWindow* window in NSApp.windows) {
+            if ([window isKindOfClass:[NSOpenPanel class]] && window.visible) return (NSOpenPanel*)window;
+        }
+    }
+    return nil;
+}
+
 // checkChooseFile opens the open file dialog through vst3go.chooseFile,
 // checks its prompt and file types, and cancels it, which resolves the
-// promise to null; a malformed extension rejects it.
+// promise to null; a malformed extension rejects it. vst3go.chooseFolder
+// opens it for one folder.
 static void checkChooseFile(WKWebView* web) {
     eval(web, @"window.__chosen = undefined;"
         "vst3go.chooseFile({ extensions: ['a/b'] }).then((p) => { window.__chosen = 'resolved'; }, (e) => { window.__chosen = e.message; }); 'ok'");
     CHECK(waitFor(web, @"String(typeof window.__chosen === 'string' && window.__chosen.includes('invalid extension'))"), "malformed extension rejected: %s", eval(web, @"String(window.__chosen)").UTF8String);
     eval(web, @"window.__chosen = undefined;"
         "vst3go.chooseFile({ title: 'Pick a sample', extensions: ['wav', '.FLAC'] }).then((p) => { window.__chosen = p === null ? 'cancelled' : p; }, (e) => { window.__chosen = 'error: ' + e.message; }); 'ok'");
-    NSOpenPanel* panel = nil;
-    for (int i = 0; i < 100 && !panel; i++) {
-        run(0.02);
-        for (NSWindow* window in NSApp.windows) {
-            if ([window isKindOfClass:[NSOpenPanel class]] && window.visible) panel = (NSOpenPanel*)window;
-        }
-    }
+    NSOpenPanel* panel = openPanel();
     CHECK(panel, "open panel shown");
     CHECK([panel.message isEqualToString:@"Pick a sample"], "panel prompt %s", panel.message.UTF8String);
     NSMutableArray<NSString*>* exts = [NSMutableArray array];
@@ -108,6 +114,15 @@ static void checkChooseFile(WKWebView* web) {
     CHECK(panel.canChooseFiles && !panel.canChooseDirectories && !panel.allowsMultipleSelection, "panel picks one file");
     [panel cancel:nil];
     CHECK(waitFor(web, @"String(window.__chosen === 'cancelled')"), "cancel resolved to null: %s", eval(web, @"String(window.__chosen)").UTF8String);
+
+    eval(web, @"window.__chosen = undefined;"
+        "vst3go.chooseFolder({ title: 'Pick the samples' }).then((p) => { window.__chosen = p === null ? 'cancelled' : p; }, (e) => { window.__chosen = 'error: ' + e.message; }); 'ok'");
+    panel = openPanel();
+    CHECK(panel, "folder panel shown");
+    CHECK([panel.message isEqualToString:@"Pick the samples"], "folder panel prompt %s", panel.message.UTF8String);
+    CHECK(!panel.canChooseFiles && panel.canChooseDirectories && !panel.allowsMultipleSelection, "folder panel picks one folder");
+    [panel cancel:nil];
+    CHECK(waitFor(web, @"String(window.__chosen === 'cancelled')"), "folder cancel resolved to null: %s", eval(web, @"String(window.__chosen)").UTF8String);
 }
 
 typedef double (^GetNormalized)(uint32_t id);

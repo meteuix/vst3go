@@ -578,6 +578,7 @@ static struct {
     HWND owner;
     WCHAR* title;
     WCHAR* patterns;  // "*.wav;*.flac", NULL for any file
+    BOOL folder;      // choose a folder
 } fileDialog;
 
 static WCHAR* wideString(const char* s) {
@@ -614,7 +615,7 @@ static void CALLBACK showFileDialog(HWND hwnd, UINT msg, UINT_PTR timer, DWORD t
     } else {
         FILEOPENDIALOGOPTIONS options = 0;
         dialog->lpVtbl->GetOptions(dialog, &options);
-        dialog->lpVtbl->SetOptions(dialog, options | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
+        dialog->lpVtbl->SetOptions(dialog, options | FOS_FORCEFILESYSTEM | (fileDialog.folder ? FOS_PICKFOLDERS : FOS_FILEMUSTEXIST));
         if (fileDialog.title) dialog->lpVtbl->SetTitle(dialog, fileDialog.title);
         if (fileDialog.patterns) {
             COMDLG_FILTERSPEC spec = { fileDialog.patterns, fileDialog.patterns };
@@ -630,7 +631,7 @@ static void CALLBACK showFileDialog(HWND hwnd, UINT msg, UINT_PTR timer, DWORD t
                 CoTaskMemFree(wide);
             }
             item->lpVtbl->Release(item);
-            if (!path) error = "the chosen file has no file system path";
+            if (!path) error = fileDialog.folder ? "the chosen folder has no file system path" : "the chosen file has no file system path";
         } else if (hr != HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
             error = "the file dialog failed";
         }
@@ -643,7 +644,7 @@ static void CALLBACK showFileDialog(HWND hwnd, UINT msg, UINT_PTR timer, DWORD t
     free(path);
 }
 
-void VST3GoEditorViewChooseFile(void* thisInterface, uint32_t request, const char* title, const char* extensions) {
+void VST3GoEditorViewChooseFile(void* thisInterface, uint32_t request, const char* title, const char* extensions, int folder) {
     VST3GoEditorView* view = (VST3GoEditorView*)thisInterface;
     if (!view) {
         return;
@@ -655,9 +656,10 @@ void VST3GoEditorViewChooseFile(void* thisInterface, uint32_t request, const cha
     fileDialog.pending = TRUE;
     fileDialog.component = view->component;
     fileDialog.request = request;
+    fileDialog.folder = folder != 0;
     fileDialog.owner = view->parentWindow ? GetAncestor(view->parentWindow, GA_ROOT) : NULL;
     fileDialog.title = title && *title ? wideString(title) : NULL;
-    if (extensions && *extensions) {
+    if (!folder && extensions && *extensions) {
         // "wav;flac" -> "*.wav;*.flac"
         size_t n = strlen(extensions), count = 1;
         for (size_t i = 0; i < n; i++) count += extensions[i] == ';';

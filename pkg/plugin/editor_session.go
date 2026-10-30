@@ -128,13 +128,16 @@ func (s *editorSession) requestResize(c *componentImpl, width, height int) {
 	}
 }
 
-// fileRequest is the data of a "choose-file" message (vst3go.chooseFile).
+// fileRequest is the data of a "choose-file" message (vst3go.chooseFile,
+// or vst3go.chooseFolder with Folder).
 type fileRequest struct {
 	Extensions []string `json:"extensions"`
+	Folder     bool     `json:"folder"`
 }
 
-// fileChosenMessage answers vst3go.chooseFile: the path, "" when the user
-// cancelled, or the error that kept the dialog from opening.
+// fileChosenMessage answers vst3go.chooseFile and vst3go.chooseFolder: the
+// path, "" when the user cancelled, or the error that kept the dialog from
+// opening.
 type fileChosenMessage struct {
 	Type  string `json:"type"` // "file-chosen"
 	ID    uint32 `json:"id"`
@@ -142,8 +145,8 @@ type fileChosenMessage struct {
 	Error string `json:"error,omitempty"`
 }
 
-// chooseFile shows the platform's open file dialog for the page; the
-// answer comes back through GoEditorFileChosen.
+// chooseFile shows the platform's open file or folder dialog for the
+// page; the answer comes back through GoEditorFileChosen.
 func (s *editorSession) chooseFile(request uint32, title string, data json.RawMessage) {
 	var req fileRequest
 	if len(data) > 0 && string(data) != "null" {
@@ -170,7 +173,11 @@ func (s *editorSession) chooseFile(request uint32, title string, data json.RawMe
 	cexts := C.CString(strings.Join(req.Extensions, ";"))
 	defer C.free(unsafe.Pointer(ctitle))
 	defer C.free(unsafe.Pointer(cexts))
-	C.VST3GoEditorViewChooseFile(view, C.uint32_t(request), ctitle, cexts)
+	folder := C.int(0)
+	if req.Folder {
+		folder = 1
+	}
+	C.VST3GoEditorViewChooseFile(view, C.uint32_t(request), ctitle, cexts, folder)
 }
 
 // GoEditorFileChosen delivers the open file dialog's answer to the page.

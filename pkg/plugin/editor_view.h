@@ -23,12 +23,14 @@ void VST3GoEditorViewRequestResize(void* view, int32_t width, int32_t height);
 // VST3GoEditorViewChooseFile shows the platform's open file dialog
 // (vst3go.chooseFile) without blocking: title is the prompt, extensions
 // the accepted file name extensions, separated by ';' and without dots
-// ("" for any file). The answer goes to GoEditorFileChosen: the path,
-// NULL when the user cancels, or an error when the dialog cannot open. In
-// a sandboxed macOS process the file stays readable in later runs (see
-// VST3GoRestoreFileAccess in editor_view_darwin.c); on iOS the file is a
-// copy kept in the extension's container.
-void VST3GoEditorViewChooseFile(void* view, uint32_t request, const char* title, const char* extensions);
+// ("" for any file). With folder it chooses a folder instead
+// (vst3go.chooseFolder) and extensions is unused. The answer goes to
+// GoEditorFileChosen: the path, NULL when the user cancels, or an error
+// when the dialog cannot open. In a sandbox (macOS, iOS) the chosen folder,
+// with everything in it, and on macOS the chosen file stay readable in
+// later runs (see VST3GoRestoreFileAccess in editor_view_darwin.c); a file
+// chosen on iOS is a copy kept in the extension's container.
+void VST3GoEditorViewChooseFile(void* view, uint32_t request, const char* title, const char* extensions, int folder);
 extern void GoEditorFileChosen(uintptr_t component, uint32_t request, char* path, char* error);
 
 // Floating editor windows (CLAP floating GUIs): a top-level window whose

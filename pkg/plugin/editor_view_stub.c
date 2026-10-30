@@ -22,11 +22,12 @@ void VST3GoEditorViewRequestResize(void* view, int32_t width, int32_t height) {
 }
 
 // Without a platform view there is no page to ask.
-void VST3GoEditorViewChooseFile(void* view, uint32_t request, const char* title, const char* extensions) {
+void VST3GoEditorViewChooseFile(void* view, uint32_t request, const char* title, const char* extensions, int folder) {
     (void)view;
     (void)request;
     (void)title;
     (void)extensions;
+    (void)folder;
 }
 
 void* VST3GoFloatingWindowCreate(int32_t width, int32_t height, int resizable, VST3GoFloatingCallbacks callbacks) {

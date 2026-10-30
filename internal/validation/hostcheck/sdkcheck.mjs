@@ -167,6 +167,13 @@ const bootstrap = {
   const failed = sdk.chooseFile({ extensions: ["a/b"] });
   window.__vst3goReceive({ type: "file-chosen", id: 3, path: "", error: "choose-file: invalid extension" });
   await assert.rejects(failed, /invalid extension/);
+
+  // chooseFolder: a choose-file request for a folder.
+  posted.length = 0;
+  const folder = sdk.chooseFolder({ title: "Samples" });
+  assert.deepEqual(posted, [{ type: "choose-file", id: 4, name: "Samples", data: { folder: true } }]);
+  window.__vst3goReceive({ type: "file-chosen", id: 4, path: "/samples" });
+  assert.equal(await folder, "/samples");
 }
 
 {

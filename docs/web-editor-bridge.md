@@ -66,6 +66,7 @@ with `vst3go.send("status")`, and a `vst3go.resize` at startup).
 | `send(name, data)` / `on(name, fn)` | custom messages with the processor |
 | `size`, `resize(w, h)` | initial size and limits; ask the host for a new size (clamped to the limits) |
 | `chooseFile({ title, extensions })` | show the platform's open file dialog; resolves to the chosen path, or `null` when cancelled |
+| `chooseFolder({ title })` | show the platform's folder dialog; resolves to the chosen folder, or `null`. In a sandbox (AUv3) everything in it becomes readable, in later sessions too |
 
 A parameter (`Vst3goParam`) carries its `id`, `name`, `unit`, `kind`, plain
 `min`/`max`, `defaultValue` (plain) and `defaultNormalized`, `stepCount`,
@@ -153,7 +154,8 @@ and gestures on the sliders.
   the SDK's value, text and listeners, the synth's startup resize, clamping to
   its limits, a `send`/`on` round trip with the processor and
   `chooseFile` (the open panel's prompt and file types, cancelled to
-  `null`; a malformed extension rejected). On Linux
+  `null`; a malformed extension rejected) and `chooseFolder` (a panel for
+  one folder). On Linux
   `editorcheck.c` edits with XTest keyboard input and checks the startup
   resize.
 

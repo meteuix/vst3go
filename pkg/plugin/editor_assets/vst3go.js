@@ -185,6 +185,15 @@
   const messageListeners = new Map();
   const fileRequests = new Map();
   let nextFileRequest = 1;
+  // chooseFile asks the plugin for a dialog; the "file-chosen" answer
+  // settles the promise.
+  const chooseFile = (title, data) => {
+    const id = nextFileRequest++;
+    return new Promise((resolve, reject) => {
+      fileRequests.set(id, { resolve, reject });
+      post({ type: "choose-file", id, name: title, data });
+    });
+  };
   const size = Object.assign({ width: 0, height: 0, minWidth: 0, minHeight: 0, maxWidth: 0, maxHeight: 0, resizable: true }, boot.editor);
 
   const sdk = {
@@ -224,11 +233,16 @@
     // (["wav", "flac"]; any file without them).
     chooseFile(options) {
       const opts = options || {};
-      const id = nextFileRequest++;
-      return new Promise((resolve, reject) => {
-        fileRequests.set(id, { resolve, reject });
-        post({ type: "choose-file", id, name: String(opts.title || ""), data: { extensions: (opts.extensions || []).map(String) } });
-      });
+      return chooseFile(String(opts.title || ""), { extensions: (opts.extensions || []).map(String) });
+    },
+    // chooseFolder shows the platform's folder dialog and resolves to the
+    // chosen folder's path, or null when the user cancels. In a sandbox
+    // (AUv3) everything in the folder becomes readable, in later runs too:
+    // the samples an instrument file names, for example. options.title is
+    // the prompt.
+    chooseFolder(options) {
+      const opts = options || {};
+      return chooseFile(String(opts.title || ""), { folder: true });
     },
   };
 

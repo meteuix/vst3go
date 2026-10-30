@@ -4,7 +4,9 @@
 // and an ADSR envelope. Until something is loaded it plays a built-in
 // harmonic tone. The editor page takes a path, typed or picked with
 // vst3go.chooseFile, to an .sfz file or an audio file (WAV, AIFF, FLAC,
-// MP3 or Ogg Vorbis); it is loaded on a background
+// MP3 or Ogg Vorbis); in a sandbox (AUv3) its Folder access button picks
+// the folder of an instrument's samples (vst3go.chooseFolder), which then
+// stays readable. The file is loaded on a background
 // goroutine and swapped in atomically, so the audio thread never waits for
 // it, and the path is saved with the plugin state and reloaded with it.
 // Samples stream from disk (sampler.Streamer, shared by every instance in

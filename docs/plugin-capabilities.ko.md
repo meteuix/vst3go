@@ -391,7 +391,8 @@ GTK는 host의 `IRunLoop` 타이머에서 구동됩니다. 이 태그 없이 빌
 프로세서는 내장 페이지를 자체 페이지로 대체할 수 있습니다(`EditorProcessor`,
 `plugin.Editor{HTML, Width, Height, Min/Max sizes, FixedSize}`). 모든 페이지는
 `window.vst3go` SDK를 받습니다: 편집 제스처를 지원하는 실시간 파라미터, 프리셋,
-`resize`, 플랫폼의 파일 열기 대화상자(`vst3go.chooseFile`), 프로세서와의 커스텀
+`resize`, 플랫폼의 파일 열기와 폴더 선택 대화상자(`vst3go.chooseFile`,
+`vst3go.chooseFolder`), 프로세서와의 커스텀
 메시지(`vst3go.send` -> `EditorMessageProcessor`,
 `Host.PostEditorMessage` -> `vst3go.on`). `plugin.EditorBindings` / `WriteEditorBindings`는
 타입이 지정된 TypeScript 파라미터 바인딩을 생성하고, `plugintest.EditorBindings`는
@@ -531,7 +532,9 @@ CLAP 엔트리 인스턴스 하나를 호스팅하므로, CLAP host와 동일한
 확장 프로세스 안에서 비공개 코드로 등록해 `AUAudioUnitV2Bridge`로 실행하고, 그
 에디터를 확장의 뷰로 보여 줍니다. host는 이를 프로세스 밖에서 로드합니다. MIDI
 프로세서에는 무음 스테레오 출력이 붙는데, 프로세스 밖 렌더링(그리고 Logic Pro)에
-필요하기 때문입니다.
+필요하기 때문입니다. host는 그 출력을 자신의 샘플레이트로 설정하고, 플러그인은 그
+샘플레이트로 실행됩니다(AUv2 MIDI 프로세서는 global scope의
+`kAudioUnitProperty_SampleRate`를, 없으면 출력 장치의 샘플레이트를 씁니다).
 
 - `-platform macos`(기본값, macOS 11 이상), `ios`(iOS 14 이상), `ios-simulator`.
   다른 플랫폼에서는 `auv3`만 빌드합니다. 컨테이너는 `app`도 함께 빌드하면(macOS) 그
@@ -541,20 +544,27 @@ CLAP 엔트리 인스턴스 하나를 호스팅하므로, CLAP host와 동일한
   기기 설치는 Xcode로 하십시오. 시뮬레이터는 ad hoc 서명 빌드를 실행합니다:
   `xcrun simctl install booted <Name>.app` 후 컨테이너를 한 번 실행하면 확장이
   등록됩니다.
-- macOS에서 확장은 앱 확장의 요건대로 샌드박스 안에서 실행됩니다. 사용자가
-  `vst3go.chooseFile`로 고른 파일을 읽을 수 있고 그 security-scoped bookmark를 보관하므로,
-  저장된 상태가 그 파일을 가리키면 이후 세션에서도 다시 읽습니다. 그 밖의 위치를 직접
-  입력한 경로는 읽을 수 없습니다. iOS에서는 `vst3go.chooseFile`이 파일을 확장의
-  컨테이너로 복사합니다. 사용자 프리셋과 캐시는 확장의 컨테이너에 저장됩니다.
-- 뷰의 크기는 host가 뷰를 열 때의 에디터 크기입니다. 그 뒤의 에디터 크기 변경은
-  확장의 `preferredContentSize`를 바꾸며, host가 이를 따를지는 host에 달려 있습니다.
+- 확장은 앱 확장의 요건대로 샌드박스 안에서 실행됩니다. 사용자가 `vst3go.chooseFile`로
+  고른 파일과 `vst3go.chooseFolder`로 고른 폴더(그 안의 모든 것 포함, 예: SFZ 악기의
+  샘플 — sampler 예제의 Folder access 버튼)를 읽을 수 있고, 그 security-scoped
+  bookmark를 보관하므로 저장된 상태가 그것을 가리키면 이후 세션에서도 다시 읽습니다.
+  그 밖의 위치를 직접 입력한 경로는 읽을 수 없습니다. iOS에서는 `vst3go.chooseFile`이
+  파일을 확장의 컨테이너로 복사하고, 폴더는 제자리에서 엽니다. 사용자 프리셋과 캐시는
+  확장의 컨테이너에 저장됩니다.
+- 뷰의 크기는 host가 뷰를 열 때의 에디터 크기입니다. view configuration을 쓰는
+  host(`supportedViewConfigurations:`, iOS host의 compact/expanded 영역)는 에디터가 크기
+  제한 안에서 들어갈 수 있는 것들을 받고, 선택된 것에 에디터가 맞춰집니다. host가 뷰
+  크기를 바꾸면 에디터 제한 안에서 따라갑니다. 플러그인이 요청한 크기 변경은 확장의
+  `preferredContentSize`를 바꾸며, 이를 따르는 host에 전달됩니다. macOS 27의 원격 view
+  controller에서 `auv3check`는 전달 시점의 크기만 받았습니다.
 
 `scripts/validate_auv3.sh [out]`는 모든 검증용 플러그인을 AUv3 확장으로 빌드해
 등록하고(`lsregister`, `pluginkit -a`; 종료 시 해제), 프로세스 밖에서 로드하는
 `auval -strict -r 2`, 확장을 거치는 아래 `aucheck` 검사(`AudioComponentInstantiate`;
 에디터 검사는 다음 도구가 맡음), 그리고 AUv3 API를 거치는
 `internal/validation/hostcheck/auv3check_darwin.m`(파라미터 트리, `fullState` 왕복,
-render block을 통한 렌더링, 에디터 크기로 열리는 확장의 view controller)을
+render block을 통한 렌더링, 에디터 크기로 열리는 확장의 view controller와 그 view
+configuration — 신스의 최소 크기보다 작은 것은 거부)을
 실행합니다. `IOS_SIMULATOR=<udid>`를 주면 iOS 시뮬레이터용으로도 빌드해 설치하고
 그 안에서 `auv3check`를 실행합니다.
 
@@ -817,13 +827,13 @@ Linux를 다룹니다: headless 앱, Xvfb에서의 신스 에디터(페이지가
   host(API 세대 2.0 이상)가 필요하고, AUv3로는 노출되지 않습니다. `aracheck`로만
   실행해 봤고 상용 ARA host(Studio One, Cubase, Logic, REAPER)에서는 아직 실행해 보지
   않았습니다.
-- AUv3: 에디터 크기는 host가 뷰를 열 때 host에 전달되고, 그 뒤의 크기 변경은
-  `preferredContentSize`로만 전달됩니다. macOS 샌드박스에서 플러그인은
-  `vst3go.chooseFile`로 고른 파일만 읽으므로, 고른 `.sfz` 옆에 있는 SFZ 악기의 샘플은
-  읽을 수 없고, iOS에서는 고른 파일만 복사됩니다. iOS 빌드는 시뮬레이터에서만
-  실행해 봤습니다. MIDI 프로세서는 AUv2와 마찬가지로 host의 샘플레이트와 관계없이
-  44.1kHz로 실행됩니다.
-- 파일 열기 대화상자는 macOS에서 테스트로 실행했습니다(검사가 취소함). Windows, Linux,
+- AUv3: 플러그인이 요청한 크기 변경은 `preferredContentSize`로만 host에 전달되는데,
+  여기서 macOS의 원격 view controller는 전달 이후의 변경을 넘겨주지 않았습니다. host가
+  정하는 크기(view configuration, 레이아웃)는 동작합니다. 샌드박스에서 SFZ 악기의
+  샘플은 그 폴더를 고르면(`vst3go.chooseFolder`) 읽을 수 있고, `.sfz`만 고르면 그
+  파일만 허용됩니다. iOS 빌드는 시뮬레이터에서만 실행해 봤습니다. 기기에는 provisioning
+  profile과 이 프로젝트에 없는 하드웨어가 필요합니다.
+- 파일 열기와 폴더 선택 대화상자는 macOS에서 테스트로 실행했습니다(검사가 취소함). Windows, Linux,
   iOS 대화상자는 빌드되지만 여기서 실행해 보지는 않았습니다.
 - LV2는 Linux 전용입니다. UI가 열려 있지 않으면 플러그인이 스스로 바꾼 값은 KXStudio
   `control-input-port-change-request` 기능이 있는 host(Carla, Qtractor)에서만 host의

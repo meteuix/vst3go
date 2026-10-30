@@ -119,6 +119,12 @@ interface Vst3go {
    * path, or null when the user cancels.
    */
   chooseFile(options?: Vst3goChooseFileOptions): Promise<string | null>;
+  /**
+   * Shows the platform's folder dialog; resolves to the chosen folder's
+   * path, or null when the user cancels. In a sandbox (AUv3) everything in
+   * the folder becomes readable, in later runs too.
+   */
+  chooseFolder(options?: Vst3goChooseFolderOptions): Promise<string | null>;
 }
 
 interface Vst3goChooseFileOptions {
@@ -126,6 +132,11 @@ interface Vst3goChooseFileOptions {
   title?: string;
   /** Accepted file name extensions without the dot ("wav"); any file without them. */
   extensions?: string[];
+}
+
+interface Vst3goChooseFolderOptions {
+  /** The dialog's prompt. */
+  title?: string;
 }
 
 interface Window {

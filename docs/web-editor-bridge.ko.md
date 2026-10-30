@@ -64,6 +64,7 @@ func (p *Processor) Editor() plugin.Editor {
 | `send(name, data)` / `on(name, fn)` | 프로세서와의 커스텀 메시지 |
 | `size`, `resize(w, h)` | 초기 크기와 제한. host에 새 크기를 요청(제한 범위로 고정됨) |
 | `chooseFile({ title, extensions })` | 플랫폼의 파일 열기 대화상자를 보여 주고, 고른 경로로(취소하면 `null`로) resolve |
+| `chooseFolder({ title })` | 플랫폼의 폴더 선택 대화상자를 보여 주고, 고른 폴더로(취소하면 `null`로) resolve. 샌드박스(AUv3)에서는 그 안의 모든 것을 이후 세션에서도 읽을 수 있게 됨 |
 
 파라미터(`Vst3goParam`)는 `id`, `name`, `unit`, `kind`, plain `min`/`max`,
 `defaultValue`(plain)와 `defaultNormalized`, `stepCount`, `readOnly`, `hidden`, 그리고
@@ -144,7 +145,8 @@ AUv3 참고), iOS에서는 document picker(파일을 확장의 컨테이너로 �
   `editorcheck_darwin.m`이 페이지 안의 SDK를 구동합니다. 플러그인에 도달해야 하는 편집
   제스처, SDK의 값, 텍스트, 리스너에 도달해야 하는 host 변경, 신스의 시작 시 크기 조절,
   제한 범위로의 고정, 프로세서와의 `send`/`on` 왕복, `chooseFile`(open panel의 안내
-  문구와 파일 형식, 취소하면 `null`, 잘못된 확장자는 거부)을 검사합니다. Linux에서는
+  문구와 파일 형식, 취소하면 `null`, 잘못된 확장자는 거부)과 `chooseFolder`(폴더 하나를
+  고르는 패널)를 검사합니다. Linux에서는
   `editorcheck.c`가 XTest 키보드 입력으로 편집하고 시작 시 크기 조절을 확인합니다.
 
 ## 왜 이런 구조인가

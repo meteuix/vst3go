@@ -307,7 +307,7 @@ static void fileChosen(GtkNativeDialog* dialog, gint response, gpointer data) {
     g_object_unref(dialog);
 }
 
-void VST3GoEditorViewChooseFile(void* thisInterface, uint32_t request, const char* title, const char* extensions) {
+void VST3GoEditorViewChooseFile(void* thisInterface, uint32_t request, const char* title, const char* extensions, int folder) {
     VST3GoEditorView* view = (VST3GoEditorView*)thisInterface;
     if (!view) {
         return;
@@ -319,8 +319,10 @@ void VST3GoEditorViewChooseFile(void* thisInterface, uint32_t request, const cha
     }
     req->component = view->component;
     req->request = request;
-    GtkFileChooserNative* dialog = gtk_file_chooser_native_new(title && *title ? title : "Open", NULL, GTK_FILE_CHOOSER_ACTION_OPEN, "_Open", "_Cancel");
-    if (extensions && *extensions) {
+    GtkFileChooserNative* dialog = gtk_file_chooser_native_new(title && *title ? title : folder ? "Choose a folder" : "Open", NULL,
+                                                               folder ? GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER : GTK_FILE_CHOOSER_ACTION_OPEN,
+                                                               folder ? "_Choose" : "_Open", "_Cancel");
+    if (!folder && extensions && *extensions) {
         // GTK 3 patterns are case sensitive: match both cases.
         GtkFileFilter* filter = gtk_file_filter_new();
         gtk_file_filter_set_name(filter, extensions);

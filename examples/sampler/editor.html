@@ -24,6 +24,7 @@
     <form id="load">
       <input id="path" type="text" placeholder="/path/to/instrument.sfz or sample.wav" spellcheck="false" />
       <button type="button" id="browse">Browse…</button>
+      <button type="button" id="folder" title="Sandboxed hosts (AUv3) let the plugin read only what you pick: pick the folder of an instrument's samples once">Folder access…</button>
       <button type="submit">Load</button>
     </form>
     <div class="status" id="status"></div>
@@ -48,6 +49,15 @@
           pathInput.value = path;
           vst3go.send("load", { path });
         }
+      } catch (err) {
+        status.classList.add("error");
+        status.textContent = err.message;
+      }
+    });
+    document.getElementById("folder").addEventListener("click", async () => {
+      try {
+        const folder = await vst3go.chooseFolder({ title: "Choose the folder of the instrument and its samples" });
+        if (folder && pathInput.value.trim()) vst3go.send("load", { path: pathInput.value.trim() });
       } catch (err) {
         status.classList.add("error");
         status.textContent = err.message;

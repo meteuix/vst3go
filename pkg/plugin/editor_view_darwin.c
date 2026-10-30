@@ -503,24 +503,38 @@ static NSArray<UTType*>* fileTypes(const char* extensions) {
     return types;
 }
 
-#if TARGET_OS_OSX
-// The sandbox of an AUv3 extension lets it read a file the user picked
-// until the process ends. To read it again later, when a saved state
-// names it, the extension keeps a security-scoped bookmark of each picked
-// file (the newest VST3GO_MAX_BOOKMARKS) and VST3GoRestoreFileAccess
-// resolves them when it starts. Outside a sandbox there is nothing to do.
+// The sandbox of an AUv3 extension lets it read a file or folder the user
+// picked until the process ends (a folder with everything in it). To read
+// it again later, when a saved state names it, the extension keeps a
+// security-scoped bookmark of each pick (the newest VST3GO_MAX_BOOKMARKS)
+// and VST3GoRestoreFileAccess resolves them when it starts. Outside a
+// sandbox (a macOS host process) there is nothing to do; iOS processes
+// are always sandboxed.
 #define VST3GO_MAX_BOOKMARKS 256
 static NSString* const bookmarksKey = @"VST3GoFileBookmarks";
+
+#if TARGET_OS_OSX
+#define BOOKMARK_CREATION (NSURLBookmarkCreationWithSecurityScope | NSURLBookmarkCreationSecurityScopeAllowOnlyReadAccess)
+#define BOOKMARK_RESOLUTION (NSURLBookmarkResolutionWithSecurityScope | NSURLBookmarkResolutionWithoutUI)
 
 static bool sandboxed(void) {
     return getenv("APP_SANDBOX_CONTAINER_ID") != NULL;
 }
+#else
+// iOS bookmarks of picked URLs carry their security scope.
+#define BOOKMARK_CREATION 0
+#define BOOKMARK_RESOLUTION NSURLBookmarkResolutionWithoutUI
+
+static bool sandboxed(void) {
+    return true;
+}
+#endif
 
 void VST3GoKeepFileAccess(NSURL* url) {
     if (!sandboxed()) {
         return;
     }
-    NSData* bookmark = [url bookmarkDataWithOptions:NSURLBookmarkCreationWithSecurityScope | NSURLBookmarkCreationSecurityScopeAllowOnlyReadAccess
+    NSData* bookmark = [url bookmarkDataWithOptions:BOOKMARK_CREATION
                      includingResourceValuesForKeys:nil
                                       relativeToURL:nil
                                               error:nil];
@@ -549,7 +563,7 @@ void VST3GoRestoreFileAccess(void) {
             }
             BOOL stale = NO;
             NSURL* url = [NSURL URLByResolvingBookmarkData:bookmark
-                                                   options:NSURLBookmarkResolutionWithSecurityScope | NSURLBookmarkResolutionWithoutUI
+                                                   options:BOOKMARK_RESOLUTION
                                              relativeToURL:nil
                                        bookmarkDataIsStale:&stale
                                                      error:nil];
@@ -562,7 +576,8 @@ void VST3GoRestoreFileAccess(void) {
     }
 }
 
-void VST3GoEditorViewChooseFile(void* thisInterface, uint32_t request, const char* title, const char* extensions) {
+#if TARGET_OS_OSX
+void VST3GoEditorViewChooseFile(void* thisInterface, uint32_t request, const char* title, const char* extensions, int folder) {
     @autoreleasepool {
         VST3GoEditorView* view = editorViewFromInterface(thisInterface);
         if (!view) {
@@ -570,10 +585,12 @@ void VST3GoEditorViewChooseFile(void* thisInterface, uint32_t request, const cha
         }
         uintptr_t component = view->component;
         NSOpenPanel* panel = [NSOpenPanel openPanel];
-        panel.canChooseFiles = YES;
-        panel.canChooseDirectories = NO;
+        panel.canChooseFiles = !folder;
+        panel.canChooseDirectories = folder != 0;
         panel.allowsMultipleSelection = NO;
-        panel.allowedContentTypes = fileTypes(extensions);
+        if (!folder) {
+            panel.allowedContentTypes = fileTypes(extensions);
+        }
         if (title && *title) {
             panel.message = [NSString stringWithUTF8String:title];
         }
@@ -587,7 +604,7 @@ void VST3GoEditorViewChooseFile(void* thisInterface, uint32_t request, const cha
 #else
 // The document picker's delegate, a class unique to this binary like the
 // message handler's.
-static Ivar pickerComponent, pickerRequest;
+static Ivar pickerComponent, pickerRequest, pickerFolder;
 
 static void pickerAnswer(id self, NSURL* url) {
     uintptr_t component = *(uintptr_t*)((char*)self + ivar_getOffset(pickerComponent));
@@ -595,14 +612,22 @@ static void pickerAnswer(id self, NSURL* url) {
     GoEditorFileChosen(component, request, url ? (char*)url.fileSystemRepresentation : NULL, NULL);
 }
 
-// The picker's copy is temporary: it moves to its own folder under the
+// A picked file's copy is temporary: it moves to its own folder under the
 // extension's Application Support, where a saved state can find it again.
+// A picked folder is not copied: its security scope opens it until the
+// process ends, and its bookmark in later runs.
 static void pickerPicked(id self, SEL cmd, UIDocumentPickerViewController* picker, NSArray<NSURL*>* urls) {
     (void)cmd;
     (void)picker;
     NSURL* copy = urls.firstObject;
     if (!copy) {
         pickerAnswer(self, nil);
+        return;
+    }
+    if (*(BOOL*)((char*)self + ivar_getOffset(pickerFolder))) {
+        [copy startAccessingSecurityScopedResource];
+        VST3GoKeepFileAccess(copy);
+        pickerAnswer(self, copy);
         return;
     }
     NSFileManager* files = [NSFileManager defaultManager];
@@ -627,7 +652,7 @@ static void pickerCancelled(id self, SEL cmd, UIDocumentPickerViewController* pi
     pickerAnswer(self, nil);
 }
 
-static id newPickerDelegate(uintptr_t component, uint32_t request) {
+static id newPickerDelegate(uintptr_t component, uint32_t request, BOOL folder) {
     static Class cls;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -638,23 +663,26 @@ static id newPickerDelegate(uintptr_t component, uint32_t request) {
         cls = objc_allocateClassPair([NSObject class], name, 0);
         class_addIvar(cls, "component", sizeof(uintptr_t), sizeof(uintptr_t) == 8 ? 3 : 2, "Q");
         class_addIvar(cls, "request", sizeof(uint32_t), 2, "I");
+        class_addIvar(cls, "folder", sizeof(BOOL), 0, @encode(BOOL));
         class_addMethod(cls, @selector(documentPicker:didPickDocumentsAtURLs:), (IMP)pickerPicked, "v@:@@");
         class_addMethod(cls, @selector(documentPickerWasCancelled:), (IMP)pickerCancelled, "v@:@");
         class_addProtocol(cls, @protocol(UIDocumentPickerDelegate));
         objc_registerClassPair(cls);
         pickerComponent = class_getInstanceVariable(cls, "component");
         pickerRequest = class_getInstanceVariable(cls, "request");
+        pickerFolder = class_getInstanceVariable(cls, "folder");
     });
     id delegate = [[cls alloc] init];
     *(uintptr_t*)((char*)delegate + ivar_getOffset(pickerComponent)) = component;
     *(uint32_t*)((char*)delegate + ivar_getOffset(pickerRequest)) = request;
+    *(BOOL*)((char*)delegate + ivar_getOffset(pickerFolder)) = folder;
     return delegate;
 }
 
 // The picker's delegate is weak: each picker keeps its own alive.
 static char pickerDelegateKey;
 
-void VST3GoEditorViewChooseFile(void* thisInterface, uint32_t request, const char* title, const char* extensions) {
+void VST3GoEditorViewChooseFile(void* thisInterface, uint32_t request, const char* title, const char* extensions, int folder) {
     @autoreleasepool {
         VST3GoEditorView* view = editorViewFromInterface(thisInterface);
         if (!view || !view->webView) {
@@ -668,10 +696,12 @@ void VST3GoEditorViewChooseFile(void* thisInterface, uint32_t request, const cha
             GoEditorFileChosen(view->component, request, NULL, (char*)"the editor is not shown by a view controller");
             return;
         }
-        // A copy in the extension's container, which the sandbox lets the
-        // plugin read.
-        UIDocumentPickerViewController* picker = [[[UIDocumentPickerViewController alloc] initForOpeningContentTypes:fileTypes(extensions) asCopy:YES] autorelease];
-        id delegate = newPickerDelegate(view->component, request);
+        // A file comes as a copy in the extension's container, which the
+        // sandbox lets the plugin read; a folder as itself, security-scoped.
+        UIDocumentPickerViewController* picker =
+            folder ? [[[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[ UTTypeFolder ] asCopy:NO] autorelease]
+                   : [[[UIDocumentPickerViewController alloc] initForOpeningContentTypes:fileTypes(extensions) asCopy:YES] autorelease];
+        id delegate = newPickerDelegate(view->component, request, folder != 0);
         picker.delegate = delegate;
         objc_setAssociatedObject(picker, &pickerDelegateKey, delegate, OBJC_ASSOCIATION_RETAIN);
         [delegate release];
