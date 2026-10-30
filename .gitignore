@@ -85,6 +85,8 @@ docs/html/
 *.dump
 core
 core.*
+# ...but not the LV2 core headers.
+!/include/lv2/core/
 
 .gocache/
 
