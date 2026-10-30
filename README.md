@@ -2,11 +2,13 @@ English | [한국어](README.ko.md)
 
 # VST3Go
 
-[![ci](https://github.com/th-release/vst3go/actions/workflows/ci.yml/badge.svg)](https://github.com/th-release/vst3go/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/th-release/vst3go/v2.svg)](https://pkg.go.dev/github.com/th-release/vst3go/v2) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![ci](https://github.com/meteuix/vst3go/actions/workflows/ci.yml/badge.svg)](https://github.com/meteuix/vst3go/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/th-release/vst3go/v2.svg)](https://pkg.go.dev/github.com/th-release/vst3go/v2) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 `vst3go` is the low-level Go interface and runtime layer for VST3.
 
 This fork is maintained separately from the original `justyntemme/vst3go` project. It ships the plugin runtime together with a DSP library and showcase plugins built on it.
+
+The source lives at [`meteuix/vst3go`](https://github.com/meteuix/vst3go), a fork of [`th-release/vst3go`](https://github.com/th-release/vst3go). The Go module path stays `github.com/th-release/vst3go/v2` (as declared in `go.mod`), so the `go get`, `go run` and import paths below use that path.
 
 It contains:
 

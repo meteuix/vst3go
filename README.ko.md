@@ -2,11 +2,13 @@
 
 # VST3Go
 
-[![ci](https://github.com/th-release/vst3go/actions/workflows/ci.yml/badge.svg)](https://github.com/th-release/vst3go/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/th-release/vst3go/v2.svg)](https://pkg.go.dev/github.com/th-release/vst3go/v2) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![ci](https://github.com/meteuix/vst3go/actions/workflows/ci.yml/badge.svg)](https://github.com/meteuix/vst3go/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/th-release/vst3go/v2.svg)](https://pkg.go.dev/github.com/th-release/vst3go/v2) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 `vst3go`는 VST3를 위한 저수준 Go 인터페이스이자 런타임 계층입니다.
 
 이 포크는 원본 `justyntemme/vst3go` 프로젝트와 별도로 관리됩니다. 플러그인 런타임과 함께 DSP 라이브러리, 그리고 그 위에 만든 쇼케이스 플러그인을 제공합니다.
+
+소스는 [`th-release/vst3go`](https://github.com/th-release/vst3go)의 포크인 [`meteuix/vst3go`](https://github.com/meteuix/vst3go)에 있습니다. Go 모듈 경로는 `go.mod`에 선언된 대로 `github.com/th-release/vst3go/v2`를 유지하므로, 아래의 `go get`, `go run`, import 경로는 이 경로를 사용합니다.
 
 포함된 내용:
 
