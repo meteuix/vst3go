@@ -1,0 +1,244 @@
+--- a/main.go
++++ b/main.go
+@@ -7,6 +7,7 @@
+ 	"encoding/json"
+ 	"fmt"
+ 	"io"
++	"math"
+ 	"sync/atomic"
+ 
+ 	"github.com/meteuix/vst3go/v2/pkg/framework/bus"
+@@ -38,7 +39,7 @@
+ 
+ func (trackPlugin) GetInfo() fp.Info {
+ 	return fp.Info{ID: "audio.jovaris.trackmeter.vst3go.trial", Name: "Jovaris Track Meter Trial",
+-		Version: "0.1.3", Vendor: "Jovaris Audio", Category: fp.CategoryFxAnalyzer}
++		Version: "0.1.4", Vendor: "Jovaris Audio", Category: fp.CategoryFxAnalyzer}
+ }
+ func (trackPlugin) CreateProcessor() plugin.Processor { return newProcessor() }
+ 
+@@ -50,6 +51,12 @@
+ 	resetRequest atomic.Bool
+ 	persistent   *param.Registry
+ 	untilPublish int
++	host         plugin.Host // editor/main thread only
++	snapshotSeq  atomic.Uint64
++	snapshot     [8]atomic.Uint64
++	resetSerial  atomic.Uint64
++	resetApplied atomic.Uint64
++	blocks       atomic.Uint64
+ }
+ 
+ func (*processor) Editor() plugin.Editor {
+@@ -59,11 +66,36 @@
+ 
+ func (p *processor) StateParameters() *param.Registry { return p.persistent }
+ 
++func (p *processor) SetHost(h plugin.Host) { p.host = h }
++
++// Pull snapshots from the editor's main-thread message handler as well as
++// publishing host parameters. This path does not depend on host callbacks.
+ func (p *processor) EditorMessage(name string, _ json.RawMessage) {
+ 	if name == "reset-peak" {
+-		// Consume on the audio thread, even if the editor closes or playback
+-		// is stopped before the next block. Never reset the VU from the UI.
++		p.resetSerial.Add(1)
+ 		p.resetRequest.Store(true)
++	}
++	if (name == "meter-poll" || name == "reset-peak") && p.host != nil {
++		for attempt := 0; attempt < 3; attempt++ {
++			seq := p.snapshotSeq.Load()
++			if seq&1 != 0 {
++				continue
++			}
++			var values [8]float64
++			for i := range values {
++				values[i] = math.Float64frombits(p.snapshot[i].Load())
++			}
++			applied, blocks := p.resetApplied.Load(), p.blocks.Load()
++			if seq != p.snapshotSeq.Load() {
++				continue
++			}
++			_ = p.host.PostEditorMessage("meter-snapshot", struct {
++				Values  [8]float64 `json:"values"`
++				Blocks  uint64     `json:"blocks"`
++				Pending bool       `json:"pending"`
++			}{values, blocks, p.resetSerial.Load() != applied})
++			break
++		}
+ 	}
+ }
+ 
+@@ -76,6 +108,9 @@
+ 
+ func newProcessor() *processor {
+ 	p := &processor{BaseProcessor: fp.NewBaseProcessor(bus.NewEffectStereo())}
++	for i, v := range [8]float64{-120, -120, -20, -20, -120, -120, 0, 0} {
++		p.snapshot[i].Store(math.Float64bits(v))
++	}
+ 	// The framework's default deadline guard emits silence for late blocks.
+ 	// Turn it off for this measurement-only trial to avoid deliberately muting
+ 	// its input. Go GC pauses remain a real-time validation concern.
+@@ -146,7 +181,8 @@
+ 		p.resetDown = false
+ 	}
+ 	down := ctx.Param(paramReset) >= .5
+-	requested := p.resetRequest.Swap(false)
++	serial := p.resetSerial.Load()
++	requested := p.resetRequest.Swap(false) || serial != p.resetApplied.Load()
+ 	if requested || (down && !p.resetDown) {
+ 		for ch := range p.channels {
+ 			p.channels[ch].ResetPeak()
+@@ -160,11 +196,13 @@
+ 	} else {
+ 		consume(p, ctx.Input, n)
+ 	}
++	p.blocks.Add(1)
+ 	p.untilPublish -= n
+ 	if p.untilPublish > 0 {
+ 		return
+ 	}
+ 	p.untilPublish = max(1, int(p.SampleRate()/30))
++	p.snapshotSeq.Add(1)
+ 	hold := ctx.Param(paramHold) >= .5
+ 	for ch := 0; ch < 2; ch++ {
+ 		r := p.channels[ch].Reading()
+@@ -183,9 +221,14 @@
+ 			{paramPeakL + uint32(ch), r.PeakDB}, {paramVUL + uint32(ch), r.VU},
+ 			{paramNumberL + uint32(ch), number}, {paramClipL + uint32(ch), clipValue},
+ 		} {
+-			ctx.SetOutputParameter(v.id, p.Parameters().Get(v.id).Normalize(v.value))
+-		}
+-	}
++			parameter := p.Parameters().Get(v.id)
++			normalized := parameter.Normalize(v.value)
++			ctx.SetOutputParameter(v.id, normalized)
++			p.snapshot[v.id-paramPeakL].Store(math.Float64bits(parameter.Denormalize(normalized)))
++		}
++	}
++	p.resetApplied.Store(serial)
++	p.snapshotSeq.Add(1)
+ }
+ 
+ // Only Hold and H/V are persisted through StateParameters. Transient values
+--- a/main_test.go
++++ b/main_test.go
+@@ -252,3 +252,60 @@
+ 		t.Fatalf("%v allocations per audio block", a)
+ 	}
+ }
++
++// Exercises editor pull/ack against the real processor and Offline host.
++func TestSnapshotStoppedResetAndResume(t *testing.T) {
++	o := offline(t, 48000, 128, false)
++	p := o.Processor().(*processor)
++	check(t, o.Process([][]float32{{1.25}, {.9}}, [][]float32{{0}, {0}}))
++	p.EditorMessage("reset-peak", nil)
++	messages := o.TakeEditorMessages()
++	if len(messages) != 1 {
++		t.Fatalf("missing native reset acknowledgement: %v", messages)
++	}
++	type snapshot struct {
++		Values  [8]float64 `json:"values"`
++		Pending bool       `json:"pending"`
++		Blocks  uint64     `json:"blocks"`
++	}
++	var pending snapshot
++	check(t, json.Unmarshal(messages[0].Data, &pending))
++	if !pending.Pending || pending.Values[6] != 1 {
++		t.Fatal("stopped reset must acknowledge pending without mutating audio-owned history")
++	}
++	check(t, o.Process([][]float32{{0}, {0}}, [][]float32{{0}, {0}}))
++	p.EditorMessage("meter-poll", nil)
++	messages = o.TakeEditorMessages()
++	var resumed snapshot
++	check(t, json.Unmarshal(messages[0].Data, &resumed))
++	if resumed.Pending || resumed.Values[4] > -119 || resumed.Values[6] != 0 || resumed.Blocks <= pending.Blocks {
++		t.Fatalf("reset did not apply on resume: %+v", resumed)
++	}
++}
++
++func TestConcurrentSnapshotAndAudio(t *testing.T) {
++	o := offline(t, 48000, 128, false)
++	p := o.Processor().(*processor)
++	done := make(chan error, 1)
++	go func() {
++		in := [][]float32{make([]float32, 128), make([]float32, 128)}
++		out := [][]float32{make([]float32, 128), make([]float32, 128)}
++		for i := 0; i < 500; i++ {
++			if err := o.Process(in, out); err != nil {
++				done <- err
++				return
++			}
++		}
++		done <- nil
++	}()
++	for i := 0; i < 500; i++ {
++		if i%20 == 0 {
++			p.EditorMessage("reset-peak", nil)
++		}
++		p.EditorMessage("meter-poll", nil)
++	}
++	check(t, <-done)
++	if len(o.TakeEditorMessages()) == 0 {
++		t.Fatal("missing snapshots")
++	}
++}
+--- a/ui/meter.html
++++ b/ui/meter.html
+@@ -43,7 +43,27 @@
+ const peakTicks=[0,-3,-6,-12,-18,-24,-30,-36,-48,-60];
+ function peakPosition(db){const x=clamp(db,-60,0);for(let i=0;i<peakTicks.length-1;i++){if(x>=peakTicks[i+1])return(i+(peakTicks[i]-x)/(peakTicks[i]-peakTicks[i+1]))/(peakTicks.length-1);}return 1;}
+ function dbAtPosition(pos){const x=clamp(pos,0,1)*(peakTicks.length-1),i=Math.min(peakTicks.length-2,Math.floor(x));return peakTicks[i]+(peakTicks[i+1]-peakTicks[i])*(x-i);}
+-const holdP=param(1),layoutP=param(3),views=[];
++const holdP=param(1),layoutP=param(3),views=[],meterViews=[];
++let snapshot=null, lastBlock=-1, lastAudio=performance.now(), idle=false;
++const reading=(p)=>snapshot ? snapshot.values[p.id-10] : p.plain;
++const shown=(p)=>{
++ if(snapshot && snapshot.pending && [10,11,14,15,16,17].includes(p.id))return p.id>=16?0:-120;
++ if(idle && ([10,11].includes(p.id) || (holdP.plain<.5 && [14,15].includes(p.id))))return -120;
++ if(idle && holdP.plain<.5 && [16,17].includes(p.id))return 0;
++ return reading(p);
++};
++sdk.on('meter-snapshot',data=>{
++ if(!data || !Array.isArray(data.values) || data.values.length!==8)return;
++ snapshot=data;
++ if(data.blocks!==lastBlock){lastBlock=data.blocks;lastAudio=performance.now();}
++ idle=performance.now()-lastAudio>750;
++ meterViews.forEach(fn=>fn());
++ const status=document.getElementById('version');
++ status.textContent=sdk.plugin.version+(idle?' · IDLE':'');
++ status.title=idle?'Audio processing is paused; held peaks remain until Reset.':'Receiving audio blocks';
++});
++setInterval(()=>sdk.send('meter-poll'),1000/30);
++sdk.send('meter-poll');
+ ['L','R'].forEach((name,ch)=>{
+ const peak=document.createElement('div');peak.className='peak-channel';
+ peak.innerHTML='<div class="peak-column"><span class="peak-unit">dBFS</span><div class="peak-scale"></div><div class="bar-shell"><div class="leds"></div><div class="hold-marker"></div></div><span class="clip" id="clip-'+name+'">CLIP</span></div><output class="peak-readout" id="peak-'+name+'">−∞</output><span class="channel-letter">'+name+'</span>';
+@@ -57,11 +77,11 @@
+ [-20,-10,-7,-5,-3,-1,0,1,2,3].forEach(v=>{const a=angle(v),a1=point(a,154),a2=point(a,173),pos=point(a,190);group.appendChild(svg('line',{x1:a1[0],y1:a1[1],x2:a2[0],y2:a2[1],stroke:v>=0?'#a83b29':'#2c301c','stroke-width':v===0?2:1.5}));const n=svg('text',{x:pos[0],y:pos[1]+4,'text-anchor':'middle','font-size':14});n.textContent=v>0?'+'+v:String(v);if(v>0)n.style.fill='#a83b29';group.appendChild(n);});
+ const needle=vu.querySelector('.needle'),vuNumber=vu.querySelector('.vu-reading'),read=peak.querySelector('.peak-readout'),clip=peak.querySelector('.clip'),marker=peak.querySelector('.hold-marker');
+ const liveP=param(10+ch),vuP=param(12+ch),readP=param(14+ch),clipP=param(16+ch);
+-const updateVU=()=>{needle.setAttribute('transform','rotate('+angle(vuP.plain)+' 170 220)');vuNumber.textContent=number(vuP.plain)+' VU';vu.querySelector('.dial').setAttribute('aria-label',name+' '+vuNumber.textContent);};
+-const updateLive=()=>{const value=(1-peakPosition(liveP.plain))*30;leds.forEach((n,i)=>n.classList.toggle('on',value>i));};
+-const updatePeak=()=>{read.textContent=number(readP.plain);read.title=name+' Sample Peak '+number(readP.plain)+' dBFS';const height=1-peakPosition(readP.plain);marker.style.bottom='calc(5px + '+(height*100)+'% - '+(height*10)+'px)';marker.style.display=holdP.plain>=.5&&readP.plain>-120?'block':'none';};
+-const updateClip=()=>{const on=clipP.plain>=.5;clip.classList.toggle('active',on);clip.setAttribute('aria-label',name+' clip '+(on?'on':'off'));};
+-[[liveP,updateLive],[vuP,updateVU],[readP,updatePeak],[clipP,updateClip]].forEach(([p,fn])=>{p.onChange(fn);fn();});views.push(updatePeak);
++const updateVU=()=>{needle.setAttribute('transform','rotate('+angle(idle?-20:shown(vuP))+' 170 220)');vuNumber.textContent=(idle?'—':number(shown(vuP)))+' VU';vu.querySelector('.dial').setAttribute('aria-label',name+' '+vuNumber.textContent);};
++const updateLive=()=>{const value=(1-peakPosition(shown(liveP)))*30;leds.forEach((n,i)=>n.classList.toggle('on',value>i));};
++const updatePeak=()=>{read.textContent=number(shown(readP));read.title=name+' Sample Peak '+number(shown(readP))+' dBFS';const height=1-peakPosition(shown(readP));marker.style.bottom='calc(5px + '+(height*100)+'% - '+(height*10)+'px)';marker.style.display=holdP.plain>=.5&&shown(readP)>-120?'block':'none';};
++const updateClip=()=>{const on=shown(clipP)>=.5;clip.classList.toggle('active',on);clip.setAttribute('aria-label',name+' clip '+(on?'on':'off'));};
++[[liveP,updateLive],[vuP,updateVU],[readP,updatePeak],[clipP,updateClip]].forEach(([p,fn])=>{p.onChange(fn);meterViews.push(fn);fn();});views.push(updatePeak);
+ });
+ const hold=document.getElementById('hold'),reset=document.getElementById('reset'),h=document.getElementById('layout-h'),v=document.getElementById('layout-v');
+ function edit(p,value){p.beginEdit();p.setPlain(value);p.endEdit();}
+--- a/scripts/build_macos.sh
++++ b/scripts/build_macos.sh
+@@ -33,5 +33,5 @@
+   exit 1
+ fi
+ go run github.com/meteuix/vst3go/v2/cmd/vst3go build \
+-  -format au,vst3 -version 0.1.3 -id audio.jovaris.trackmeter.vst3go.trial \
+-  "${install_flag[@]}" . JovarisTrackMeterTrial
++  -format au,vst3 -version 0.1.4 -id audio.jovaris.trackmeter.vst3go.trial \
++  ${install_flag[@]+"${install_flag[@]}"} . JovarisTrackMeterTrial

@@ -1,0 +1,7 @@
+input .2: {"peak":-13.979399957290546,"vu":3,"clip":0,"dom":"−14.0"}
+input .02: {"peak":-33.97940028086515,"vu":-15.067302707609137,"clip":0,"dom":"−34.0"}
+held clip: {"peak":1.9382002601611337,"vu":-20,"clip":1,"dom":"+1.9"}
+reset playing silence: {"peak":-120,"vu":-20,"clip":0,"dom":"−∞"}
+before stopped reset: {"peak":1.9382002601611337,"vu":3,"clip":1,"dom":"+1.9"}
+stopped reset (no render): {"peak":1.9382002601611337,"vu":3,"clip":1,"dom":"+1.9"}
+FAIL outputs/JovarisTrackMeter/scripts/au_meter_check.m:33: stopped Reset visibly clears peak/clip before any render

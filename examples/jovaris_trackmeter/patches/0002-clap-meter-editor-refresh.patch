@@ -1,0 +1,126 @@
+--- a/pkg/plugin/wrapper_clap.go
++++ b/pkg/plugin/wrapper_clap.go
+@@ -40,7 +40,7 @@
+ 	notes          clapNotes   // audio thread
+ 	seenProgram    int32       // audio thread: last program applied by process
+ 	edits          *mpscQueue[clapEdit]
+-	editorPending  atomic.Bool // host automation changed values the editor shows
++	editorPending  atomic.Bool // parameter values need publishing to the editor
+ 	hostChanged    bool        // audio thread: the block had host parameter changes
+ 	// changed holds the values MIDI controllers changed through the MIDI
+ 	// mapping in this block (audio thread), reported to the host after
+@@ -344,15 +344,12 @@
+ 	inst.collectEvents(ctx, proc.in_events, true)
+ 
+ 	ctx.Dispatch(c.processor.ProcessAudio)
+-	if inst.hostChanged && inst.open.Load() && !inst.editorPending.Swap(true) {
+-		// Show host automation in the editor, from the main thread.
+-		C.vst3go_clap_request_callback(inst.plugin)
+-	}
+-
+ 	for b := range outputs {
+ 		outputs[b].constant_mask = C.uint64_t(ctx.OutputSilenceFlags(b))
+ 	}
+-	c.publishOutputParameters(ctx)
++	if inst.publishProcessParameters(ctx) {
++		C.vst3go_clap_request_callback(inst.plugin)
++	}
+ 	// Values the plugin changed itself go to the host as parameter events
+ 	// (at frame 0, before the block's other output events, which keeps the
+ 	// list sorted): MIDI-mapped controllers, then a newly selected program.
+@@ -375,6 +372,19 @@
+ 	}
+ 	inst.writeEvents(ctx, out)
+ 	return clapProcessContinue
++}
++
++// publishProcessParameters runs on the audio thread. It stores processor
++// output values before asking the host to refresh the editor on the main
++// thread. Return true only for the first request not yet serviced there.
++func (inst *clapInstance) publishProcessParameters(ctx *process.Context) bool {
++	inst.c.publishOutputParameters(ctx)
++	// Meters are deliberately absent from the CLAP host parameter list,
++	// but still belong to the web editor's model (including in the AU
++	// frontend, which hosts CLAP internally). They need the same main-thread
++	// refresh as host automation, without sending meter events to the host.
++	changed := inst.hostChanged || len(ctx.OutputParameterChanges()) != 0
++	return changed && inst.open.Load() && !inst.editorPending.Swap(true)
+ }
+ 
+ func clapBuffers(buffers *C.clap_audio_buffer_t, count C.uint32_t) []C.clap_audio_buffer_t {
+--- /dev/null
++++ b/pkg/plugin/clap_editor_meter_test.go
+@@ -0,0 +1,73 @@
++package plugin
++
++import (
++	"testing"
++
++	"github.com/meteuix/vst3go/v2/pkg/framework/bus"
++	"github.com/meteuix/vst3go/v2/pkg/framework/param"
++	"github.com/meteuix/vst3go/v2/pkg/framework/process"
++)
++
++func editorMeterInstance(t *testing.T) (*clapInstance, *process.Context) {
++	t.Helper()
++	r := param.NewRegistry()
++	if err := r.Add(param.New(1, "Hold").Toggle().Build(),
++		param.New(10, "Peak").Range(-120, 60).Default(-120).ReadOnly().Build()); err != nil {
++		t.Fatal(err)
++	}
++	inst := &clapInstance{c: newTestComponent(t, &editorModelTestProcessor{params: r, buses: bus.NewEffectStereo()}),
++		params: []*param.Parameter{r.Get(1)}} // AU/CLAP host list excludes meters.
++	return inst, process.NewContext(128, r)
++}
++
++func TestCLAPMeterRefreshWithoutHostAutomation(t *testing.T) {
++	inst, ctx := editorMeterInstance(t)
++	inst.open.Store(true)
++	ctx.BeginBlock(128)
++	ctx.SetOutputParameter(10, .6)
++	if !inst.publishProcessParameters(ctx) {
++		t.Fatal("processor meter changed without host automation: missing main-thread editor refresh request")
++	}
++	if got := inst.c.params.Get(10).GetNormalized(); got != .6 {
++		t.Fatalf("meter must be published before the refresh request: %v", got)
++	}
++	// More updates before the main thread runs coalesce into one request,
++	// while the editor will read the newest value, not the first one.
++	ctx.BeginBlock(128)
++	ctx.SetOutputParameter(10, .7)
++	if inst.publishProcessParameters(ctx) {
++		t.Fatal("a second callback was requested while one was pending")
++	}
++	if got := inst.c.params.Get(10).GetNormalized(); got != .7 {
++		t.Fatalf("coalescing lost the newest meter value: %v", got)
++	}
++	if !inst.editorPending.Swap(false) {
++		t.Fatal("main thread has no pending refresh to consume")
++	}
++	ctx.BeginBlock(128)
++	ctx.SetOutputParameter(10, .8)
++	if !inst.publishProcessParameters(ctx) {
++		t.Fatal("meter refresh did not resume after servicing the callback")
++	}
++}
++
++func TestCLAPMeterClosedEditorAndAutomation(t *testing.T) {
++	inst, ctx := editorMeterInstance(t)
++	ctx.BeginBlock(128)
++	ctx.SetOutputParameter(10, .5)
++	if inst.publishProcessParameters(ctx) || inst.editorPending.Load() {
++		t.Fatal("closed editor should not request GUI callbacks")
++	}
++	if got := inst.c.params.Get(10).GetNormalized(); got != .5 {
++		t.Fatal("closed editor stopped publishing meter values")
++	}
++	inst.open.Store(true)
++	ctx.BeginBlock(128)
++	if inst.publishProcessParameters(ctx) {
++		t.Fatal("block with no parameter updates requested a callback")
++	}
++	inst.hostChanged = true
++	if !inst.publishProcessParameters(ctx) {
++		t.Fatal("host automation no longer requests an editor refresh")
++	}
++}

@@ -1,0 +1,22 @@
+[
+  {
+    "file": "horizontal_HV.png",
+    "original_name": "Jovaris 트랙 미터의 H·V 전환 토글.png",
+    "sha256": "a982420bde918845ce8067a00e38927092b75e3a28b99fc9083b93905ced2bab"
+  },
+  {
+    "file": "vertical.png",
+    "original_name": "Jovaris Audio 세로형 스테레오 트랙 미터.png",
+    "sha256": "22a32e18776ea57cbd529f58467ae231f089b3806fcd5c29008f9e7453cbc055"
+  },
+  {
+    "file": "horizontal_hold_reset.png",
+    "original_name": "트랙 미터 피크 홀드와 리셋.png",
+    "sha256": "36ca49d5659c7b05dba8362e46a570a58872596fbffc8a5f1221c7d7821e6d55"
+  },
+  {
+    "file": "horizontal_original.png",
+    "original_name": "Jovaris Audio 피크·VU 트랙 미터.png",
+    "sha256": "5decc5547e59de1916ccaeb564c715fd178f60687a439908e66761ba379fe37c"
+  }
+]

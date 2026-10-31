@@ -38,6 +38,10 @@ struct VST3GoEditorView {
     VST3GoNativeView* containerView;
     WKWebView* webView;
     NSObject<WKScriptMessageHandler>* messageHandler;
+#if TARGET_OS_OSX
+    NSTextField* loadStatus;
+#endif
+    BOOL pageReady;
     struct Steinberg_IPlugFrame* frame;
     Steinberg_ViewRect size;
     float scaleFactor;
@@ -95,11 +99,76 @@ static Steinberg_IPlugViewVtbl editorViewVtbl = {
 // runtime of whichever binary registered it first.
 static Ivar messageHandlerOwner;
 
+// Keep load diagnostics outside WebKit: a failed/terminated web process
+// cannot draw its own error message. This is a trial diagnostic, not a
+// claim that the Logic blank-editor failure has been fixed.
+static VST3GoEditorView* messageHandlerView(id handler) {
+    return *(VST3GoEditorView**)((char*)handler + ivar_getOffset(messageHandlerOwner));
+}
+
+static void editorViewStatus(VST3GoEditorView* view, NSString* text) {
+    if (!view) return;
+    NSLog(@"[vst3go editor] %@", text);
+#if TARGET_OS_OSX
+    view->loadStatus.stringValue = text;
+    view->loadStatus.hidden = NO;
+#endif
+}
+
+static void messageHandlerLoadTimeout(id self, SEL cmd, id unused) {
+    (void)cmd; (void)unused;
+    VST3GoEditorView* view = messageHandlerView(self);
+    if (view && !view->pageReady) {
+        editorViewStatus(view, @"Web editor did not become ready (8 seconds).\n"
+            "Native editor was created; web editor loading is still unverified.\n"
+            "Jovaris Track Meter 0.1.3 — audio measurement has not been tested in Logic.");
+    }
+}
+
+static void messageHandlerNavigationFailed(id self, SEL cmd, WKWebView* webView, WKNavigation* navigation, NSError* error) {
+    (void)cmd; (void)webView; (void)navigation;
+    VST3GoEditorView* view = messageHandlerView(self);
+    if (!view) return;
+    [NSObject cancelPreviousPerformRequestsWithTarget:self];
+    view->pageReady = NO;
+    editorViewStatus(view, [NSString stringWithFormat:@"Web editor load failed.\n%@ (%ld)\n%@",
+        error.domain, (long)error.code, error.localizedDescription]);
+}
+
+static void messageHandlerProcessTerminated(id self, SEL cmd, WKWebView* webView) {
+    (void)cmd; (void)webView;
+    VST3GoEditorView* view = messageHandlerView(self);
+    if (!view) return;
+    [NSObject cancelPreviousPerformRequestsWithTarget:self];
+    view->pageReady = NO;
+    editorViewStatus(view, @"WebKit editor process terminated.\nThe plugin is loaded, but its web editor is unavailable.");
+}
+
 static void messageHandlerReceive(id self, SEL cmd, WKUserContentController* controller, WKScriptMessage* message) {
     (void)cmd;
     (void)controller;
     VST3GoEditorView* owner = *(VST3GoEditorView**)((char*)self + ivar_getOffset(messageHandlerOwner));
     if (!owner || ![message.body isKindOfClass:[NSDictionary class]]) {
+        return;
+    }
+
+    NSString* kind = message.body[@"type"];
+    if ([kind isEqual:@"__vst3go-native-ready"]) {
+        [NSObject cancelPreviousPerformRequestsWithTarget:self];
+        owner->pageReady = [message.body[@"ok"] boolValue];
+        if (owner->pageReady) {
+#if TARGET_OS_OSX
+            owner->loadStatus.hidden = YES;
+#endif
+        } else {
+            editorViewStatus(owner, @"The web page loaded, but the editor SDK or page content is missing.");
+        }
+        return;
+    }
+    if ([kind isEqual:@"__vst3go-native-error"]) {
+        [NSObject cancelPreviousPerformRequestsWithTarget:self];
+        owner->pageReady = NO;
+        editorViewStatus(owner, [NSString stringWithFormat:@"Editor JavaScript failed.\n%@", message.body[@"message"]]);
         return;
     }
 
@@ -122,6 +191,11 @@ static NSObject<WKScriptMessageHandler>* newMessageHandler(VST3GoEditorView* own
         class_addIvar(cls, "owner", sizeof(void*), sizeof(void*) == 8 ? 3 : 2, "^v");
         class_addMethod(cls, @selector(userContentController:didReceiveScriptMessage:), (IMP)messageHandlerReceive, "v@:@@");
         class_addProtocol(cls, @protocol(WKScriptMessageHandler));
+        class_addProtocol(cls, @protocol(WKNavigationDelegate));
+        class_addMethod(cls, NSSelectorFromString(@"vst3goLoadTimeout:"), (IMP)messageHandlerLoadTimeout, "v@:@");
+        class_addMethod(cls, @selector(webView:didFailProvisionalNavigation:withError:), (IMP)messageHandlerNavigationFailed, "v@:@@@");
+        class_addMethod(cls, @selector(webView:didFailNavigation:withError:), (IMP)messageHandlerNavigationFailed, "v@:@@@");
+        class_addMethod(cls, @selector(webViewWebContentProcessDidTerminate:), (IMP)messageHandlerProcessTerminated, "v@:@");
         objc_registerClassPair(cls);
         messageHandlerOwner = class_getInstanceVariable(cls, "owner");
     });
@@ -131,6 +205,7 @@ static NSObject<WKScriptMessageHandler>* newMessageHandler(VST3GoEditorView* own
 }
 
 static void clearMessageHandler(NSObject<WKScriptMessageHandler>* handler) {
+    [NSObject cancelPreviousPerformRequestsWithTarget:handler];
     *(VST3GoEditorView**)((char*)handler + ivar_getOffset(messageHandlerOwner)) = NULL;
 }
 
@@ -155,7 +230,7 @@ static void editorViewLoadContent(VST3GoEditorView* view) {
     }
 
     NSString* html = editorViewHTML(view);
-    if (!html) {
+    if (!html || html.length == 0) {
         html = @"<!doctype html><html><body style=\"background:#0b1020;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;padding:24px;\">Editor model unavailable.</body></html>";
     }
 
@@ -290,6 +365,9 @@ static Steinberg_uint32 editorView_release(void* thisInterface) {
             [view->containerView removeFromSuperview];
             [view->containerView release];
         }
+#if TARGET_OS_OSX
+        [view->loadStatus release];
+#endif
         free(view);
         return 0;
     }
@@ -316,6 +394,8 @@ static Steinberg_tresult editorView_attached(void* thisInterface, void* parent, 
 
         VST3GoNativeView* parentView = (VST3GoNativeView*)parent;
         if (view->attached) {
+            [view->webView setNavigationDelegate:nil];
+            clearMessageHandler(view->messageHandler);
             [view->containerView removeFromSuperview];
             [view->containerView release];
             [view->messageHandler release];
@@ -323,7 +403,13 @@ static Steinberg_tresult editorView_attached(void* thisInterface, void* parent, 
             view->containerView = nil;
             view->messageHandler = nil;
             view->webView = nil;
+#if TARGET_OS_OSX
+            [view->loadStatus release];
+            view->loadStatus = nil;
+#endif
         }
+
+        view->pageReady = NO;
 
         view->parentView = parentView;
         view->containerView = [[VST3GoNativeView alloc] initWithFrame:parentView.bounds];
@@ -333,6 +419,22 @@ static Steinberg_tresult editorView_attached(void* thisInterface, void* parent, 
         WKUserContentController* contentController = [[WKUserContentController alloc] init];
         view->messageHandler = newMessageHandler(view);
         [contentController addScriptMessageHandler:view->messageHandler name:@"vst3go"];
+        WKUserScript* diagnosticStart = [[WKUserScript alloc]
+            initWithSource:@"window.__vst3goNativeError = false;"
+                "window.addEventListener('error', function(e) {"
+                "window.__vst3goNativeError = true;"
+                "window.webkit.messageHandlers.vst3go.postMessage({type:'__vst3go-native-error',message:String(e.message)});"
+                "});"
+            injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES];
+        WKUserScript* diagnosticEnd = [[WKUserScript alloc]
+            initWithSource:@"if (!window.__vst3goNativeError) {"
+                "window.webkit.messageHandlers.vst3go.postMessage({type:'__vst3go-native-ready',"
+                "ok:!!window.vst3go && !!document.body && document.body.children.length > 0});}"
+            injectionTime:WKUserScriptInjectionTimeAtDocumentEnd forMainFrameOnly:YES];
+        [contentController addUserScript:diagnosticStart];
+        [contentController addUserScript:diagnosticEnd];
+        [diagnosticStart release];
+        [diagnosticEnd release];
 #if !TARGET_OS_OSX
         // Lay the page out in points at the view's width, as on macOS,
         // instead of on a zoomed-out 980-pixel canvas.
@@ -348,11 +450,25 @@ static Steinberg_tresult editorView_attached(void* thisInterface, void* parent, 
         configuration.userContentController = contentController;
 
         view->webView = [[WKWebView alloc] initWithFrame:view->containerView.bounds configuration:configuration];
+        view->webView.navigationDelegate = (id<WKNavigationDelegate>)view->messageHandler;
         view->webView.autoresizingMask = VST3GO_AUTORESIZE;
 #if !TARGET_OS_OSX
         view->webView.scrollView.bounces = NO;
 #endif
         [view->containerView addSubview:view->webView];
+#if TARGET_OS_OSX
+        view->loadStatus = [[NSTextField alloc] initWithFrame:NSInsetRect(view->containerView.bounds, 24, 24)];
+        view->loadStatus.autoresizingMask = VST3GO_AUTORESIZE;
+        view->loadStatus.editable = NO;
+        view->loadStatus.selectable = YES;
+        view->loadStatus.bordered = NO;
+        view->loadStatus.drawsBackground = YES;
+        view->loadStatus.backgroundColor = [NSColor windowBackgroundColor];
+        view->loadStatus.textColor = [NSColor labelColor];
+        view->loadStatus.font = [NSFont systemFontOfSize:15];
+        view->loadStatus.stringValue = @"Loading web editor…\nJovaris Track Meter 0.1.3";
+        [view->containerView addSubview:view->loadStatus];
+#endif
         [parentView addSubview:view->containerView];
 
         [contentController release];
@@ -360,6 +476,7 @@ static Steinberg_tresult editorView_attached(void* thisInterface, void* parent, 
 
         editorViewSetFrameFromParent(view);
         editorViewLoadContent(view);
+        [view->messageHandler performSelector:NSSelectorFromString(@"vst3goLoadTimeout:") withObject:nil afterDelay:8.0];
         view->attached = 1;
         return Steinberg_kResultOk;
     }
@@ -373,6 +490,7 @@ static Steinberg_tresult editorView_removed(void* thisInterface) {
         }
 
         if (view->webView) {
+            [view->webView setNavigationDelegate:nil];
             [view->webView removeFromSuperview];
             [view->webView release];
             view->webView = nil;
@@ -389,6 +507,10 @@ static Steinberg_tresult editorView_removed(void* thisInterface) {
             [view->containerView release];
             view->containerView = nil;
         }
+#if TARGET_OS_OSX
+        [view->loadStatus release];
+        view->loadStatus = nil;
+#endif
 
         view->attached = 0;
         view->parentView = nil;

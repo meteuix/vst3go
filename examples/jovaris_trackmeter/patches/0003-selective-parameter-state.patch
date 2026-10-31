@@ -1,0 +1,32 @@
+--- a/pkg/plugin/plugin.go
++++ b/pkg/plugin/plugin.go
+@@ -116,6 +116,14 @@
+ 	// LoadCustomState loads additional state beyond parameters
+ 	// This is called after all parameters have been loaded
+ 	LoadCustomState(r io.Reader) error
++}
++
++// StateParameterProcessor optionally limits automatic parameter persistence.
++// Return a registry containing the persistent parameter objects from
++// GetParameters. The default remains the full registry for existing plugins.
++// This lets metering plugins omit transient readings and reset triggers.
++type StateParameterProcessor interface {
++	StateParameters() *param.Registry
+ }
+ 
+ // DoublePrecisionProcessor lets hosts process in 64-bit floating point.
+--- a/pkg/plugin/component.go
++++ b/pkg/plugin/component.go
+@@ -157,7 +157,11 @@
+ }
+ 
+ func (c *componentImpl) stateManager() *state.Manager {
+-	manager := state.NewManager(c.params)
++	params := c.params
++	if persistent, ok := c.processor.(StateParameterProcessor); ok {
++		params = persistent.StateParameters()
++	}
++	manager := state.NewManager(params)
+ 	if stateful, ok := c.processor.(StatefulProcessor); ok {
+ 		manager.SetCustomLoadFunc(stateful.LoadCustomState)
+ 		manager.SetCustomSaveFunc(stateful.SaveCustomState)

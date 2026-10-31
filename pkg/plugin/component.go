@@ -157,7 +157,11 @@ func (c *componentImpl) sidechainIndex() int {
 }
 
 func (c *componentImpl) stateManager() *state.Manager {
-	manager := state.NewManager(c.params)
+	params := c.params
+	if persistent, ok := c.processor.(StateParameterProcessor); ok {
+		params = persistent.StateParameters()
+	}
+	manager := state.NewManager(params)
 	if stateful, ok := c.processor.(StatefulProcessor); ok {
 		manager.SetCustomLoadFunc(stateful.LoadCustomState)
 		manager.SetCustomSaveFunc(stateful.SaveCustomState)

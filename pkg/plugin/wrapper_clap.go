@@ -40,7 +40,7 @@ type clapInstance struct {
 	notes          clapNotes   // audio thread
 	seenProgram    int32       // audio thread: last program applied by process
 	edits          *mpscQueue[clapEdit]
-	editorPending  atomic.Bool // host automation changed values the editor shows
+	editorPending  atomic.Bool // parameter values need publishing to the editor
 	hostChanged    bool        // audio thread: the block had host parameter changes
 	// changed holds the values MIDI controllers changed through the MIDI
 	// mapping in this block (audio thread), reported to the host after
@@ -344,15 +344,12 @@ func GoClapProcess(id C.uintptr_t, proc *C.clap_process_t) C.clap_process_status
 	inst.collectEvents(ctx, proc.in_events, true)
 
 	ctx.Dispatch(c.processor.ProcessAudio)
-	if inst.hostChanged && inst.open.Load() && !inst.editorPending.Swap(true) {
-		// Show host automation in the editor, from the main thread.
-		C.vst3go_clap_request_callback(inst.plugin)
-	}
-
 	for b := range outputs {
 		outputs[b].constant_mask = C.uint64_t(ctx.OutputSilenceFlags(b))
 	}
-	c.publishOutputParameters(ctx)
+	if inst.publishProcessParameters(ctx) {
+		C.vst3go_clap_request_callback(inst.plugin)
+	}
 	// Values the plugin changed itself go to the host as parameter events
 	// (at frame 0, before the block's other output events, which keeps the
 	// list sorted): MIDI-mapped controllers, then a newly selected program.
@@ -375,6 +372,19 @@ func GoClapProcess(id C.uintptr_t, proc *C.clap_process_t) C.clap_process_status
 	}
 	inst.writeEvents(ctx, out)
 	return clapProcessContinue
+}
+
+// publishProcessParameters runs on the audio thread. It stores processor
+// output values before asking the host to refresh the editor on the main
+// thread. Return true only for the first request not yet serviced there.
+func (inst *clapInstance) publishProcessParameters(ctx *process.Context) bool {
+	inst.c.publishOutputParameters(ctx)
+	// Meters are deliberately absent from the CLAP host parameter list,
+	// but still belong to the web editor's model (including in the AU
+	// frontend, which hosts CLAP internally). They need the same main-thread
+	// refresh as host automation, without sending meter events to the host.
+	changed := inst.hostChanged || len(ctx.OutputParameterChanges()) != 0
+	return changed && inst.open.Load() && !inst.editorPending.Swap(true)
 }
 
 func clapBuffers(buffers *C.clap_audio_buffer_t, count C.uint32_t) []C.clap_audio_buffer_t {

@@ -118,6 +118,14 @@ type StatefulProcessor interface {
 	LoadCustomState(r io.Reader) error
 }
 
+// StateParameterProcessor optionally limits automatic parameter persistence.
+// Return a registry containing the persistent parameter objects from
+// GetParameters. The default remains the full registry for existing plugins.
+// This lets metering plugins omit transient readings and reset triggers.
+type StateParameterProcessor interface {
+	StateParameters() *param.Registry
+}
+
 // DoublePrecisionProcessor lets hosts process in 64-bit floating point.
 // When SupportsDoublePrecision returns true, ProcessAudio must handle both
 // ctx.Input/ctx.Output (32-bit) and ctx.Input64/ctx.Output64 (64-bit, when
